@@ -67,6 +67,9 @@ pub enum Command {
     PullRequestReady,
     PullRequestDraft,
     Notifications,
+    TerminalOpen,
+    TerminalNew,
+    TerminalAttach,
 }
 
 impl Command {
@@ -137,6 +140,9 @@ impl Command {
         Command::PullRequestMerge,
         Command::PullRequestReady,
         Command::PullRequestDraft,
+        Command::TerminalOpen,
+        Command::TerminalNew,
+        Command::TerminalAttach,
         Command::Reload,
         Command::Back,
         Command::Help,
@@ -168,6 +174,7 @@ impl Command {
             Self::SidebarToggle => "sidebar.toggle",
             Self::PanelToggle => "panel.toggle",
             Self::DiffToggle => "diff.toggle",
+            Self::TerminalOpen => "terminal.open",
             Self::PanelNextTab => "panel.nextTab",
             Self::PanelPreviousTab => "panel.previousTab",
             Self::PanelFullScreen => "panel.fullScreen.toggle",
@@ -253,6 +260,9 @@ impl Command {
             Self::PullRequestMerge => "Merge the pull request (confirm)".into(),
             Self::PullRequestReady => "Mark the draft pull request ready (confirm)".into(),
             Self::PullRequestDraft => "Convert the pull request to draft (confirm)".into(),
+            Self::TerminalOpen => "Thread terminals (right panel)".into(),
+            Self::TerminalNew => "Start a new terminal".into(),
+            Self::TerminalAttach => "Attach the terminal fullscreen (C-\\ detaches)".into(),
         }
     }
 }
@@ -426,6 +436,7 @@ impl Default for Keymap {
             (KeyChord::ch('>'), Command::PanelNextTab),
             (KeyChord::ch('<'), Command::PanelPreviousTab),
             (KeyChord::ch('Z'), Command::PanelFullScreen),
+            (KeyChord::ch('T'), Command::TerminalOpen),
             (KeyChord::ctrl('r'), Command::Reload),
             (KeyChord::plain(PageDown), Command::PageDown),
             (KeyChord::plain(PageUp), Command::PageUp),

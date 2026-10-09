@@ -77,6 +77,7 @@ pub fn render_panel(state: &AppState, frame: &mut Frame, area: Rect) {
         PanelTab::Info => render_info(state, frame, inner, focused),
         PanelTab::Diff => render_diff(state, frame, inner, focused),
         PanelTab::File => render_file(state, frame, inner),
+        PanelTab::Terminal => crate::terminal_ui::render_terminal(state, frame, inner, focused),
     }
 }
 
@@ -521,11 +522,14 @@ pub fn render_confirm(confirm: &GitConfirm, frame: &mut Frame, area: Rect) {
 pub fn hints(state: &AppState) -> String {
     match state.panel.tab {
         PanelTab::Info => {
-            "j/k move · Enter open diff/link · p preview · e edit · y copy · 1-3 tab · Z maximize · Esc leave".into()
+            "j/k move · Enter open diff/link · p preview · e edit · y copy · 1-4 tab · Z maximize · Esc leave".into()
         }
         PanelTab::Diff => {
             "s/S scope · n/N hunk · [/] file · Enter fold/load · h/l pan · p preview · e edit · r refresh · Esc leave".into()
         }
         PanelTab::File => "j/k scroll · h/l pan · e edit in $EDITOR · y copy path · Esc back".into(),
+        PanelTab::Terminal => {
+            "Enter type · n new · x close · [/] switch · A fullscreen · j/k/PgUp scroll · y copy · Esc leave".into()
+        }
     }
 }

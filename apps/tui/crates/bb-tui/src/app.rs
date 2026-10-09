@@ -36,6 +36,7 @@ use crate::palette::{
 use crate::panel::{GitAction, PanelLoaded, PanelRequest, RightPanel};
 use crate::prompt::PromptDraft;
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
+use crate::terminal::{TerminalLoaded, TerminalPanel, TerminalRequest};
 use crate::timeline::{LoadRequest, TimelineView};
 use crate::typeahead::{
     CommandCatalogKey, ComposerTarget, Typeahead, TypeaheadLoaded, TypeaheadRequest,
@@ -163,6 +164,18 @@ pub enum Action {
         payload: bb_wire::common::JsonValue,
     },
     TerminalFocus(bool),
+    TerminalLoaded(TerminalLoaded),
+    TerminalEvent {
+        terminal_id: String,
+        link: u64,
+        event: bb_client::TerminalEvent,
+    },
+    TerminalRawInput(Vec<u8>),
+    FullscreenResize {
+        cols: u16,
+        rows: u16,
+    },
+    FullscreenEnded(String),
     NotificationInteractions {
         thread_id: String,
         result: Result<Vec<bb_wire::interaction::PendingInteraction>, String>,
@@ -215,6 +228,7 @@ pub enum Effect {
     Alert(crate::notifications::Alert),
     SetTitle(String),
     FetchNotificationInteractions(String),
+    Terminal(TerminalRequest),
     Quit,
 }
 
@@ -255,6 +269,7 @@ pub struct AppState {
     pub sidebar_visible: bool,
     pub panel_visible: bool,
     pub panel: RightPanel,
+    pub terminals: TerminalPanel,
     pub keymap: Keymap,
     pub read_only: bool,
     pub toasts: Vec<Toast>,
@@ -306,6 +321,7 @@ impl AppState {
             sidebar_visible: true,
             panel_visible: false,
             panel: RightPanel::default(),
+            terminals: TerminalPanel::default(),
             keymap: Keymap::default(),
             read_only: false,
             toasts: Vec::new(),
@@ -668,6 +684,18 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
                 );
                 false
             }
+            Effect::Terminal(request) => match request.read_only_refusal() {
+                None => true,
+                Some(refusal) => {
+                    if let TerminalRequest::Create { .. } = request {
+                        state.terminals.creating = false;
+                    }
+                    if let Some(verb) = refusal {
+                        state.toast(format!("Read-only mode: cannot {verb}"), ToastLevel::Error);
+                    }
+                    false
+                }
+            },
             Effect::Mutate(mutation) => {
                 if !mutation.is_silent() {
                     state.toast(
@@ -694,6 +722,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             let mut effects = composer_tick(state, now);
             effects.extend(state.panel_tick());
             effects.extend(state.notifications_tick());
+            effects.extend(state.terminals_tick());
             effects
         }
         Action::Snapshot(snapshot) => {
@@ -794,6 +823,9 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             Vec::new()
         }
         Action::Paste(text) => {
+            if let Some(effects) = state.terminal_paste(&text) {
+                return effects;
+            }
             if let Some(effects) = crate::compose::paste_attachments(state, &text) {
                 return effects;
             }
@@ -832,6 +864,15 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::NotificationInteractions { thread_id, result } => {
             state.notification_interactions_loaded(thread_id, result)
         }
+        Action::TerminalLoaded(loaded) => state.terminals_loaded(loaded),
+        Action::TerminalEvent {
+            terminal_id,
+            link,
+            event,
+        } => state.terminal_event(terminal_id, link, event),
+        Action::TerminalRawInput(bytes) => state.fullscreen_input(bytes),
+        Action::FullscreenResize { cols, rows } => state.fullscreen_resize(cols, rows),
+        Action::FullscreenEnded(message) => state.fullscreen_ended(message),
     }
 }
 
@@ -874,6 +915,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
     if state.panel.confirm.is_some() {
         return crate::panel::handle_confirm_key(state, key);
+    }
+    if state.mode == Mode::Normal && state.terminal_input_active() {
+        return crate::terminal::handle_terminal_input(state, key);
     }
     if state.mode == Mode::Normal
         && let Some(target) = state.active_composer_target()
@@ -1203,6 +1247,28 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             return state.sync_panel();
         }
         Command::DiffToggle => return state.toggle_diff_panel(),
+        Command::TerminalOpen => return state.open_terminal_panel(),
+        Command::TerminalNew => {
+            let mut effects = state.open_terminal_panel();
+            effects.extend(state.create_terminal());
+            return effects;
+        }
+        Command::TerminalAttach => {
+            let mut effects = state.open_terminal_panel();
+            if state
+                .terminals
+                .active_view()
+                .is_some_and(|view| view.is_connected())
+            {
+                effects.extend(state.start_fullscreen());
+            } else {
+                state.toast(
+                    "Connecting to the terminal · press A again to attach",
+                    ToastLevel::Info,
+                );
+            }
+            return effects;
+        }
         Command::PanelNextTab => return state.cycle_panel_tab(true),
         Command::PanelPreviousTab => return state.cycle_panel_tab(false),
         Command::PanelFullScreen => {

@@ -864,7 +864,14 @@ fn help_entries(state: &AppState) -> Vec<(String, String)> {
             "i / Tab".to_owned(),
             "New thread: edit the prompt / next field".to_owned(),
         ),
-        ("1-3".to_owned(), "Panel: Info / Diff / File tab".to_owned()),
+        (
+            "1-4".to_owned(),
+            "Panel: Info / Diff / File / Terminal tab".to_owned(),
+        ),
+        (
+            "C-\\ A".to_owned(),
+            "Terminal: stop typing, attach fullscreen".to_owned(),
+        ),
         (
             "s n/N [/]".to_owned(),
             "Diff: scope, next/previous hunk, file".to_owned(),

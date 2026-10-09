@@ -29,16 +29,23 @@ pub enum PanelTab {
     Info,
     Diff,
     File,
+    Terminal,
 }
 
 impl PanelTab {
-    pub const ALL: [PanelTab; 3] = [PanelTab::Info, PanelTab::Diff, PanelTab::File];
+    pub const ALL: [PanelTab; 4] = [
+        PanelTab::Info,
+        PanelTab::Diff,
+        PanelTab::File,
+        PanelTab::Terminal,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Self::Info => "Info",
             Self::Diff => "Diff",
             Self::File => "File",
+            Self::Terminal => "Terminal",
         }
     }
 
@@ -580,6 +587,12 @@ impl AppState {
     }
 
     pub fn sync_panel(&mut self) -> Vec<Effect> {
+        let mut effects = self.sync_terminals();
+        effects.extend(self.sync_workspace_panel());
+        effects
+    }
+
+    fn sync_workspace_panel(&mut self) -> Vec<Effect> {
         if !self.panel_visible {
             return Vec::new();
         }
@@ -1657,9 +1670,12 @@ fn nav_for(key: &KeyEvent) -> Option<Nav> {
 }
 
 pub(crate) fn handle_panel_key(state: &mut AppState, key: KeyEvent) -> Option<Vec<Effect>> {
+    if state.panel.tab == PanelTab::Terminal && state.terminals.confirm_close.is_some() {
+        return crate::terminal::handle_terminal_key(state, &key);
+    }
     if is_plain(&key) {
         match key.code {
-            KeyCode::Char(digit @ '1'..='3') => {
+            KeyCode::Char(digit @ '1'..='4') => {
                 let tab = PanelTab::ALL[usize::from(digit as u8 - b'1')];
                 return Some(state.set_panel_tab(tab));
             }
@@ -1670,6 +1686,10 @@ pub(crate) fn handle_panel_key(state: &mut AppState, key: KeyEvent) -> Option<Ve
                 return Some(state.request_git_action(GitAction::ConvertToDraft));
             }
             KeyCode::Char('r') => {
+                if state.panel.tab == PanelTab::Terminal {
+                    state.terminals.sessions = Load::Idle;
+                    state.terminals.listing = false;
+                }
                 state.panel.status = Load::Idle;
                 state.panel.status_fetching = false;
                 state.panel.pull_request = Load::Idle;
@@ -1697,6 +1717,7 @@ pub(crate) fn handle_panel_key(state: &mut AppState, key: KeyEvent) -> Option<Ve
         PanelTab::Info => handle_info_key(state, &key),
         PanelTab::Diff => handle_diff_key(state, &key),
         PanelTab::File => handle_file_key(state, &key),
+        PanelTab::Terminal => crate::terminal::handle_terminal_key(state, &key),
     }
 }
 

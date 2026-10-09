@@ -47,8 +47,12 @@ toml_edit.workspace = true
 keyring = { workspace = true, optional = true }
 notify-rust = { workspace = true, optional = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true

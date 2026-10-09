@@ -39,6 +39,7 @@ unicode-segmentation = "1"
 dirs = "6"
 keyring = "4"
 vt100 = "0.16"
+rustix = { version = "1", default-features = false, features = ["std", "event"] }
 notify-rust = "4"
 clap = { version = "4", features = ["derive", "env"] }
 pretty_assertions = "1"

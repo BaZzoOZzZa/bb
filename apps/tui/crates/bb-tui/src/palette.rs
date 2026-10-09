@@ -447,6 +447,14 @@ const COMMAND_ENTRIES: &[CommandEntry] = &[
         "Maximize / restore panel",
         false,
     ),
+    entry(Command::TerminalOpen, WORKSPACE, "Open terminal", true),
+    entry(Command::TerminalNew, WORKSPACE, "New terminal", true),
+    entry(
+        Command::TerminalAttach,
+        WORKSPACE,
+        "Attach terminal fullscreen",
+        true,
+    ),
     entry(Command::GitCommit, WORKSPACE, "Commit changes", true),
     entry(
         Command::PullRequestMerge,

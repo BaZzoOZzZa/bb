@@ -15,7 +15,7 @@ use bb_wire::project::WorkspacePathsQuery;
 use bb_wire::system::SystemEnvironmentProvidersQuery;
 use bb_wire::thread::ThreadSearchQuery;
 
-use crate::api::{Api, AttachmentUpload};
+use crate::api::{Api, AttachmentUpload, TerminalHandle};
 use crate::app::{Action, AppState, Effect, ToastLevel, update};
 use crate::attach::{ATTACHMENT_MAX_BYTES, UploadRequest, file_name, mime_type_for};
 use crate::git_diff::diff_query;
@@ -24,7 +24,9 @@ use crate::palette::{
     FILE_SEARCH_LIMIT, PaletteLoaded, PaletteRequest, THREAD_SEARCH_LIMIT_PER_GROUP,
 };
 use crate::panel::{PanelLoaded, PanelRequest};
-use crate::platform::Platform;
+use crate::platform::{Platform, RawEvent};
+use crate::terminal::{TerminalLoaded, TerminalRequest, TerminalScope};
+use crate::terminal_input::{DetachState, RESET_MODES};
 use crate::time::now_ms;
 use crate::typeahead::{TypeaheadLoaded, TypeaheadRequest};
 use crate::ui;
@@ -41,6 +43,8 @@ pub struct EffectRunner<A: Api, P: Platform> {
     _sidebar: Interest,
     thread: Option<(String, Interest)>,
     palette_tasks: HashMap<&'static str, tokio::task::JoinHandle<()>>,
+    terminal_links: HashMap<String, (u64, Arc<dyn TerminalHandle>)>,
+    fullscreen: Option<String>,
     redraw: bool,
 }
 
@@ -60,6 +64,8 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
             _sidebar: sidebar,
             thread: None,
             palette_tasks: HashMap::new(),
+            terminal_links: HashMap::new(),
+            fullscreen: None,
             redraw: false,
         }
     }
@@ -264,8 +270,163 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                     let _ = tx.send(Action::NotificationInteractions { thread_id, result });
                 });
             }
-            Effect::Quit => {}
+            Effect::Terminal(request) => self.run_terminal(request),
+            Effect::Quit => {
+                for (_, (_, handle)) in self.terminal_links.drain() {
+                    handle.close();
+                }
+            }
         }
+    }
+
+    fn terminal_link(&self, terminal_id: &str, link: u64) -> Option<&Arc<dyn TerminalHandle>> {
+        self.terminal_links
+            .get(terminal_id)
+            .filter(|(current, _)| *current == link)
+            .map(|(_, handle)| handle)
+    }
+
+    fn run_terminal(&mut self, request: TerminalRequest) {
+        match request {
+            TerminalRequest::List { scope } => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                let task = tokio::spawn(async move {
+                    let result = list_terminals(api.as_ref(), &scope).await;
+                    let _ = tx.send(Action::TerminalLoaded(TerminalLoaded::List {
+                        scope,
+                        result,
+                    }));
+                });
+                if let Some(previous) = self.palette_tasks.insert("terminal-list", task) {
+                    previous.abort();
+                }
+            }
+            TerminalRequest::Create { scope, request } => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = api.create_terminal(request).await;
+                    let _ = tx.send(Action::TerminalLoaded(TerminalLoaded::Created {
+                        scope,
+                        result,
+                    }));
+                });
+            }
+            TerminalRequest::Close {
+                terminal_id,
+                request,
+            } => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = api.close_terminal(terminal_id.clone(), request).await;
+                    let _ = tx.send(Action::TerminalLoaded(TerminalLoaded::Closed {
+                        terminal_id,
+                        result,
+                    }));
+                });
+            }
+            TerminalRequest::Connect {
+                terminal_id,
+                link,
+                since_seq,
+                size,
+                visible,
+            } => {
+                if let Some((_, previous)) = self.terminal_links.remove(&terminal_id) {
+                    previous.close();
+                }
+                match self.api.connect_terminal(&terminal_id, since_seq) {
+                    Ok(connection) => {
+                        if let Some((cols, rows)) = size {
+                            connection.handle.resize(cols, rows);
+                        }
+                        if !visible {
+                            connection.handle.set_visible(false);
+                        }
+                        self.terminal_links
+                            .insert(terminal_id.clone(), (link, connection.handle));
+                        let tx = self.tx.clone();
+                        let mut events = connection.events;
+                        tokio::spawn(async move {
+                            while let Some(event) = events.recv().await {
+                                let action = Action::TerminalEvent {
+                                    terminal_id: terminal_id.clone(),
+                                    link,
+                                    event,
+                                };
+                                if tx.send(action).is_err() {
+                                    break;
+                                }
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        let _ =
+                            self.tx
+                                .send(Action::TerminalLoaded(TerminalLoaded::ConnectFailed {
+                                    terminal_id,
+                                    link,
+                                    error,
+                                }));
+                    }
+                }
+            }
+            TerminalRequest::Disconnect { terminal_id, link } => {
+                if self.terminal_link(&terminal_id, link).is_some()
+                    && let Some((_, handle)) = self.terminal_links.remove(&terminal_id)
+                {
+                    handle.close();
+                }
+            }
+            TerminalRequest::Input {
+                terminal_id,
+                link,
+                bytes,
+            } => {
+                if let Some(handle) = self.terminal_link(&terminal_id, link) {
+                    handle.send_input(&bytes);
+                }
+            }
+            TerminalRequest::Resize {
+                terminal_id,
+                link,
+                cols,
+                rows,
+            } => {
+                if let Some(handle) = self.terminal_link(&terminal_id, link) {
+                    handle.resize(cols, rows);
+                }
+            }
+            TerminalRequest::Ack {
+                terminal_id,
+                link,
+                next_seq,
+            } => {
+                if let Some(handle) = self.terminal_link(&terminal_id, link) {
+                    handle.acknowledge_output(next_seq);
+                }
+            }
+            TerminalRequest::Visible {
+                terminal_id,
+                link,
+                visible,
+            } => {
+                if let Some(handle) = self.terminal_link(&terminal_id, link) {
+                    handle.set_visible(visible);
+                }
+            }
+            TerminalRequest::Fullscreen { terminal_id, link } => {
+                if self.terminal_link(&terminal_id, link).is_some() {
+                    self.fullscreen = Some(terminal_id);
+                }
+            }
+        }
+    }
+
+    pub fn take_fullscreen(&mut self) -> Option<String> {
+        self.fullscreen.take()
     }
 
     pub fn take_redraw(&mut self) -> bool {
@@ -275,6 +436,21 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
     pub fn watched_thread(&self) -> Option<&str> {
         self.thread.as_ref().map(|(id, _)| id.as_str())
     }
+}
+
+pub async fn list_terminals<A: Api>(
+    api: &A,
+    scope: &TerminalScope,
+) -> Result<Vec<bb_wire::terminal::TerminalSession>, String> {
+    let mut sessions = Vec::new();
+    for (index, query) in scope.queries().into_iter().enumerate() {
+        match api.list_terminals(query).await {
+            Ok(found) => sessions.extend(found),
+            Err(error) if index == 0 => return Err(error),
+            Err(error) => tracing::debug!(%error, "environment terminals unavailable"),
+        }
+    }
+    Ok(sessions)
 }
 
 pub async fn run_new_thread_request<A: Api>(api: &A, request: NewThreadRequest) -> NewThreadLoaded {
@@ -603,11 +779,132 @@ where
         while let Ok(action) = rx.try_recv() {
             dispatch(state, &mut runner, action);
         }
+        if let Some(terminal_id) = runner.take_fullscreen() {
+            run_fullscreen(state, &mut runner, &mut rx, &mut snapshots, terminal_id).await;
+            terminal.clear().map_err(|error| anyhow!(error))?;
+        }
         if runner.take_redraw() {
             terminal.clear().map_err(|error| anyhow!(error))?;
         }
     }
     Ok(())
+}
+
+fn fullscreen_output(state: &AppState, action: &Action, terminal_id: &str) -> Option<Vec<u8>> {
+    let Action::TerminalEvent {
+        terminal_id: id,
+        link,
+        event:
+            bb_client::TerminalEvent::Message(bb_wire::terminal::TerminalServerMessage::Output {
+                chunk,
+            }),
+    } = action
+    else {
+        return None;
+    };
+    let view = state.terminals.views.get(id)?;
+    if id != terminal_id || view.link != Some(*link) || chunk.seq < view.next_seq {
+        return None;
+    }
+    chunk.decode().ok()
+}
+
+pub async fn run_fullscreen<A: Api, P: Platform>(
+    state: &mut AppState,
+    runner: &mut EffectRunner<A, P>,
+    rx: &mut mpsc::UnboundedReceiver<Action>,
+    snapshots: &mut tokio::sync::watch::Receiver<Arc<bb_store::StoreSnapshot>>,
+    terminal_id: String,
+) {
+    let platform = runner.platform.clone();
+    let Some(mut input) = platform.raw_input() else {
+        dispatch(
+            state,
+            runner,
+            Action::FullscreenEnded("Fullscreen attach needs an interactive terminal".into()),
+        );
+        return;
+    };
+    if let Err(error) = platform.suspend_screen() {
+        drop(input);
+        let _ = platform.resume_screen();
+        dispatch(
+            state,
+            runner,
+            Action::FullscreenEnded(format!("Cannot attach fullscreen: {error}")),
+        );
+        return;
+    }
+    if let Some(screen) = state.fullscreen_screen() {
+        let _ = platform.write_raw(&screen);
+    }
+    if let Some((cols, rows)) = platform.screen_size() {
+        dispatch(state, runner, Action::FullscreenResize { cols, rows });
+    }
+    let title = state
+        .terminals
+        .views
+        .get(&terminal_id)
+        .map_or_else(|| "the terminal".to_owned(), |view| view.title());
+    let mut detach = DetachState::default();
+    let mut tick = tokio::time::interval(TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let message = loop {
+        if state.terminals.fullscreen.as_deref() != Some(terminal_id.as_str()) {
+            break state
+                .terminals
+                .views
+                .get(&terminal_id)
+                .and_then(|view| view.notice.clone())
+                .unwrap_or_else(|| format!("{title} ended"));
+        }
+        tokio::select! {
+            biased;
+            Some(action) = rx.recv() => {
+                if let Some(bytes) = fullscreen_output(state, &action, &terminal_id) {
+                    let _ = platform.write_raw(&bytes);
+                }
+                dispatch(state, runner, action);
+            }
+            event = input.next() => match event {
+                None => break "Terminal input closed".to_owned(),
+                Some(RawEvent::Resize { cols, rows }) => {
+                    dispatch(state, runner, Action::FullscreenResize { cols, rows });
+                }
+                Some(RawEvent::Bytes(bytes)) => {
+                    let split = detach.feed(&bytes);
+                    if !split.forward.is_empty() {
+                        dispatch(state, runner, Action::TerminalRawInput(split.forward));
+                    }
+                    if split.detach {
+                        break format!("Detached from {title}");
+                    }
+                }
+            },
+            changed = snapshots.changed() => match changed {
+                Ok(()) => {
+                    let snapshot = snapshots.borrow_and_update().clone();
+                    dispatch(state, runner, Action::Snapshot(snapshot));
+                }
+                Err(_) => break "The store stopped".to_owned(),
+            },
+            _ = tick.tick() => dispatch(state, runner, Action::Tick { now: Instant::now(), now_ms: now_ms() }),
+        }
+    };
+    drop(input);
+    let _ = platform.write_raw(RESET_MODES);
+    let resumed = platform.resume_screen();
+    dispatch(state, runner, Action::FullscreenEnded(message));
+    if let Err(error) = resumed {
+        dispatch(
+            state,
+            runner,
+            Action::Notify {
+                message: format!("Failed to restore the screen: {error}"),
+                level: ToastLevel::Error,
+            },
+        );
+    }
 }
 
 fn dispatch<A: Api, P: Platform>(

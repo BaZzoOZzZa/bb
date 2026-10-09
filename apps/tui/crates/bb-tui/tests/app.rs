@@ -383,7 +383,8 @@ fn focus_cycles_through_visible_panes() {
     press(&mut state, KeyCode::Char('i'));
     press_mod(&mut state, KeyCode::BackTab, KeyModifiers::SHIFT);
     assert_eq!(state.focus, Focus::Panel);
-    assert!(screen(&state).contains("┏ 1 Info │ 2 Diff │ 3 File ━"));
+    let text = screen(&state);
+    assert!(text.contains("┏ 1 Info │ 2 Diff │ 3 File │"), "{text}");
     press(&mut state, KeyCode::Char('i'));
     assert_eq!(state.focus, Focus::Main);
     press_mod(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);

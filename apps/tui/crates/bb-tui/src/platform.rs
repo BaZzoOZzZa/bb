@@ -11,6 +11,41 @@ use crate::notifications::Alert;
 
 pub const NATIVE_NOTIFICATIONS: bool = cfg!(feature = "notifications");
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawEvent {
+    Bytes(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+}
+
+pub struct RawInput {
+    events: tokio::sync::mpsc::UnboundedReceiver<RawEvent>,
+    stop: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl RawInput {
+    pub fn new(
+        events: tokio::sync::mpsc::UnboundedReceiver<RawEvent>,
+        stop: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            events,
+            stop: Some(Box::new(stop)),
+        }
+    }
+
+    pub async fn next(&mut self) -> Option<RawEvent> {
+        self.events.recv().await
+    }
+}
+
+impl Drop for RawInput {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            stop();
+        }
+    }
+}
+
 pub trait Platform: Send + Sync + 'static {
     fn copy(&self, text: &str) -> Result<(), String>;
 
@@ -38,6 +73,26 @@ pub trait Platform: Send + Sync + 'static {
 
     fn set_title(&self, _title: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    fn raw_input(&self) -> Option<RawInput> {
+        None
+    }
+
+    fn suspend_screen(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn resume_screen(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn write_raw(&self, _bytes: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn screen_size(&self) -> Option<(u16, u16)> {
+        None
     }
 }
 
@@ -193,14 +248,87 @@ fn native_notify(_title: &str, _body: &str) -> Result<(), String> {
 }
 
 fn write_stdout(text: &str) -> Result<(), String> {
-    if text.is_empty() {
+    write_bytes(text.as_bytes())
+}
+
+fn write_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
         return Ok(());
     }
     let mut stdout = std::io::stdout();
     stdout
-        .write_all(text.as_bytes())
+        .write_all(bytes)
         .and_then(|()| stdout.flush())
         .map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn spawn_raw_input() -> Option<RawInput> {
+    use std::io::IsTerminal;
+    use std::os::fd::AsFd;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use rustix::event::{PollFd, PollFlags, Timespec};
+
+    if !std::io::stdin().is_terminal() {
+        return None;
+    }
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let handle = std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let fd = stdin.as_fd();
+        let mut size = crossterm::terminal::size().ok();
+        let mut buffer = vec![0u8; 16 * 1024];
+        let timeout = Timespec {
+            tv_sec: 0,
+            tv_nsec: 50_000_000,
+        };
+        while !flag.load(Ordering::SeqCst) {
+            let mut fds = [PollFd::new(&fd, PollFlags::IN)];
+            match rustix::event::poll(&mut fds, Some(&timeout)) {
+                Ok(0) => {}
+                Ok(_) => {
+                    let revents = fds[0].revents();
+                    if revents.intersects(PollFlags::IN) {
+                        match rustix::io::read(fd, &mut buffer[..]) {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => {
+                                if tx.send(RawEvent::Bytes(buffer[..read].to_vec())).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    } else if revents.intersects(PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL)
+                    {
+                        break;
+                    }
+                }
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => break,
+            }
+            let current = crossterm::terminal::size().ok();
+            if current != size {
+                size = current;
+                if let Some((cols, rows)) = current
+                    && tx.send(RawEvent::Resize { cols, rows }).is_err()
+                {
+                    break;
+                }
+            }
+        }
+    });
+    Some(RawInput::new(rx, move || {
+        stop.store(true, Ordering::SeqCst);
+        let _ = handle.join();
+    }))
+}
+
+#[cfg(not(unix))]
+fn spawn_raw_input() -> Option<RawInput> {
+    None
 }
 
 pub fn open_command(target: &str) -> (&'static str, Vec<String>) {
@@ -361,6 +489,59 @@ impl Platform for SystemPlatform {
 
     fn set_title(&self, title: &str) -> Result<(), String> {
         write_stdout(&title_sequence(title))
+    }
+
+    fn raw_input(&self) -> Option<RawInput> {
+        spawn_raw_input()
+    }
+
+    fn suspend_screen(&self) -> Result<(), String> {
+        use crossterm::event::{DisableBracketedPaste, PopKeyboardEnhancementFlags};
+        use crossterm::terminal::LeaveAlternateScreen;
+        let mut stdout = std::io::stdout();
+        if self.keyboard_enhanced {
+            let _ = crossterm::execute!(stdout, PopKeyboardEnhancementFlags);
+        }
+        if self.focus_reporting {
+            let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
+        }
+        crossterm::execute!(
+            stdout,
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        )
+        .map_err(|error| error.to_string())?;
+        crossterm::terminal::enable_raw_mode().map_err(|error| error.to_string())
+    }
+
+    fn resume_screen(&self) -> Result<(), String> {
+        use crossterm::event::{
+            EnableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        };
+        use crossterm::terminal::EnterAlternateScreen;
+        let mut stdout = std::io::stdout();
+        let _ = crossterm::terminal::enable_raw_mode();
+        let result = crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
+            .map_err(|error| error.to_string());
+        if self.focus_reporting {
+            let _ = crossterm::execute!(stdout, crossterm::event::EnableFocusChange);
+        }
+        if self.keyboard_enhanced {
+            let _ = crossterm::execute!(
+                stdout,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            );
+        }
+        result
+    }
+
+    fn write_raw(&self, bytes: &[u8]) -> Result<(), String> {
+        write_bytes(bytes)
+    }
+
+    fn screen_size(&self) -> Option<(u16, u16)> {
+        crossterm::terminal::size().ok()
     }
 
     fn load_palette_recents(&self) -> Vec<String> {

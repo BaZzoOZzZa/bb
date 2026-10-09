@@ -1272,3 +1272,78 @@ async fn renders_live_notifications_read_only() {
         println!("{screen}");
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only GET requests only"]
+async fn lists_live_thread_terminals_read_only() {
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let store = Store::spawn(
+        Arc::new(client.clone()),
+        NoRealtime,
+        None,
+        StoreConfig::default(),
+    );
+    let _interest = store.watch_sidebar();
+    let mut rx = store.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while rx.borrow_and_update().sidebar.data.is_none() {
+            rx.changed().await.expect("store");
+        }
+    })
+    .await
+    .expect("sidebar loaded");
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    state.read_only = true;
+    update(&mut state, Action::Snapshot(store.snapshot()));
+    let thread_id = store
+        .snapshot()
+        .sidebar_threads()
+        .find(|entry| entry.thread.environment_id.is_some())
+        .map(|entry| entry.thread.id.clone())
+        .expect("a thread with an environment");
+    state.open(thread_id.clone());
+    let effects = update(
+        &mut state,
+        Action::Key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('T'),
+            crossterm::event::KeyModifiers::SHIFT,
+        )),
+    );
+    let scope = effects
+        .iter()
+        .find_map(|effect| match effect {
+            bb_tui::app::Effect::Terminal(bb_tui::terminal::TerminalRequest::List { scope }) => {
+                Some(scope.clone())
+            }
+            _ => None,
+        })
+        .expect("list request");
+    assert_eq!(scope.thread_id, thread_id);
+    let result = bb_tui::runtime::list_terminals(&client, &scope).await;
+    let sessions = result.clone().expect("terminals listed");
+    update(
+        &mut state,
+        Action::TerminalLoaded(bb_tui::terminal::TerminalLoaded::List { scope, result }),
+    );
+    let screen = render_lines(&state, 140, 24).join("\n");
+    if sessions.iter().any(bb_tui::terminal::is_listed) {
+        assert!(screen.contains("Terminal"), "{screen}");
+    } else {
+        assert!(screen.contains("No terminals for this thread"), "{screen}");
+    }
+    if std::env::var_os("BB_TUI_LIVE_PRINT").is_some() {
+        println!("{screen}");
+    }
+}

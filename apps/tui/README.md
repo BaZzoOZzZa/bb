@@ -250,8 +250,8 @@ submenu, and passing a working directory to plugin commands.
 
 `i` shows or hides the right panel for the open thread, `D` opens it on the
 Diff tab and focuses it (again closes it), `>`/`<` switch tabs and `Z`
-maximizes it over the timeline. In the panel `1`/`2`/`3` pick the Info, Diff
-and File tabs, `r` reloads, and `Esc` returns from a preview, restores a
+maximizes it over the timeline. In the panel `1`-`4` pick the Info, Diff,
+File and Terminal tabs, `r` reloads, and `Esc` returns from a preview, restores a
 maximized panel, then leaves the panel. The keys follow the web app's
 `panel.toggle`, `diff.toggle`, `panel.nextTab`, `panel.previousTab` and
 `panel.fullScreen.toggle` commands, so server keybinding overrides rebind them.
@@ -315,6 +315,57 @@ Not built yet: choosing another merge base branch, the file filter, context
 expansion around hunks, image previews, forks and thread-storage sections,
 showing cost (the server does not report it), and the web's push/create-PR
 flows (the actions API has no such actions).
+
+## Terminals
+
+`T` (the web's `terminal.open`) opens the right panel on the **Terminal** tab
+and focuses it. The tab lists the open thread's terminals like the web thread
+view: `GET /terminals?threadId=` plus the environment's thread-less terminals
+(`GET /terminals?environmentId=`); exited sessions are hidden. The selected
+terminal is attached over `/ws/terminals/:id?sinceSeq=&outputAcks=1` with
+`bb-client`'s `TerminalConnection` and rendered by a `vt100` emulator into the
+panel: 256 and true colors, bold, dim, italic, underline, inverse, wide
+characters, the cursor, the alternate screen and 2 000 lines of scrollback.
+The program's window title (OSC 0/2) names the tab.
+
+| Keys (Terminal tab) | Action |
+|---|---|
+| typing | Goes to the terminal while the tab is focused (cursor keys follow application-cursor mode, `Alt` sends `Esc`, F1-F12, paste is bracketed when the program asks for it) |
+| `C-\` | Stop typing into the terminal (focus stays on the panel) |
+| `S-PgUp`/`S-PgDn` | Scroll back while typing; any key returns to the live screen |
+| `Enter`/`i` | Type into the terminal again |
+| `j`/`k`, `PgUp`/`PgDn`, `C-u`/`C-d`, `g`/`G` | Scroll back / to the live screen |
+| `]`/`[` | Next / previous terminal |
+| `n` | Start a terminal in the thread (`POST /terminals`, thread target, the panel's size) |
+| `x` | Close the terminal after confirmation (`POST /terminals/:id/close`, `mode: "force"`) |
+| `A` | Attach fullscreen |
+| `y` | Copy the visible screen |
+
+Flow control follows the web client: the output of each chunk is
+acknowledged (`ack` with `nextSeq`) only after the emulator has parsed it, and
+the connection reports `visibility: false` while the tab is hidden, so a
+hidden TUI never stalls the shell. The panel size is sent as `resize` whenever
+it changes; the screen follows the size the server reports (`attached`,
+`session-updated`), because only the most recently attached client may resize
+a terminal. A dropped socket reconnects with `sinceSeq` set to the next
+unseen chunk and the server replays from there; switching terminals keeps
+each screen and resumes it the same way. If the server no longer has the
+missing output, the screen is cleared with a notice, as in the web app.
+Opening another thread closes the sockets.
+
+`A` (or "Attach terminal fullscreen" in the palette) suspends the TUI like
+`bb terminal attach`: the alternate screen is left, the terminal's current
+screen is repainted, raw stdin bytes are sent as input and output bytes are
+written straight to stdout, and the window size is propagated. `C-\` or
+`C-b d` detaches; terminal modes the program set (mouse, bracketed paste,
+application cursor, alternate screen) are reset and the TUI redraws.
+
+`--read-only` lists and watches terminals but never types, resizes, creates or
+closes them.
+
+Not built yet: mouse reporting to the program, selecting text with the mouse,
+opening links printed in the terminal, renaming and restarting terminals,
+machine (host path) terminals, and environment terminals outside a thread.
 
 ## Notifications
 

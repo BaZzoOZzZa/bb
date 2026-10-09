@@ -34,12 +34,58 @@ use bb_wire::project::{
     ProjectCommandsQuery, ProviderCommand, UploadedPromptAttachment, WorkspacePathListResponse,
     WorkspacePathsQuery,
 };
+use bb_wire::terminal::{
+    CloseTerminalRequest, CreateTerminalRequest, TerminalListQuery, TerminalSession,
+};
 use bb_wire::thread::{ThreadSearchQuery, ThreadSearchResponse};
 
 use crate::new_thread::CreationConfig;
 use crate::palette::FileSource;
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
+
+pub trait TerminalHandle: Send + Sync {
+    fn send_input(&self, bytes: &[u8]) -> bool;
+    fn resize(&self, cols: u16, rows: u16);
+    fn acknowledge_output(&self, next_seq: u64);
+    fn set_visible(&self, visible: bool);
+    fn close(&self);
+}
+
+impl TerminalHandle for bb_client::TerminalConnection {
+    fn send_input(&self, bytes: &[u8]) -> bool {
+        bb_client::TerminalConnection::send_input(self, bytes)
+    }
+
+    fn resize(&self, cols: u16, rows: u16) {
+        bb_client::TerminalConnection::resize(self, cols, rows);
+    }
+
+    fn acknowledge_output(&self, next_seq: u64) {
+        bb_client::TerminalConnection::acknowledge_output(self, next_seq);
+    }
+
+    fn set_visible(&self, visible: bool) {
+        bb_client::TerminalConnection::set_visible(self, visible);
+    }
+
+    fn close(&self) {
+        bb_client::TerminalConnection::close(self);
+    }
+}
+
+pub struct TerminalLink {
+    pub handle: std::sync::Arc<dyn TerminalHandle>,
+    pub events: tokio::sync::mpsc::UnboundedReceiver<bb_client::TerminalEvent>,
+}
+
+pub fn terminal_config(since_seq: u64) -> bb_client::TerminalConfig {
+    bb_client::TerminalConfig {
+        auto_ack: false,
+        since_seq,
+        ..bb_client::TerminalConfig::default()
+    }
+}
 
 #[derive(Clone, PartialEq)]
 pub struct InteractionValue {
@@ -400,6 +446,30 @@ pub trait Api: Send + Sync + 'static {
 
     fn thread_interactions(&self, _thread_id: String) -> ApiFuture<Vec<PendingInteraction>> {
         unsupported("pending interactions")
+    }
+
+    fn list_terminals(&self, _query: TerminalListQuery) -> ApiFuture<Vec<TerminalSession>> {
+        unsupported("terminals")
+    }
+
+    fn create_terminal(&self, _request: CreateTerminalRequest) -> ApiFuture<TerminalSession> {
+        unsupported("terminal creation")
+    }
+
+    fn close_terminal(
+        &self,
+        _terminal_id: String,
+        _request: CloseTerminalRequest,
+    ) -> ApiFuture<TerminalSession> {
+        unsupported("closing terminals")
+    }
+
+    fn connect_terminal(
+        &self,
+        _terminal_id: &str,
+        _since_seq: u64,
+    ) -> Result<TerminalLink, String> {
+        Err("terminal connections are not available".into())
     }
 }
 
@@ -893,6 +963,53 @@ impl Api for BbClient {
                 .thread_interactions(&thread_id)
                 .await
                 .map_err(|error| error.to_string())
+        })
+    }
+
+    fn list_terminals(&self, query: TerminalListQuery) -> ApiFuture<Vec<TerminalSession>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .list_terminals(&query)
+                .await
+                .map(|response| response.sessions)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn create_terminal(&self, request: CreateTerminalRequest) -> ApiFuture<TerminalSession> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .create_terminal(&request)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn close_terminal(
+        &self,
+        terminal_id: String,
+        request: CloseTerminalRequest,
+    ) -> ApiFuture<TerminalSession> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .close_terminal(&terminal_id, &request)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn connect_terminal(&self, terminal_id: &str, since_seq: u64) -> Result<TerminalLink, String> {
+        let (connection, events) = bb_client::TerminalConnection::spawn(
+            self.clone(),
+            terminal_id,
+            terminal_config(since_seq),
+        );
+        Ok(TerminalLink {
+            handle: std::sync::Arc::new(connection),
+            events,
         })
     }
 }

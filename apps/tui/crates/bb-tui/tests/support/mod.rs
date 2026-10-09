@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod ws;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -265,6 +267,12 @@ pub struct MockApi {
     pub diff_files: Option<EnvironmentDiffFilesResponse>,
     pub diff_patch_requests: Mutex<Vec<(String, EnvironmentDiffPatchRequest)>>,
     pub diff_queries: Mutex<Vec<(String, EnvironmentDiffQuery)>>,
+    pub terminal_sessions: Mutex<Vec<bb_wire::terminal::TerminalSession>>,
+    pub terminal_queries: Mutex<Vec<bb_wire::terminal::TerminalListQuery>>,
+    pub terminal_created: Mutex<Vec<bb_wire::terminal::CreateTerminalRequest>>,
+    pub terminal_closed: Mutex<Vec<String>>,
+    pub terminal_client: Option<bb_client::BbClient>,
+    pub terminal_connects: Mutex<Vec<(String, u64)>>,
 }
 
 impl MockApi {
@@ -308,6 +316,12 @@ impl MockApi {
             diff_files: None,
             diff_patch_requests: Mutex::new(Vec::new()),
             diff_queries: Mutex::new(Vec::new()),
+            terminal_sessions: Mutex::new(Vec::new()),
+            terminal_queries: Mutex::new(Vec::new()),
+            terminal_created: Mutex::new(Vec::new()),
+            terminal_closed: Mutex::new(Vec::new()),
+            terminal_client: None,
+            terminal_connects: Mutex::new(Vec::new()),
         })
     }
 
@@ -317,6 +331,98 @@ impl MockApi {
 }
 
 impl Api for MockApi {
+    fn list_terminals(
+        &self,
+        query: bb_wire::terminal::TerminalListQuery,
+    ) -> ApiFuture<Vec<bb_wire::terminal::TerminalSession>> {
+        self.terminal_queries.lock().unwrap().push(query.clone());
+        let sessions: Vec<_> = self
+            .terminal_sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|session| match (&query.thread_id, &query.environment_id) {
+                (Some(thread_id), _) => session.thread_id.as_ref() == Some(thread_id),
+                (None, Some(environment_id)) => {
+                    session.thread_id.is_none()
+                        && session.environment_id.as_ref() == Some(environment_id)
+                }
+                _ => false,
+            })
+            .cloned()
+            .collect();
+        Box::pin(async move { Ok(sessions) })
+    }
+
+    fn create_terminal(
+        &self,
+        request: bb_wire::terminal::CreateTerminalRequest,
+    ) -> ApiFuture<bb_wire::terminal::TerminalSession> {
+        self.terminal_created.lock().unwrap().push(request.clone());
+        let mut sessions = self.terminal_sessions.lock().unwrap();
+        let thread_id = match &request.target {
+            bb_wire::terminal::TerminalCreateTarget::Thread { thread_id } => {
+                Some(thread_id.clone())
+            }
+            _ => None,
+        };
+        let session = terminal_session(
+            &format!("term_new{}", sessions.len() + 1),
+            thread_id.as_deref(),
+            None,
+            bb_wire::terminal::TerminalSessionStatus::Running,
+        );
+        sessions.push(session.clone());
+        Box::pin(async move { Ok(session) })
+    }
+
+    fn close_terminal(
+        &self,
+        terminal_id: String,
+        _request: bb_wire::terminal::CloseTerminalRequest,
+    ) -> ApiFuture<bb_wire::terminal::TerminalSession> {
+        self.terminal_closed
+            .lock()
+            .unwrap()
+            .push(terminal_id.clone());
+        let mut sessions = self.terminal_sessions.lock().unwrap();
+        let closed = sessions
+            .iter()
+            .find(|session| session.id == terminal_id)
+            .cloned()
+            .map(|session| bb_wire::terminal::TerminalSession {
+                status: bb_wire::terminal::TerminalSessionStatus::Exited,
+                ..session
+            });
+        sessions.retain(|session| session.id != terminal_id);
+        Box::pin(async move { closed.ok_or_else(|| "terminal_not_found".to_string()) })
+    }
+
+    fn connect_terminal(
+        &self,
+        terminal_id: &str,
+        since_seq: u64,
+    ) -> Result<bb_tui::api::TerminalLink, String> {
+        self.terminal_connects
+            .lock()
+            .unwrap()
+            .push((terminal_id.to_owned(), since_seq));
+        let client = self
+            .terminal_client
+            .clone()
+            .ok_or_else(|| "no terminal server".to_string())?;
+        let config = bb_client::TerminalConfig {
+            reconnect_delays: vec![std::time::Duration::from_millis(10)],
+            ..bb_tui::api::terminal_config(since_seq)
+        };
+        let (connection, events) =
+            bb_client::TerminalConnection::spawn(client, terminal_id, config);
+        Ok(bb_tui::api::TerminalLink {
+            handle: Arc::new(connection),
+            events,
+        })
+    }
+
     fn thread_interactions(&self, thread_id: String) -> ApiFuture<Vec<PendingInteraction>> {
         let list = self
             .backend
@@ -728,6 +834,28 @@ pub fn buffer_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
         .collect()
 }
 
+pub fn terminal_session(
+    id: &str,
+    thread_id: Option<&str>,
+    environment_id: Option<&str>,
+    status: bb_wire::terminal::TerminalSessionStatus,
+) -> bb_wire::terminal::TerminalSession {
+    bb_wire::terminal::TerminalSession {
+        id: id.into(),
+        thread_id: thread_id.map(str::to_owned),
+        environment_id: environment_id.map(str::to_owned),
+        host_id: "host_1".into(),
+        title: format!("shell {id}"),
+        initial_cwd: "/w".into(),
+        cols: 80,
+        rows: 24,
+        status,
+        created_at: NOW_MS,
+        updated_at: NOW_MS,
+        ..bb_wire::terminal::TerminalSession::default()
+    }
+}
+
 #[derive(Default)]
 pub struct MockPlatform {
     pub alerts: Mutex<Vec<bb_tui::notifications::Alert>>,
@@ -736,6 +864,10 @@ pub struct MockPlatform {
     pub copied: Mutex<Vec<String>>,
     pub opened: Mutex<Vec<String>>,
     pub drafts: Mutex<HashMap<String, String>>,
+    pub raw_input: Mutex<Option<bb_tui::platform::RawInput>>,
+    pub raw_output: Mutex<Vec<u8>>,
+    pub screen_events: Mutex<Vec<&'static str>>,
+    pub screen_size: Option<(u16, u16)>,
 }
 
 impl Platform for MockPlatform {
@@ -766,6 +898,29 @@ impl Platform for MockPlatform {
     fn set_title(&self, title: &str) -> Result<(), String> {
         self.titles.lock().unwrap().push(title.to_owned());
         Ok(())
+    }
+
+    fn raw_input(&self) -> Option<bb_tui::platform::RawInput> {
+        self.raw_input.lock().unwrap().take()
+    }
+
+    fn suspend_screen(&self) -> Result<(), String> {
+        self.screen_events.lock().unwrap().push("suspend");
+        Ok(())
+    }
+
+    fn resume_screen(&self) -> Result<(), String> {
+        self.screen_events.lock().unwrap().push("resume");
+        Ok(())
+    }
+
+    fn write_raw(&self, bytes: &[u8]) -> Result<(), String> {
+        self.raw_output.lock().unwrap().extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn screen_size(&self) -> Option<(u16, u16)> {
+        self.screen_size
     }
 
     fn save_draft(&self, thread_id: &str, raw: Option<&str>) -> Result<(), String> {
