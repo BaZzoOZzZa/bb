@@ -2237,6 +2237,8 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         Command::Send | Command::Steer => return send_draft(state, command == Command::Steer),
         Command::ExLine => state.open_ex(),
         Command::ExRepeat => return state.repeat_ex(),
+        Command::Ex(line) => return state.exec_ex(line),
+        Command::ExPrompt(text) => state.open_ex_with(text),
         Command::CloseWindowOrQuit => {
             if state.can_close_window() {
                 return state.close_window();

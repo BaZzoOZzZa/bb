@@ -646,3 +646,61 @@ async fn palette_debounces_thread_search_and_runs_plugin_commands_through_api() 
     assert_eq!(runs[0].1.argv, ["status"]);
     assert!(state.result_pane.is_none());
 }
+
+#[tokio::test]
+async fn cursor_shape_follows_the_evil_state_and_resets_on_exit() {
+    use bb_tui::platform::CursorShape;
+    let backend = FakeBackend::new(sample_sidebar());
+    let api = MockApi::new(backend.clone());
+    let store = Store::spawn(backend.clone(), NoRealtime, None, StoreConfig::default());
+    let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
+    let events = Box::pin(stream::poll_fn(move |cx| rx.poll_recv(cx)));
+    let platform = Arc::new(support::MockPlatform::default());
+    let state = AppState::new(
+        ServerInfo {
+            url: "http://fake/".into(),
+            profile: None,
+        },
+        Instant::now(),
+        NOW_MS,
+    );
+    let task_store = store.clone();
+    let task_platform = platform.clone();
+    let handle = tokio::spawn(async move {
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut state = state;
+        run(
+            &mut terminal,
+            &mut state,
+            task_store,
+            api,
+            task_platform,
+            events,
+        )
+        .await
+        .expect("run");
+    });
+    wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
+    let shapes = platform.clone();
+    wait_until(move || !shapes.cursor_shapes.lock().unwrap().is_empty()).await;
+    keys(&tx, ":");
+    let shapes = platform.clone();
+    wait_until(move || shapes.cursor_shapes.lock().unwrap().last() == Some(&CursorShape::Bar))
+        .await;
+    keys(&tx, "ESC");
+    let shapes = platform.clone();
+    wait_until(move || shapes.cursor_shapes.lock().unwrap().last() == Some(&CursorShape::Block))
+        .await;
+    keys(&tx, "SPC q q");
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("loop exits")
+        .expect("join");
+    let shapes = platform.cursor_shapes.lock().unwrap().clone();
+    assert_eq!(shapes.first(), Some(&CursorShape::Block));
+    assert_eq!(shapes.last(), Some(&CursorShape::Default));
+    assert!(
+        shapes.windows(2).all(|pair| pair[0] != pair[1]),
+        "{shapes:?}"
+    );
+}

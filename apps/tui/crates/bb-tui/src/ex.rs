@@ -715,6 +715,21 @@ impl AppState {
                 linewise: false,
             },
         );
+        self.exec_ex(line)
+    }
+
+    pub(crate) fn open_ex_with(&mut self, text: &str) {
+        self.mode = Mode::Ex(ExLine {
+            input: LineInput::new(text),
+            ..ExLine::default()
+        });
+    }
+
+    pub(crate) fn exec_ex(&mut self, line: &str) -> Vec<Effect> {
+        let line = line.trim().trim_start_matches(':').trim();
+        if line.is_empty() {
+            return Vec::new();
+        }
         if let Ok(number) = line.parse::<usize>() {
             return run_counted(self, Command::MoveBottom, Some(number.max(1)));
         }

@@ -46,6 +46,25 @@ impl Drop for RawInput {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorShape {
+    Default,
+    Block,
+    Bar,
+    Underline,
+}
+
+impl CursorShape {
+    pub fn sequence(self) -> &'static str {
+        match self {
+            Self::Default => "\u{1b}[0 q",
+            Self::Block => "\u{1b}[2 q",
+            Self::Bar => "\u{1b}[6 q",
+            Self::Underline => "\u{1b}[4 q",
+        }
+    }
+}
+
 pub trait Platform: Send + Sync + 'static {
     fn copy(&self, text: &str) -> Result<(), String>;
 
@@ -72,6 +91,10 @@ pub trait Platform: Send + Sync + 'static {
     }
 
     fn set_title(&self, _title: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_cursor_shape(&self, _shape: CursorShape) -> Result<(), String> {
         Ok(())
     }
 
@@ -503,6 +526,10 @@ impl Platform for SystemPlatform {
 
     fn set_title(&self, title: &str) -> Result<(), String> {
         write_stdout(&title_sequence(title))
+    }
+
+    fn set_cursor_shape(&self, shape: CursorShape) -> Result<(), String> {
+        write_stdout(shape.sequence())
     }
 
     fn raw_input(&self) -> Option<RawInput> {

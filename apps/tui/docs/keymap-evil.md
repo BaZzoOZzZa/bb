@@ -654,8 +654,9 @@ use vim's classes on Unicode: letters and digits of any script form words,
 punctuation and emoji form their own runs.
 
 Mention chips are atomic: a motion never lands inside a chip, a chip is one
-WORD for `w`/`W`, and `x` or any delete over part of a chip removes the whole
-chip. A yank over part of a chip yanks the whole chip text. Mention offsets
+WORD for `w`/`W` and a one-character word for `e`/`E`, and `x` or any delete
+over part of a chip removes the whole chip. Case operators (`gu`, `gU`, `g~`)
+change the text around a chip and leave the chip as it is. A yank over part of a chip yanks the whole chip text. Mention offsets
 stay UTF-16 offsets into the draft text, as the server expects.
 
 ### Visual states
@@ -1300,13 +1301,33 @@ Not built yet:
 - Ex ranges (`:1,3`, `{N}:`), `:set {option}&`, the `number`,
   `relativenumber`, `scrolloff` and `mouse` options (they answer `E519`),
   `C-r {reg}` in the ex line.
-- Cursor shape by state (DECSCUSR), relative line numbers (`SPC t l`,
-  `:set rnu`), `scrolloff`, mouse drag selection in the timeline and the
-  panel.
-- Leader entries `SPC f r`, `SPC h x`, `SPC s s/b/i/r/c`, `SPC t h`,
-  `SPC g o P`; `SPC ,` searches all projects instead of the focused one.
+- Relative line numbers (`SPC t l`, `:set rnu`), `scrolloff`, mouse drag
+  selection in the timeline and the panel.
+- Leader entries `SPC f r`, `SPC s i`, `SPC g o P`; `SPC ,`, `SPC b b` and
+  `SPC a r` search all projects instead of the focused one.
+- Yanks of rendered timeline text keep the row glyphs at the line start
+  (`● `, `❯ `); `gy` yanks the row source without them. Puts of yanked text
+  that held a mention chip insert plain text, not a chip.
 - Notification visual delete, request panel `x` toggle, automation form
   `:w`/`C-c C-c` (it keeps `C-s`).
+
+Review step:
+
+- Built: cursor shape by state (DECSCUSR: block in normal, visual and
+  operator-pending, bar in insert and command-line, underline in replace,
+  the terminal default again on exit and while a terminal is attached
+  fullscreen); `SPC s s`, `SPC s b` (search the focused read-only buffer),
+  `SPC s c` (`:noh`), `SPC s r` (`:marks`), `SPC t h` (`:set hlsearch!`),
+  `SPC h x` (opens the ex line with `help :`); `"{reg}` before a yank in
+  read-only buffers (`"ayy`, `"_yy`); palette key labels for the motion
+  commands of read-only buffers.
+- Fixed: in the composer `e`/`E` treat a mention chip as a one-character
+  word (from text before the chip they stop on the chip, from the chip they
+  go to the end of the next word), and `gu`/`gU`/`g~` change the text around
+  a chip without touching the chip, which used to drop the mention.
+- `tests/spec_keymap.rs` reads the tables of sections 4-10 and 14 of this
+  file and checks that every listed key resolves in the matching scope, and
+  drives the main leader and window sequences through the app.
 
 Deviations of the third step, by design:
 

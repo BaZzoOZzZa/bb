@@ -1244,6 +1244,7 @@ pub fn terminal_session(
 pub struct MockPlatform {
     pub alerts: Mutex<Vec<bb_tui::notifications::Alert>>,
     pub titles: Mutex<Vec<String>>,
+    pub cursor_shapes: Mutex<Vec<bb_tui::platform::CursorShape>>,
     pub edited: Mutex<Vec<(String, Option<u32>)>>,
     pub copied: Mutex<Vec<String>>,
     pub opened: Mutex<Vec<String>>,
@@ -1281,6 +1282,11 @@ impl Platform for MockPlatform {
 
     fn set_title(&self, title: &str) -> Result<(), String> {
         self.titles.lock().unwrap().push(title.to_owned());
+        Ok(())
+    }
+
+    fn set_cursor_shape(&self, shape: bb_tui::platform::CursorShape) -> Result<(), String> {
+        self.cursor_shapes.lock().unwrap().push(shape);
         Ok(())
     }
 

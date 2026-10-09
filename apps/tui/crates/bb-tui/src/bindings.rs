@@ -217,6 +217,7 @@ fn read_only(map: &mut Keymap, scope: Scope, columns: bool) {
     map.bind(scope, "g v", view(ViewOp::Reselect));
     map.bind(scope, "C-o", view(ViewOp::JumpOlder));
     map.bind(scope, "C-i", view(ViewOp::JumpNewer));
+    map.bind(scope, "\"", Act::Char(CharAct::Register));
     map.bind(scope, "m", Act::Char(CharAct::SetMark));
     map.bind(scope, "'", Act::Char(CharAct::Mark { line: true }));
     map.bind(scope, "`", Act::Char(CharAct::Mark { line: false }));
@@ -612,6 +613,25 @@ fn leader(map: &mut Keymap) {
     ];
     for (keys, command) in entries {
         map.bind(g, keys, cmd(*command));
+    }
+    let described: &[(&str, Command, &str)] = &[
+        (
+            "SPC s s",
+            View(ViewOp::Search { forward: true }),
+            "Search the focused buffer",
+        ),
+        (
+            "SPC s b",
+            View(ViewOp::Search { forward: true }),
+            "Search the focused buffer",
+        ),
+        ("SPC s c", Ex("nohlsearch"), "Clear the search highlight"),
+        ("SPC s r", Ex("marks"), "List marks"),
+        ("SPC t h", Ex("set hlsearch!"), "Toggle search highlight"),
+        ("SPC h x", ExPrompt("help :"), "Describe an ex command"),
+    ];
+    for (keys, command, desc) in described {
+        map.bind_desc(g, keys, cmd(*command), desc);
     }
     for n in 1..=4u8 {
         map.bind(g, &format!("SPC {n}"), cmd(PaneFocus(n)));

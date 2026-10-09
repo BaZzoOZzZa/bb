@@ -446,7 +446,7 @@ fn mention_chips_are_atomic_for_motions_and_deletes() {
     keys(&mut state, "0 l v l d");
     assert_eq!(text(&state), "😀 now");
     assert!(mentions(&state).is_empty());
-    keys(&mut state, "u 0 2 l y e");
+    keys(&mut state, "u 0 2 l y i w");
     assert_eq!(register(&state, '0').as_deref(), Some("@src/main.rs"));
 }
 
@@ -556,4 +556,31 @@ fn clicking_the_editor_puts_the_cursor_there_and_dragging_selects() {
     ));
     let effects = keys(&mut state, "y");
     assert_eq!(effects, vec![Effect::Copy("world".into())]);
+}
+
+#[test]
+fn chips_survive_case_operators_and_count_as_one_character_for_e() {
+    let text_with_chip = "go @src/a.rs now\nnext line";
+    let mut state = with_text("");
+    set_draft(&mut state, chip_draft(text_with_chip, "@src/a.rs"));
+    keys(&mut state, "ESC g g 0");
+    keys(&mut state, "g U U");
+    assert_eq!(text(&state), "GO @src/a.rs NOW\nnext line");
+    assert_eq!(mentions(&state), vec![(3, 12)]);
+    keys(&mut state, "u 0 e");
+    assert_eq!(cursor(&state), 1);
+    keys(&mut state, "e");
+    assert_eq!(cursor(&state), 3);
+    keys(&mut state, "e");
+    assert_eq!(cursor(&state), 15);
+    keys(&mut state, "0 w v e y");
+    assert_eq!(register(&state, '0').as_deref(), Some("@src/a.rs now"));
+    keys(&mut state, "d e");
+    assert_eq!(text(&state), "go \nnext line");
+    assert!(mentions(&state).is_empty());
+    keys(&mut state, "u");
+    assert_eq!(mentions(&state), vec![(3, 12)]);
+    keys(&mut state, "0 g ~ $");
+    assert_eq!(text(&state), "GO @src/a.rs NOW\nnext line");
+    assert_eq!(mentions(&state), vec![(3, 12)]);
 }

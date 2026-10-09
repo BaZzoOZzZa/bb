@@ -25,7 +25,7 @@ use crate::palette::{
     FILE_SEARCH_LIMIT, PaletteLoaded, PaletteRequest, THREAD_SEARCH_LIMIT_PER_GROUP,
 };
 use crate::panel::{PanelLoaded, PanelRequest};
-use crate::platform::{Platform, RawEvent};
+use crate::platform::{CursorShape, Platform, RawEvent};
 use crate::settings::{SettingsLoaded, SettingsRequest};
 use crate::terminal::{TerminalLoaded, TerminalRequest, TerminalScope};
 use crate::terminal_input::{DetachState, RESET_MODES};
@@ -927,11 +927,17 @@ where
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut events_open = true;
+    let mut shape = None;
 
     while !state.quit {
         terminal
             .draw(|frame| ui::render(state, frame))
             .map_err(|error| anyhow!(error))?;
+        let next = crate::evil::cursor_shape(state);
+        if shape != Some(next) {
+            let _ = runner.platform.set_cursor_shape(next);
+            shape = Some(next);
+        }
         let deadline = state.keys.deadline();
         let which_key = async move {
             match deadline {
@@ -971,6 +977,8 @@ where
             dispatch(state, &mut runner, action);
         }
         if let Some(terminal_id) = runner.take_fullscreen() {
+            let _ = runner.platform.set_cursor_shape(CursorShape::Default);
+            shape = None;
             run_fullscreen(state, &mut runner, &mut rx, &mut snapshots, terminal_id).await;
             terminal.clear().map_err(|error| anyhow!(error))?;
         }
@@ -978,6 +986,7 @@ where
             terminal.clear().map_err(|error| anyhow!(error))?;
         }
     }
+    let _ = runner.platform.set_cursor_shape(CursorShape::Default);
     Ok(())
 }
 

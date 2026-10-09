@@ -438,7 +438,9 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
                 outcome.to_rows = true;
                 return outcome;
             }
-            if let Some(dest) = vi::motion(&scan, pos, motion, count, ctx.last_find) {
+            let from = word_end_origin(ctx.composer, pos, motion);
+            if let Some(dest) = vi::motion(&scan, from, motion, count, ctx.last_find) {
+                let dest = word_end_dest(ctx.composer, dest, motion);
                 if is_jump(motion) && dest != pos {
                     ctx.composer.set_mark('\'', pos);
                 }
@@ -447,7 +449,11 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
         }
         EditOp::Apply(operator, target) => {
             let change = operator == Operator::Change;
-            if let Some(range) = vi::target_range(&scan, pos, target, count, change, ctx.last_find)
+            let from = match target {
+                Target::Motion(motion) => word_end_origin(ctx.composer, pos, motion),
+                _ => pos,
+            };
+            if let Some(range) = vi::target_range(&scan, from, target, count, change, ctx.last_find)
             {
                 let range = if range.linewise {
                     range
@@ -734,16 +740,64 @@ fn apply_operator(
             ctx.composer.move_to(first_non_blank(&chars, start), false);
         }
         Operator::Lower | Operator::Upper | Operator::ToggleCase => {
-            let text: String = chars[range.start..range.end].iter().collect();
-            let next = vi::transform(&text, operator);
-            if next != text {
-                ctx.composer.checkpoint();
-                ctx.composer
-                    .replace_range(range.start, range.end, &next, range.start, now);
+            let mut changed = false;
+            for (start, end) in outside_chips(ctx.composer, range).into_iter().rev() {
+                let text: String = chars[start..end].iter().collect();
+                let next = vi::transform(&text, operator);
+                if next != text {
+                    if !changed {
+                        ctx.composer.checkpoint();
+                        changed = true;
+                    }
+                    ctx.composer
+                        .replace_range(start, end, &next, range.start, now);
+                }
             }
             ctx.composer.move_to(range.start, true);
         }
     }
+}
+
+fn word_end_origin(composer: &Composer, pos: usize, motion: Motion) -> usize {
+    if !matches!(motion, Motion::WordEnd | Motion::BigWordEnd) {
+        return pos;
+    }
+    composer
+        .mention_ranges()
+        .into_iter()
+        .find(|chip| chip.start == pos && chip.end > chip.start + 1)
+        .map_or(pos, |chip| chip.end - 1)
+}
+
+fn word_end_dest(composer: &Composer, dest: usize, motion: Motion) -> usize {
+    if !matches!(motion, Motion::WordEnd | Motion::BigWordEnd) {
+        return dest;
+    }
+    composer
+        .mention_ranges()
+        .into_iter()
+        .find(|chip| chip.contains_strictly(dest))
+        .map_or(dest, |chip| chip.start)
+}
+
+fn outside_chips(composer: &Composer, range: Range) -> Vec<(usize, usize)> {
+    let mut segments = Vec::new();
+    let mut start = range.start;
+    let mut chips = composer.mention_ranges();
+    chips.sort_by_key(|chip| chip.start);
+    for chip in chips {
+        if chip.end <= start || chip.start >= range.end {
+            continue;
+        }
+        if chip.start > start {
+            segments.push((start, chip.start));
+        }
+        start = chip.end;
+    }
+    if start < range.end {
+        segments.push((start, range.end));
+    }
+    segments
 }
 
 fn join(ctx: &mut Ctx, pos: usize, joins: usize, spaces: bool) {

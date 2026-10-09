@@ -3,7 +3,8 @@ use std::fmt;
 use bb_wire::system::{AppKeybindingOverride, AppShortcut, KeyboardPlatform, is_app_command_id};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::vi::{CharAct, EditOp, InsertAt};
+use crate::rbuf::ViewOp;
+use crate::vi::{CharAct, EditOp, InsertAt, Motion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
@@ -138,6 +139,8 @@ pub enum Command {
     Zen,
     ExLine,
     ExRepeat,
+    Ex(&'static str),
+    ExPrompt(&'static str),
     CloseWindowOrQuit,
     SendAndClose,
     QuitHint,
@@ -498,6 +501,8 @@ impl Command {
             Self::QuitHint => "Quit with SPC q q or :q".into(),
             Self::DescribeKey => "Describe key".into(),
             Self::Messages => "Message history".into(),
+            Self::Ex(line) => format!(":{line}"),
+            Self::ExPrompt(text) => format!(":{text}…"),
             Self::Edit(op) => op.description(),
             Self::View(op) => op.description(),
             Self::TimelineJump(JumpKind::Turn, true) => "Next turn".into(),
@@ -1101,6 +1106,24 @@ impl Keymap {
 fn hint_aliases(command: Command) -> &'static [Command] {
     match command {
         Command::PanelFullScreen | Command::PaneMaximize => &[Command::WindowOnly],
+        Command::MoveTop => &[Command::View(ViewOp::Move(Motion::FirstLine))],
+        Command::MoveBottom => &[Command::View(ViewOp::Move(Motion::LastLine))],
+        Command::PageDown => &[Command::View(ViewOp::Page {
+            down: true,
+            half: false,
+        })],
+        Command::PageUp => &[Command::View(ViewOp::Page {
+            down: false,
+            half: false,
+        })],
+        Command::HalfPageDown => &[Command::View(ViewOp::Page {
+            down: true,
+            half: true,
+        })],
+        Command::HalfPageUp => &[Command::View(ViewOp::Page {
+            down: false,
+            half: true,
+        })],
         _ => &[],
     }
 }

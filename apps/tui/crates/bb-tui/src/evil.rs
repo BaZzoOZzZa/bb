@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{AppState, Effect, Focus, Mode};
 use crate::keymap::{Act, Command, KeyChord, Resolved, Scope, format_seq, translate_russian};
+use crate::platform::CursorShape;
 use crate::vi::{CharAct, LastFind};
 
 pub const WHICH_KEY_DELAY: Duration = Duration::from_millis(300);
@@ -368,6 +369,14 @@ pub fn tag(state: &AppState) -> Tag {
         return Tag::Operator;
     }
     Tag::Normal
+}
+
+pub fn cursor_shape(state: &AppState) -> CursorShape {
+    match tag(state) {
+        Tag::Insert | Tag::Command => CursorShape::Bar,
+        Tag::Replace => CursorShape::Underline,
+        Tag::Normal | Tag::Visual | Tag::VisualLine | Tag::Operator => CursorShape::Block,
+    }
 }
 
 pub fn operator_pending(pending: &[KeyChord]) -> bool {

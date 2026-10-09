@@ -371,3 +371,20 @@ fn output_pane_is_a_searchable_line_buffer() {
     keys(&mut state, "q");
     assert!(state.result_pane.is_none());
 }
+
+#[test]
+fn register_prefix_names_the_yank_target_in_read_only_buffers() {
+    let mut state = conversation();
+    keys(&mut state, "/ a l p h a RET");
+    keys(&mut state, "\" a y y");
+    assert_eq!(state.focus, Focus::Main);
+    let named = state
+        .registers
+        .get(Some('a'))
+        .expect("register a")
+        .text
+        .clone();
+    assert!(named.contains("alpha one"), "{named}");
+    keys(&mut state, "\" _ y y");
+    assert_eq!(state.registers.get(Some('a')).unwrap().text, named);
+}

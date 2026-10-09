@@ -292,8 +292,10 @@ keys. In short:
   minibuffers (palette, pickers, filter, rename, attach prompt) and the ex
   line are always typing. The state tag sits at the right end of the status
   bar (`<N>` normal, `<I>` insert, `<V>`/`<L>` visual, `<O>` operator
-  pending, `<E>` ex line), left of it the pending keys (`2d`, `SPC b`), the
-  buffer name and the position.
+  pending, `<R>` replace, `<E>` ex line), left of it the pending keys (`2d`,
+  `SPC b`), the buffer name and the position. The terminal cursor follows
+  the state: a block in normal and visual state, a bar in insert state and
+  the ex line, an underline in replace state.
 - **Read-only buffers.** The sidebar, the timeline, the Diff and File tabs,
   the terminal scrollback (normal state) and output panes (help, registers,
   plugin output) are evil buffers over their rendered text with a line and
@@ -302,8 +304,8 @@ keys. In short:
   zz zt zb`), incremental search (`/ ? n N * # g* g#`, smart-case regular
   expressions, matches highlighted until `:noh` or `ESC`), visual and
   visual-line selection (`v V gv o`), yanking (`yy`, `Y`, `y{motion}`,
-  `y{text object}`, visual `y`) into the registers and the clipboard (OSC
-  52), marks (`m{a-z}`, `'{a-z}`, `` `{a-z} ``, `''`, timeline-only global
+  `y{text object}`, visual `y`, `"{reg}` first to name a register) into
+  the registers and the clipboard (OSC 52), marks (`m{a-z}`, `'{a-z}`, `` `{a-z} ``, `''`, timeline-only global
   marks `m{A-Z}`), the jump list (`C-o`, `C-i` where the terminal reports it)
   and folds (`TAB za zo zc zR zM`) work as in vim.
 - **Leader.** `SPC` starts a key sequence (`M-SPC` from any state, including
@@ -432,7 +434,8 @@ tool and diff content are fetched when expanded.
 | `zz`, `zt`, `zb`, `H`/`M`/`L` | Cursor line to the middle / top / bottom, cursor to the top / middle / bottom line |
 | `RET`, `TAB`, `za`, `zo`, `zc`, `zR`, `zM` | Toggle, expand, collapse (or go to the parent), expand / collapse all |
 | `]m`/`[m`, `]]`/`[[`, `]e`/`[e` | Next / previous user message, turn, error or failed row |
-| `/`, `?`, `n`/`N`, `*`/`#` | Search the rendered text of the loaded rows (collapsed rows by their title) |
+| `/`, `?`, `n`/`N`, `*`/`#`, `SPC s s` | Search the rendered text of the loaded rows (collapsed rows by their title) |
+| `:noh`, `SPC s c`, `SPC t h` | Clear the search highlight / toggle `hlsearch` |
 | `v`, `V`, `y`, `yy`, `Y`, `y{motion}`, ``yi` ``, ``ya` ``, `yim`, `yam` | Select and yank rendered text; `` i` `` is the code block under the cursor (`` a` `` adds the fences), `im`/`am` the row body / the row with its header |
 | `m{a-z}`, `m{A-Z}`, `'{a-z}`, `'{A-Z}`, `''`, `C-o`/`C-i` | Marks (anchored to the row, so they survive reloads; uppercase marks open their thread), jump back, jump list |
 | `gy` | Yank the row's source (message Markdown, command, tool input, patch) to the registers and the clipboard (OSC 52) |
