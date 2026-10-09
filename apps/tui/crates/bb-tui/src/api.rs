@@ -2,6 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use bb_client::BbClient;
+use bb_wire::common::JsonValue;
+use bb_wire::interaction::{InteractionResolution, RespondPluginInteractionRequest};
 use bb_wire::project::PromptHistoryQuery;
 use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
 use bb_wire::queue::{
@@ -14,6 +16,22 @@ use bb_wire::system::{
 use bb_wire::thread::UpdateThreadRequest;
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
+
+#[derive(Clone, PartialEq)]
+pub struct InteractionValue {
+    pub value: JsonValue,
+    pub sensitive: bool,
+}
+
+impl std::fmt::Debug for InteractionValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.sensitive {
+            f.write_str("InteractionValue(<redacted>)")
+        } else {
+            write!(f, "InteractionValue({})", self.value)
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mutation {
@@ -72,6 +90,20 @@ pub enum Mutation {
     Stop {
         thread_id: String,
     },
+    ResolveInteraction {
+        thread_id: String,
+        interaction_id: String,
+        resolution: Box<InteractionResolution>,
+    },
+    RespondInteraction {
+        thread_id: String,
+        interaction_id: String,
+        value: InteractionValue,
+    },
+    CancelInteraction {
+        thread_id: String,
+        interaction_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,8 +130,24 @@ impl Mutation {
             | Self::DeleteQueued { thread_id, .. }
             | Self::HoldQueued { thread_id, .. }
             | Self::ReleaseQueued { thread_id, .. }
-            | Self::Stop { thread_id } => thread_id,
+            | Self::Stop { thread_id }
+            | Self::ResolveInteraction { thread_id, .. }
+            | Self::RespondInteraction { thread_id, .. }
+            | Self::CancelInteraction { thread_id, .. } => thread_id,
         }
+    }
+
+    pub fn interaction_id(&self) -> Option<&str> {
+        match self {
+            Self::ResolveInteraction { interaction_id, .. }
+            | Self::RespondInteraction { interaction_id, .. }
+            | Self::CancelInteraction { interaction_id, .. } => Some(interaction_id),
+            _ => None,
+        }
+    }
+
+    pub fn is_interaction(&self) -> bool {
+        self.interaction_id().is_some()
     }
 
     pub fn queued_message_id(&self) -> Option<&str> {
@@ -153,6 +201,8 @@ impl Mutation {
             Self::DeleteQueued { .. } => "Queued message deleted",
             Self::HoldQueued { .. } | Self::ReleaseQueued { .. } => "",
             Self::Stop { .. } => "Stopping",
+            Self::ResolveInteraction { .. } | Self::RespondInteraction { .. } => "Answered",
+            Self::CancelInteraction { .. } => "Request cancelled",
         }
     }
 
@@ -173,6 +223,8 @@ impl Mutation {
             Self::HoldQueued { .. } => "edit queued message",
             Self::ReleaseQueued { .. } => "release queued message",
             Self::Stop { .. } => "stop",
+            Self::ResolveInteraction { .. } | Self::RespondInteraction { .. } => "answer request",
+            Self::CancelInteraction { .. } => "cancel request",
         }
     }
 
@@ -275,6 +327,35 @@ async fn run_mutation(
             .await
             .map(done)?,
         Mutation::Stop { thread_id } => client.stop_thread(thread_id).await.map(done)?,
+        Mutation::ResolveInteraction {
+            thread_id,
+            interaction_id,
+            resolution,
+        } => client
+            .resolve_interaction(thread_id, interaction_id, resolution)
+            .await
+            .map(done)?,
+        Mutation::RespondInteraction {
+            thread_id,
+            interaction_id,
+            value,
+        } => client
+            .respond_to_interaction(
+                thread_id,
+                interaction_id,
+                &RespondPluginInteractionRequest {
+                    value: value.value.clone(),
+                },
+            )
+            .await
+            .map(done)?,
+        Mutation::CancelInteraction {
+            thread_id,
+            interaction_id,
+        } => client
+            .cancel_interaction(thread_id, interaction_id)
+            .await
+            .map(done)?,
     })
 }
 

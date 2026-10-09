@@ -392,6 +392,15 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     let meta = meta_line(state, thread_id, usize::from(meta_area.width));
     frame.render_widget(Paragraph::new(meta), meta_area);
+    if state.interaction_panel_visible(thread_id) && body.height >= 6 {
+        let wanted = crate::interaction_ui::panel_height(state, thread_id, usize::from(body.width));
+        let height = wanted.max(3).min((body.height * 2 / 3).max(5));
+        let [timeline_area, panel_area] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
+        render_timeline(state, frame, timeline_area, focused);
+        crate::interaction_ui::render_panel(state, frame, panel_area, thread_id);
+        return;
+    }
     if !state.composer_available() || body.height < 6 {
         render_timeline(state, frame, body, focused);
         return;
@@ -637,6 +646,11 @@ fn hints(state: &AppState) -> String {
         Mode::Queue { .. } => {
             "j/k select · Enter/e edit · s send now · r retry · d delete · Esc close".into()
         }
+        Mode::Normal if state.focus == Focus::Interaction => format!(
+            "Esc leave · {} next waiting request · {} focus",
+            key(Command::NextPending),
+            key(Command::FocusNext),
+        ),
         Mode::Normal if state.focus == Focus::Composer => format!(
             "{} send · {} newline · ↑/↓ history · C-s steer · Esc Esc stop · {} model · {} queue",
             state.submit_key.submit_label(),
@@ -683,6 +697,13 @@ fn render_status(state: &AppState, frame: &mut Frame, area: Rect) {
     ];
     if state.read_only {
         spans.push(Span::styled("  read-only", Style::new().fg(Color::Magenta)));
+    }
+    if state.waiting > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!("? {} waiting", state.waiting),
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
     }
     if state.attention > 0 {
         spans.push(Span::raw("  "));
@@ -750,6 +771,19 @@ fn help_entries(state: &AppState) -> Vec<(String, String)> {
             "Composer: stop the running turn".to_owned(),
         ),
         ("C-c".to_owned(), "Composer: clear, then stop".to_owned()),
+        (
+            "y/s/d".to_owned(),
+            "Request: allow once / for session / deny".to_owned(),
+        ),
+        (
+            "r / f".to_owned(),
+            "Request: deny or keep planning with a reason".to_owned(),
+        ),
+        (
+            "1-9 Space".to_owned(),
+            "Question: choose / toggle option".to_owned(),
+        ),
+        ("C-x".to_owned(), "Request: cancel / stop turn".to_owned()),
     ];
     Command::ALL
         .iter()

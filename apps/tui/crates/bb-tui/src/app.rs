@@ -21,6 +21,7 @@ use crate::composer::{Composer, SubmitKey};
 use crate::execution::{ExecutionState, Load};
 use crate::indicator::is_thread_read;
 use crate::input::{InputOutcome, LineInput};
+use crate::interact::{InteractionForm, handle_interaction_key, interaction_mutation_finished};
 use crate::keymap::{Command, Keymap};
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
 use crate::timeline::{LoadRequest, TimelineView};
@@ -35,6 +36,7 @@ pub enum Focus {
     Sidebar,
     Main,
     Composer,
+    Interaction,
     Panel,
 }
 
@@ -161,6 +163,8 @@ pub struct AppState {
     pub composers: HashMap<String, Composer>,
     pub executions: HashMap<String, ExecutionState>,
     pub inflight: HashMap<String, Inflight>,
+    pub interaction_forms: HashMap<String, InteractionForm>,
+    pub interaction_follow_ups: HashMap<String, String>,
     pub stop_requested: HashSet<String>,
     pub history_requested: HashSet<String>,
     pub submit_key: SubmitKey,
@@ -172,6 +176,7 @@ pub struct AppState {
     pub toasts: Vec<Toast>,
     pub last_archived: Option<String>,
     pub attention: usize,
+    pub waiting: usize,
     pub clock: Instant,
     pub now_ms: i64,
     pub frame: u64,
@@ -196,6 +201,8 @@ impl AppState {
             composers: HashMap::new(),
             executions: HashMap::new(),
             inflight: HashMap::new(),
+            interaction_forms: HashMap::new(),
+            interaction_follow_ups: HashMap::new(),
             stop_requested: HashSet::new(),
             history_requested: HashSet::new(),
             submit_key: SubmitKey::default(),
@@ -207,6 +214,7 @@ impl AppState {
             toasts: Vec::new(),
             last_archived: None,
             attention: 0,
+            waiting: 0,
             clock: now,
             now_ms,
             frame: 0,
@@ -360,7 +368,9 @@ impl AppState {
             panes.push(Focus::Sidebar);
         }
         panes.push(Focus::Main);
-        if self.composer_available() {
+        if self.open_interaction_panel() {
+            panes.push(Focus::Interaction);
+        } else if self.composer_available() {
             panes.push(Focus::Composer);
         }
         if self.panel_visible {
@@ -383,14 +393,14 @@ impl AppState {
         self.focus = panes[next];
     }
 
-    fn open(&mut self, thread_id: String) -> Vec<Effect> {
+    pub(crate) fn open(&mut self, thread_id: String) -> Vec<Effect> {
         let mut effects = Vec::new();
         if self.open_thread.as_deref() != Some(thread_id.as_str()) {
             effects.push(Effect::WatchThread(Some(thread_id.clone())));
             if let Some(previous) = self.open_thread.clone() {
                 effects.extend(self.flush_draft(&previous, true));
             }
-            if self.focus == Focus::Composer {
+            if matches!(self.focus, Focus::Composer | Focus::Interaction) {
                 self.focus = Focus::Main;
             }
         }
@@ -408,6 +418,7 @@ impl AppState {
         self.open_thread = Some(thread_id.clone());
         effects.extend(self.ensure_thread_data(&thread_id));
         effects.extend(self.sync_timeline());
+        self.sync_interactions();
         effects
     }
 
@@ -558,6 +569,10 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
         }
         Action::Snapshot(snapshot) => {
             state.attention = snapshot.sidebar.data.as_deref().map_or(0, attention_count);
+            state.waiting = snapshot
+                .sidebar_threads()
+                .filter(|entry| entry.has_pending_interaction && !entry.thread.is_archived())
+                .count();
             let first_load = state.snapshot.sidebar.data.is_none();
             state.snapshot = snapshot;
             state.rebuild_rows();
@@ -566,7 +581,11 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             }
             let mut effects = composer_snapshot(state);
             effects.extend(state.sync_timeline());
+            state.sync_interactions();
             effects
+        }
+        Action::MutationFinished { mutation, result } if mutation.is_interaction() => {
+            interaction_mutation_finished(state, mutation, result)
         }
         Action::MutationFinished { mutation, result } if mutation.is_composer() => {
             composer_mutation_finished(state, mutation, result)
@@ -662,6 +681,11 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 return Vec::new();
             }
             handle_queue_key(state, thread_id, selected, key)
+        }
+        Mode::Normal if state.focus == Focus::Interaction => handle_interaction_key(state, key),
+        Mode::Normal if state.focus == Focus::Composer && state.open_interaction_panel() => {
+            state.focus = Focus::Interaction;
+            handle_interaction_key(state, key)
         }
         Mode::Normal if state.focus == Focus::Composer => handle_composer_key(state, key),
         Mode::Help => {
@@ -901,6 +925,7 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
                 return vec![Effect::Mutate(mutation)];
             }
         }
+        Command::NextPending => return state.jump_to_pending(),
         Command::ThreadNext => return state.step_thread(true),
         Command::ThreadPrevious => return state.step_thread(false),
         Command::Jump(n) => {

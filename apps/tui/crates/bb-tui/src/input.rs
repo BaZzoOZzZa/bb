@@ -28,6 +28,10 @@ impl LineInput {
         &self.text
     }
 
+    pub fn split_at_cursor(&self) -> (&str, &str) {
+        self.text.split_at(self.cursor)
+    }
+
     pub fn cursor_width(&self) -> usize {
         self.text[..self.cursor].width()
     }

@@ -90,6 +90,7 @@ pub struct FakeBackend {
     pub timeline_queries: Mutex<Vec<ThreadTimelineQuery>>,
     pub details_queries: Mutex<Vec<TurnSummaryDetailsQuery>>,
     pub queued: Mutex<HashMap<String, Vec<ThreadQueuedMessage>>>,
+    pub interactions: Mutex<HashMap<String, Vec<PendingInteraction>>>,
 }
 
 impl FakeBackend {
@@ -190,8 +191,14 @@ impl Backend for FakeBackend {
             .ok_or_else(|| FetchError::http(404, Some("not_found"), "no details"))
     }
 
-    async fn interactions(&self, _thread_id: String) -> FetchResult<Vec<PendingInteraction>> {
-        Ok(Vec::new())
+    async fn interactions(&self, thread_id: String) -> FetchResult<Vec<PendingInteraction>> {
+        Ok(self
+            .interactions
+            .lock()
+            .unwrap()
+            .get(&thread_id)
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn queued_messages(&self, thread_id: String) -> FetchResult<Vec<ThreadQueuedMessage>> {
@@ -242,6 +249,18 @@ impl Api for MockApi {
             return Box::pin(async { Err("server said no".to_string()) });
         }
         let id = mutation.thread_id().to_owned();
+        if let Some(interaction_id) = mutation.interaction_id() {
+            let mut interactions = self.backend.interactions.lock().unwrap();
+            let list = interactions.entry(id.clone()).or_default();
+            list.retain(|interaction| interaction.id != interaction_id);
+            let empty = list.is_empty();
+            drop(interactions);
+            if empty {
+                self.backend
+                    .patch_thread(&id, |entry| entry.has_pending_interaction = false);
+            }
+            return Box::pin(async { Ok(MutationReply::Done) });
+        }
         if mutation.is_composer() {
             let reply = self.composer_reply(&mutation);
             return Box::pin(async move { Ok(reply) });

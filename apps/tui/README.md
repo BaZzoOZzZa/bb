@@ -91,6 +91,29 @@ Unsent drafts are saved per thread under `$XDG_STATE_HOME/bb-tui/drafts`
 insert a new line and `Alt-Enter`/`C-Enter` send. Bracketed paste and the kitty
 keyboard protocol are enabled when the terminal supports them.
 
+## Pending requests
+
+When the agent waits for you, the open thread replaces the composer with a
+request panel (`c` or `Tab` focuses it; it takes focus by itself if you were in
+the composer). The sidebar marks waiting threads with `?`, the status bar shows
+`? N waiting`, and `w` (`M-w` from the composer) opens the next waiting thread
+with its panel focused. With several requests on one thread they are answered
+oldest first (`1 of N`).
+
+| Request | Keys |
+|---|---|
+| Command, file change, permission, tool approval | `y` allow once · `s` allow for session · `d` deny · `1-3` by position · `r` deny and steer a reason to the agent · `e` show the whole command |
+| Plan review | `y` approve plan · `d` keep planning · `f` keep planning and steer feedback |
+| Questions (provider or the ask-user-question plugin) | `1-9` choose (the last number is `Other…`) · `j/k` + `Space` · `Tab`/`←→` switch question · `Enter` next / submit · typing goes to the `Other…` answer |
+| Secret request (secrets plugin) | type into the masked field · `Tab`/`↑↓` field · `C-t` show/hide · `Enter` next empty field, then submit |
+| Any other plugin request | shown as pretty JSON · `o` open the thread in the web app · `y` copy the link · `x` cancel |
+
+`C-x` cancels question, secret and plugin requests (a provider request stops
+the turn instead, like the web app) and `Esc` leaves the panel. Denial reasons
+and plan feedback are not part of the resolve request, so they are sent as a
+steer message after the denial succeeds. Secret values are never shown unless
+revealed, are redacted from debug output and cleared after submission.
+
 Through Turbo from the repository root:
 
 ```sh
@@ -120,6 +143,8 @@ cargo test -p bb-client --test live -- --ignored --nocapture
 cargo test -p bb-tui --test live -- --ignored --nocapture
 ```
 
+`renders_live_pending_interactions_read_only` parses every listed thread's
+pending interactions and renders the request panel of each waiting thread.
 `renders_live_composer_read_only` parses the execution options, default
 execution options, prompt history and queue of the same threads and renders
 the composer for each. `renders_live_timelines_read_only` parses the latest timeline and every

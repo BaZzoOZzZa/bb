@@ -425,21 +425,29 @@ fn double_escape_and_ctrl_c_stop_the_turn() {
 #[test]
 fn blocked_modes_keep_the_draft() {
     let mut state = idle();
-    let mut snapshot: StoreSnapshot = (*state.snapshot).clone();
-    let sidebar = Arc::make_mut(snapshot.sidebar.data.as_mut().unwrap());
-    for project in &mut sidebar.projects {
-        for entry in &mut project.threads {
-            if entry.thread.id == IDLE {
-                entry.has_pending_interaction = true;
-            }
-        }
-    }
-    update(&mut state, Action::Snapshot(Arc::new(snapshot)));
     focus_composer(&mut state);
     type_text(&mut state, "hello");
+    let set_pending = |state: &mut AppState, pending: bool| {
+        let mut snapshot: StoreSnapshot = (*state.snapshot).clone();
+        let sidebar = Arc::make_mut(snapshot.sidebar.data.as_mut().unwrap());
+        for project in &mut sidebar.projects {
+            for entry in &mut project.threads {
+                if entry.thread.id == IDLE {
+                    entry.has_pending_interaction = pending;
+                }
+            }
+        }
+        update(state, Action::Snapshot(Arc::new(snapshot)));
+    };
+    set_pending(&mut state, true);
+    assert_eq!(state.focus, Focus::Interaction);
     assert!(mutations(&key(&mut state, KeyCode::Enter)).is_empty());
     assert_eq!(composer_text(&state), "hello");
-    assert!(screen(&state).contains("Waiting for you"));
+    let text = screen(&state);
+    assert!(text.contains("Waiting for you"), "{text}");
+    set_pending(&mut state, false);
+    assert_eq!(state.focus, Focus::Composer);
+    assert_eq!(composer_text(&state), "hello");
 
     let mut loading = loaded_state(sample_sidebar());
     open(&mut loading);

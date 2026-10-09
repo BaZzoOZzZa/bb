@@ -50,6 +50,48 @@ pub struct PermissionProfile {
     pub file_system: Option<FileSystemPermissions>,
 }
 
+wire_enum! {
+    pub enum MacOsAccessLevel {
+        None => "none",
+        ReadOnly => "read_only",
+        ReadWrite => "read_write",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MacOsPermissions {
+    pub preferences: MacOsAccessLevel,
+    pub automations: JsonValue,
+    pub launch_services: bool,
+    pub accessibility: bool,
+    pub calendar: bool,
+    pub reminders: bool,
+    pub contacts: MacOsAccessLevel,
+}
+
+impl MacOsPermissions {
+    pub fn automation_bundle_count(&self) -> Option<usize> {
+        match &self.automations {
+            JsonValue::String(value) if value == "all" => None,
+            JsonValue::Object(map) => Some(
+                map.get("bundleIds")
+                    .and_then(JsonValue::as_array)
+                    .map_or(0, Vec::len),
+            ),
+            _ => Some(0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RequestedPermissionProfile {
+    pub network: Option<NetworkPermissions>,
+    pub file_system: Option<FileSystemPermissions>,
+    pub macos: Option<MacOsPermissions>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -119,7 +161,7 @@ pub enum ApprovalSubject {
         #[serde(default)]
         tool_name: Option<String>,
         #[serde(default)]
-        permissions: PermissionProfile,
+        permissions: RequestedPermissionProfile,
     },
     Plan {
         item_id: String,

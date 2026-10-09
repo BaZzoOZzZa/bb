@@ -49,6 +49,7 @@ pub enum Command {
     CycleReasoningBackward,
     QueueList,
     ToggleSubmitMode,
+    NextPending,
 }
 
 impl Command {
@@ -70,6 +71,7 @@ impl Command {
         Command::StopTurn,
         Command::QueueList,
         Command::ToggleSubmitMode,
+        Command::NextPending,
         Command::ModelPicker,
         Command::ReasoningPicker,
         Command::PermissionPicker,
@@ -192,6 +194,7 @@ impl Command {
             Self::CycleReasoningBackward => "Previous reasoning level".into(),
             Self::QueueList => "Queued messages (edit, delete, send now)".into(),
             Self::ToggleSubmitMode => "Toggle Enter: queue / steer while running".into(),
+            Self::NextPending => "Answer the next waiting request".into(),
         }
     }
 }
@@ -375,6 +378,8 @@ impl Default for Keymap {
             (KeyChord::ch('S'), Command::StopTurn),
             (KeyChord::alt('q'), Command::QueueList),
             (KeyChord::alt('t'), Command::ToggleSubmitMode),
+            (KeyChord::ch('w'), Command::NextPending),
+            (KeyChord::alt('w'), Command::NextPending),
             (KeyChord::alt('m'), Command::ModelPicker),
             (KeyChord::alt('e'), Command::ReasoningPicker),
             (KeyChord::alt('p'), Command::PermissionPicker),
@@ -403,6 +408,7 @@ impl Keymap {
                 | Command::Jump(_)
                 | Command::QueueList
                 | Command::ToggleSubmitMode
+                | Command::NextPending
                 | Command::ModelPicker
                 | Command::ReasoningPicker
                 | Command::PermissionPicker

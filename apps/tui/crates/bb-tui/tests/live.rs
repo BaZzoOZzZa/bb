@@ -465,3 +465,59 @@ async fn renders_live_composer_read_only() {
         println!("drift {key}: {count}");
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only GET requests only"]
+async fn renders_live_pending_interactions_read_only() {
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let sidebar = client.sidebar_bootstrap().await.expect("sidebar");
+    let mut snapshot = StoreSnapshot::default();
+    snapshot.sidebar.data = Some(Arc::new(sidebar.clone()));
+    let ids: Vec<String> = snapshot
+        .sidebar_threads()
+        .map(|entry| entry.thread.id.clone())
+        .collect();
+    let mut total = 0;
+    for id in &ids {
+        let interactions = client.thread_interactions(id).await.expect("interactions");
+        total += interactions.len();
+        snapshot.interactions.insert(
+            id.clone(),
+            bb_store::Resource {
+                data: Some(Arc::new(interactions)),
+                ..bb_store::Resource::default()
+            },
+        );
+    }
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    state.read_only = true;
+    update(&mut state, Action::Snapshot(Arc::new(snapshot)));
+    println!(
+        "{} threads, {total} interactions, {} waiting",
+        ids.len(),
+        state.waiting
+    );
+    for _ in 0..state.waiting {
+        update(
+            &mut state,
+            Action::Key(crossterm::event::KeyEvent::from(
+                crossterm::event::KeyCode::Char('w'),
+            )),
+        );
+        for line in render_lines(&state, 120, 30) {
+            println!("{line}");
+        }
+    }
+}
