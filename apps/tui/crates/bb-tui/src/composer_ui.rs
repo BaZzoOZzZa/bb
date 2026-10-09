@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, Focus, Mode};
-use crate::compose::Picker;
+use crate::compose::{Picker, PickerItem};
 use crate::execution::Load;
 use crate::keymap::Command;
 use crate::prompt::{
@@ -506,30 +506,42 @@ pub fn render_composer(state: &AppState, frame: &mut Frame, area: Rect, thread_i
 }
 
 pub fn render_picker(picker: &Picker, frame: &mut Frame, area: Rect) {
-    let rows: Vec<(String, Option<String>)> = picker
-        .items
+    let items: Vec<&PickerItem> = picker.items.iter().collect();
+    render_item_list(
+        picker.kind.title(),
+        &items,
+        picker.selected,
+        None,
+        frame,
+        area,
+    );
+}
+
+pub fn render_item_list(
+    title: &str,
+    items: &[&PickerItem],
+    selected: usize,
+    filter: Option<&str>,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let label_width = items
         .iter()
-        .map(|item| (item.label.clone(), item.detail.clone()))
-        .collect();
-    let label_width = rows
-        .iter()
-        .map(|(label, _)| label.width())
+        .map(|item| item.label.width())
         .max()
         .unwrap_or(8);
-    let wanted = rows
+    let wanted = items
         .iter()
-        .map(|(label, detail)| {
-            label_width.max(label.width())
-                + detail.as_ref().map_or(0, |detail| detail.width() + 3)
-                + 6
-        })
+        .map(|item| label_width + item.detail.as_ref().map_or(0, |detail| detail.width() + 3) + 6)
         .max()
-        .unwrap_or(20);
+        .unwrap_or(20)
+        .max(filter.map_or(0, |text| text.width() + 12));
     let width = (wanted as u16 + 2)
         .clamp(24, area.width.saturating_sub(4).max(24))
         .min(area.width);
-    let visible = usize::from(area.height.saturating_sub(4)).max(1);
-    let height = (rows.len().min(visible) as u16 + 2).min(area.height);
+    let filter_rows = u16::from(filter.is_some());
+    let visible = usize::from(area.height.saturating_sub(4 + filter_rows)).max(1);
+    let height = (items.len().max(1).min(visible) as u16 + 2 + filter_rows).min(area.height);
     let rect = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height - height) / 2,
@@ -537,44 +549,66 @@ pub fn render_picker(picker: &Picker, frame: &mut Frame, area: Rect) {
         height,
     };
     let inner_width = usize::from(width.saturating_sub(2));
-    let start = (picker.selected + 1).saturating_sub(visible);
-    let lines: Vec<Line> = picker
-        .items
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(visible)
-        .map(|(index, item)| {
-            let mut style = Style::new();
-            if item.disabled {
-                style = style.fg(Color::DarkGray);
-            }
-            if index == picker.selected {
-                style = style.bg(Color::Blue).fg(Color::White);
-            }
-            let mark = if item.current { "● " } else { "  " };
-            let number = if index < 9 {
-                format!("{} ", index + 1)
-            } else {
-                "  ".into()
-            };
-            let mut spans = vec![
-                Span::styled(number, Style::new().fg(Color::Cyan)),
-                Span::styled(mark.to_owned(), Style::new().fg(Color::Green)),
-                Span::styled(format!("{:<label_width$}", item.label), style),
-            ];
-            if let Some(detail) = &item.detail {
-                spans.push(Span::styled(format!("  {detail}"), muted()));
-            }
-            Line::from(truncate_spans(spans, inner_width))
-        })
-        .collect();
+    let start = (selected + 1).saturating_sub(visible);
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(text) = filter {
+        let shown = if text.is_empty() {
+            "type to filter"
+        } else {
+            text
+        };
+        lines.push(Line::from(vec![
+            Span::styled("/ ", Style::new().fg(Color::Cyan)),
+            Span::styled(
+                truncate(shown, inner_width.saturating_sub(2)),
+                if text.is_empty() {
+                    muted()
+                } else {
+                    Style::new()
+                },
+            ),
+        ]));
+    }
+    if items.is_empty() {
+        lines.push(Line::styled("  no matches", muted()));
+    }
+    lines.extend(
+        items
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+            .map(|(index, item)| {
+                let mut style = Style::new();
+                if item.disabled {
+                    style = style.fg(Color::DarkGray);
+                }
+                if index == selected {
+                    style = style.bg(Color::Blue).fg(Color::White);
+                }
+                let mark = if item.current { "● " } else { "  " };
+                let number = if index < 9 && filter.is_none() {
+                    format!("{} ", index + 1)
+                } else {
+                    "  ".into()
+                };
+                let mut spans = vec![
+                    Span::styled(number, Style::new().fg(Color::Cyan)),
+                    Span::styled(mark.to_owned(), Style::new().fg(Color::Green)),
+                    Span::styled(format!("{:<label_width$}", item.label), style),
+                ];
+                if let Some(detail) = &item.detail {
+                    spans.push(Span::styled(format!("  {detail}"), muted()));
+                }
+                Line::from(truncate_spans(spans, inner_width))
+            }),
+    );
     frame.render_widget(Clear, rect);
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
-                .title(format!(" {} ", picker.kind.title())),
+                .title(format!(" {title} ")),
         ),
         rect,
     );

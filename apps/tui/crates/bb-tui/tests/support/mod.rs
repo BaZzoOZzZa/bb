@@ -10,20 +10,24 @@ use bb_store::{
 };
 use bb_tui::api::{Api, ApiFuture, Mutation, MutationReply};
 use bb_tui::app::{Action, AppState, Effect, ServerInfo, update};
+use bb_tui::new_thread::CreationConfig;
 use bb_tui::platform::Platform;
 use bb_tui::ui;
-use bb_wire::environment::Host;
+use bb_wire::environment::{CreateThreadEnvironmentArgs, Host};
 use bb_wire::interaction::PendingInteraction;
 use bb_wire::project::{
-    Project, ProjectKind, ProjectWithThreadsResponse, SidebarBootstrapResponse,
+    Project, ProjectBranchesQuery, ProjectBranchesResponse, ProjectKind,
+    ProjectWithThreadsResponse, SidebarBootstrapResponse,
 };
-use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
+use bb_wire::prompt::{
+    ProjectExecutionDefaults, PromptHistoryEntry, ResolvedThreadExecutionOptions,
+};
 use bb_wire::queue::{SendMessageResponse, ThreadQueuedMessage};
 use bb_wire::system::{
-    AppKeybindingOverride, SystemAttentionResponse, SystemExecutionOptionsQuery,
-    SystemExecutionOptionsResponse,
+    AppKeybindingOverride, SystemAttentionResponse, SystemEnvironmentProvider,
+    SystemEnvironmentProvidersQuery, SystemExecutionOptionsQuery, SystemExecutionOptionsResponse,
 };
-use bb_wire::thread::{ThreadListEntry, ThreadResponse, ThreadStatus};
+use bb_wire::thread::{CreateThreadRequest, ThreadListEntry, ThreadResponse, ThreadStatus};
 use bb_wire::timeline::{
     ConversationRole, ConversationRow, ThreadTimelineQuery, ThreadTimelineResponse, TimelineRow,
     TimelineRowBase, TimelineRowStatus, TimelineWorkRow, TurnRow, TurnSummaryDetailsQuery,
@@ -91,6 +95,7 @@ pub struct FakeBackend {
     pub details_queries: Mutex<Vec<TurnSummaryDetailsQuery>>,
     pub queued: Mutex<HashMap<String, Vec<ThreadQueuedMessage>>>,
     pub interactions: Mutex<HashMap<String, Vec<PendingInteraction>>>,
+    pub hosts: Mutex<Vec<Host>>,
 }
 
 impl FakeBackend {
@@ -136,7 +141,7 @@ impl Backend for FakeBackend {
     }
 
     async fn hosts(&self) -> FetchResult<Vec<Host>> {
-        Ok(Vec::new())
+        Ok(self.hosts.lock().unwrap().clone())
     }
 
     async fn attention(&self) -> FetchResult<SystemAttentionResponse> {
@@ -221,6 +226,14 @@ pub struct MockApi {
     pub defaults: Option<ResolvedThreadExecutionOptions>,
     pub history: Vec<PromptHistoryEntry>,
     pub execution_queries: Mutex<Vec<SystemExecutionOptionsQuery>>,
+    pub environment_providers: Vec<SystemEnvironmentProvider>,
+    pub project_environment_providers: HashMap<String, Vec<SystemEnvironmentProvider>>,
+    pub creation_config: CreationConfig,
+    pub project_defaults: HashMap<String, ProjectExecutionDefaults>,
+    pub branches: ProjectBranchesResponse,
+    pub branch_queries: Mutex<Vec<(String, ProjectBranchesQuery)>>,
+    pub provider_queries: Mutex<Vec<SystemEnvironmentProvidersQuery>>,
+    pub created: Mutex<Vec<CreateThreadRequest>>,
 }
 
 impl MockApi {
@@ -234,6 +247,17 @@ impl MockApi {
             defaults: None,
             history: Vec::new(),
             execution_queries: Mutex::new(Vec::new()),
+            environment_providers: Vec::new(),
+            project_environment_providers: HashMap::new(),
+            creation_config: CreationConfig {
+                primary_host_id: None,
+                allow_fast_service_tier: true,
+            },
+            project_defaults: HashMap::new(),
+            branches: ProjectBranchesResponse::default(),
+            branch_queries: Mutex::new(Vec::new()),
+            provider_queries: Mutex::new(Vec::new()),
+            created: Mutex::new(Vec::new()),
         })
     }
 
@@ -305,6 +329,78 @@ impl Api for MockApi {
     fn keybinding_overrides(&self) -> ApiFuture<Vec<AppKeybindingOverride>> {
         let overrides = self.overrides.clone();
         Box::pin(async move { Ok(overrides) })
+    }
+
+    fn environment_providers(
+        &self,
+        query: SystemEnvironmentProvidersQuery,
+    ) -> ApiFuture<Vec<SystemEnvironmentProvider>> {
+        self.provider_queries.lock().unwrap().push(query.clone());
+        let providers = match &query.project_id {
+            Some(project_id) => self
+                .project_environment_providers
+                .get(project_id)
+                .cloned()
+                .unwrap_or_else(|| self.environment_providers.clone()),
+            None => self.environment_providers.clone(),
+        };
+        Box::pin(async move { Ok(providers) })
+    }
+
+    fn creation_config(&self) -> ApiFuture<CreationConfig> {
+        let config = self.creation_config.clone();
+        Box::pin(async move { Ok(config) })
+    }
+
+    fn project_default_execution_options(
+        &self,
+        project_id: String,
+    ) -> ApiFuture<Option<ProjectExecutionDefaults>> {
+        let defaults = self.project_defaults.get(&project_id).cloned();
+        Box::pin(async move { Ok(defaults) })
+    }
+
+    fn branch_options(
+        &self,
+        project_id: String,
+        query: ProjectBranchesQuery,
+    ) -> ApiFuture<ProjectBranchesResponse> {
+        self.branch_queries
+            .lock()
+            .unwrap()
+            .push((project_id, query));
+        let branches = self.branches.clone();
+        Box::pin(async move { Ok(branches) })
+    }
+
+    fn create_thread(&self, request: CreateThreadRequest) -> ApiFuture<ThreadResponse> {
+        self.created.lock().unwrap().push(request.clone());
+        if self.fail {
+            return Box::pin(async { Err("server said no".to_string()) });
+        }
+        let id = format!("thr_new{}", self.created.lock().unwrap().len());
+        let mut entry = thread(&id, &request.project_id, "Created thread", 0);
+        if let CreateThreadEnvironmentArgs::Reuse { environment_id } = &request.environment {
+            entry.thread.environment_id = Some(environment_id.clone());
+        }
+        {
+            let mut sidebar = self.backend.sidebar.lock().unwrap();
+            let sidebar = &mut *sidebar;
+            if let Some(project) = sidebar
+                .projects
+                .iter_mut()
+                .chain(std::iter::once(&mut sidebar.personal_project))
+                .find(|project| project.project.id == request.project_id)
+            {
+                project.threads.push(entry.clone());
+            }
+        }
+        let response = ThreadResponse {
+            thread: entry.thread,
+            runtime: entry.runtime,
+            ..ThreadResponse::default()
+        };
+        Box::pin(async move { Ok(response) })
     }
 }
 

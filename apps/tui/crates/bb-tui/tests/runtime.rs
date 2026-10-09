@@ -415,3 +415,139 @@ async fn composer_queues_sends_queued_saves_drafts_and_stops_through_the_loop() 
     assert!(state.quit);
     assert!(!platform.drafts.lock().unwrap().contains_key("thr_other"));
 }
+
+#[tokio::test]
+async fn event_loop_creates_a_thread_from_the_new_thread_form_and_opens_it() {
+    use bb_tui::new_thread::CreationConfig;
+    use bb_wire::environment::{Host, HostStatus, HostType};
+    use bb_wire::project::ProjectSource;
+    use bb_wire::system::{EnvironmentProviderRequirements, SystemEnvironmentProvider};
+
+    let mut sidebar = sample_sidebar();
+    sidebar.projects[0].sources = vec![ProjectSource {
+        id: "src_1".into(),
+        project_id: "proj_a".into(),
+        source_type: "local_path".into(),
+        host_id: "host_1".into(),
+        path: "/work/alpha".into(),
+        ..ProjectSource::default()
+    }];
+    let backend = FakeBackend::new(sidebar);
+    *backend.hosts.lock().unwrap() = vec![Host {
+        id: "host_1".into(),
+        name: "laptop".into(),
+        host_type: HostType::Persistent,
+        status: HostStatus::Connected,
+        ..Host::default()
+    }];
+    let mut api = MockApi::new(backend.clone());
+    let mock = Arc::get_mut(&mut api).unwrap();
+    mock.environment_providers = vec![SystemEnvironmentProvider {
+        id: "project-checkout".into(),
+        display_name: "Project checkout".into(),
+        plugin_id: "project-checkout".into(),
+        accepts_empty_inputs: true,
+        inputs: Some(serde_json::json!({"type": "object"})),
+        requires: EnvironmentProviderRequirements {
+            project_checkout: true,
+            ..EnvironmentProviderRequirements::default()
+        },
+        ..SystemEnvironmentProvider::default()
+    }];
+    mock.creation_config = CreationConfig {
+        primary_host_id: Some("host_1".into()),
+        allow_fast_service_tier: true,
+    };
+    mock.execution_options = bb_wire::system::SystemExecutionOptionsResponse {
+        providers: vec![bb_wire::system::ProviderInfo {
+            id: "codex".into(),
+            display_name: "Codex".into(),
+            ..Default::default()
+        }],
+        models: vec![bb_wire::system::AvailableModel {
+            id: "gpt-5".into(),
+            model: "gpt-5".into(),
+            is_default: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    mock.branches = bb_wire::project::ProjectBranchesResponse {
+        checkout: bb_wire::environment::GitCheckoutRef::Branch {
+            branch_name: "main".into(),
+            head_sha: None,
+        },
+        branches: vec!["main".into()],
+        ..Default::default()
+    };
+    let store = Store::spawn(backend.clone(), NoRealtime, None, StoreConfig::default());
+    let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
+    let events = Box::pin(stream::poll_fn(move |cx| rx.poll_recv(cx)));
+    let state = AppState::new(
+        ServerInfo {
+            url: "http://fake/".into(),
+            profile: None,
+        },
+        Instant::now(),
+        NOW_MS,
+    );
+    let task_store = store.clone();
+    let task_api = api.clone();
+    let handle = tokio::spawn(async move {
+        let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        let mut state = state;
+        run(
+            &mut terminal,
+            &mut state,
+            task_store,
+            task_api,
+            Arc::new(support::MockPlatform::default()),
+            events,
+        )
+        .await
+        .expect("run");
+        (terminal, state)
+    });
+
+    wait_for(&store, |snapshot| {
+        snapshot.sidebar.data.is_some() && snapshot.hosts.data.is_some()
+    })
+    .await;
+    key(&tx, KeyCode::Char('n'));
+    let ready_api = api.clone();
+    wait_until(move || !ready_api.execution_queries.lock().unwrap().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    key(&tx, KeyCode::Char('i'));
+    type_text(&tx, "Ship it");
+    key(&tx, KeyCode::Enter);
+    let created = api.clone();
+    wait_until(move || !created.created.lock().unwrap().is_empty()).await;
+    wait_for(&store, |snapshot| {
+        snapshot.sidebar_thread("thr_new1").is_some()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    key(&tx, KeyCode::Esc);
+    key(&tx, KeyCode::Char('q'));
+
+    let (terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("loop exits")
+        .expect("join");
+    let request = api.created.lock().unwrap()[0].clone();
+    assert_eq!(request.project_id, "proj_a");
+    assert_eq!(request.model.as_deref(), Some("gpt-5"));
+    assert_eq!(
+        serde_json::to_value(&request.environment).unwrap(),
+        serde_json::json!({
+            "type": "provider",
+            "environmentProviderId": "project-checkout",
+            "machine": {"type": "existing", "hostId": "host_1"},
+            "inputs": {}
+        })
+    );
+    assert_eq!(state.open_thread.as_deref(), Some("thr_new1"));
+    assert!(state.new_thread.is_none());
+    let screen = buffer_lines(&terminal).join("\n");
+    assert!(screen.contains("Created thread"), "{screen}");
+}

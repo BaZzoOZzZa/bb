@@ -233,7 +233,7 @@ pub fn resolve_model_catalog_selection(
     }
 }
 
-fn service_tier_options(
+pub(crate) fn service_tier_options(
     provider: Option<&ProviderInfo>,
     model: Option<&AvailableModel>,
 ) -> Vec<String> {

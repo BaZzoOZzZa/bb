@@ -50,6 +50,8 @@ pub enum Command {
     QueueList,
     ToggleSubmitMode,
     NextPending,
+    NewThread,
+    NewThreadInEnvironment,
 }
 
 impl Command {
@@ -72,6 +74,8 @@ impl Command {
         Command::QueueList,
         Command::ToggleSubmitMode,
         Command::NextPending,
+        Command::NewThread,
+        Command::NewThreadInEnvironment,
         Command::ModelPicker,
         Command::ReasoningPicker,
         Command::PermissionPicker,
@@ -112,6 +116,7 @@ impl Command {
     pub fn app_command_id(self) -> Option<&'static str> {
         Some(match self {
             Self::Back => "app.back",
+            Self::NewThread => "thread.new",
             Self::FocusNext => "pane.focus.next",
             Self::FocusPrevious => "pane.focus.previous",
             Self::Filter => "thread.search",
@@ -195,6 +200,8 @@ impl Command {
             Self::QueueList => "Queued messages (edit, delete, send now)".into(),
             Self::ToggleSubmitMode => "Toggle Enter: queue / steer while running".into(),
             Self::NextPending => "Answer the next waiting request".into(),
+            Self::NewThread => "New thread".into(),
+            Self::NewThreadInEnvironment => "New thread in this thread's environment".into(),
         }
     }
 }
@@ -380,6 +387,8 @@ impl Default for Keymap {
             (KeyChord::alt('t'), Command::ToggleSubmitMode),
             (KeyChord::ch('w'), Command::NextPending),
             (KeyChord::alt('w'), Command::NextPending),
+            (KeyChord::ch('n'), Command::NewThread),
+            (KeyChord::ch('N'), Command::NewThreadInEnvironment),
             (KeyChord::alt('m'), Command::ModelPicker),
             (KeyChord::alt('e'), Command::ReasoningPicker),
             (KeyChord::alt('p'), Command::PermissionPicker),

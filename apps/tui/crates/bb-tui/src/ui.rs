@@ -116,6 +116,9 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     if let Mode::Picker(picker) = &state.mode {
         composer_ui::render_picker(picker, frame, area);
     }
+    if let Some(form) = state.new_thread_form() {
+        crate::new_thread_ui::render_form_picker(form, frame, area);
+    }
 }
 
 fn render_open_picker(targets: &[String], selected: usize, frame: &mut Frame, area: Rect) {
@@ -365,6 +368,10 @@ fn thread_line(
 }
 
 fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
+    if let Some(form) = state.new_thread_form() {
+        crate::new_thread_ui::render_form(state, form, frame, area);
+        return;
+    }
     let focused = state.focus == Focus::Main;
     let Some(thread_id) = state.open_thread.as_deref() else {
         let block = pane_block("bb", focused);
@@ -646,6 +653,12 @@ fn hints(state: &AppState) -> String {
         Mode::Queue { .. } => {
             "j/k select · Enter/e edit · s send now · r retry · d delete · Esc close".into()
         }
+        Mode::Normal if state.focus == Focus::NewThread && state.new_thread_form().is_some() => {
+            crate::new_thread_ui::hints(
+                state.new_thread_form().expect("form"),
+                state.submit_key.submit_label(),
+            )
+        }
         Mode::Normal if state.focus == Focus::Interaction => format!(
             "Esc leave · {} next waiting request · {} focus",
             key(Command::NextPending),
@@ -784,6 +797,14 @@ fn help_entries(state: &AppState) -> Vec<(String, String)> {
             "Question: choose / toggle option".to_owned(),
         ),
         ("C-x".to_owned(), "Request: cancel / stop turn".to_owned()),
+        (
+            "j/k Enter".to_owned(),
+            "New thread: move between fields / pick a value".to_owned(),
+        ),
+        (
+            "i / Tab".to_owned(),
+            "New thread: edit the prompt / next field".to_owned(),
+        ),
     ];
     Command::ALL
         .iter()

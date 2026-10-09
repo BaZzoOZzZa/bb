@@ -120,6 +120,43 @@ Through Turbo from the repository root:
 pnpm exec turbo run build test lint typecheck --filter=@bb/tui
 ```
 
+## New thread
+
+`n` opens the new-thread form in the main pane for the selected project (the
+sidebar selection, else the open thread's project). `N` starts a thread in the
+open thread's environment: it reuses that environment, keeps the thread's
+section and pin, and puts the cursor in the prompt. The form shows one row per
+choice, in order:
+
+| Row | What it picks |
+|---|---|
+| Project | any project, or Personal |
+| Environment | a machine and an environment option (project checkout, git worktree, personal workspace, plugin providers), a hostless provider, or `Reuse existing environment…` (an environment other threads of the project use) |
+| Branch | git worktree: the base branch (default or any local/remote branch); project checkout: keep the current checkout, check out a local branch, or create a new branch from one. Shown only for those two options |
+| Provider · Model · Reasoning · Permissions | the execution options for the routed machine or environment |
+
+Defaults follow the web app's new-thread composer: the project's saved
+execution defaults, the project checkout on the primary machine when the
+project has a source there, the personal workspace for Personal. Choices that
+cannot work are listed but disabled with the reason: an option the machine
+reports unavailable, a plugin option whose inputs need the plugin's web
+control, an offline machine, a branch change on a dirty, detached or mid-rebase
+checkout, a permission mode above the machine's limit. The line under the rows
+says why the thread cannot be created yet, or that it is ready.
+
+Keys: `j`/`k` (or `Tab`/`S-Tab`) move between rows, `Enter` opens a row's
+picker (type to filter, `Enter` choose, `Esc` cancel) and picking moves to the
+next row, `i` jumps to the prompt. In the prompt, `Enter` creates the thread
+(`--submit-key` applies), `Tab`/`S-Tab` go back to the rows, `M-m`/`M-e`/`M-p`
+open the model, reasoning and permission pickers, and `Esc` leaves the prompt.
+`Esc` on the rows closes the form; the unsent prompt is kept for the next time
+it opens. The created thread opens right away. `--read-only` refuses to create
+threads.
+
+Not built yet: reusing an existing git worktree by path, the service-tier
+picker, guided machine setup, plugin input controls other than the git
+worktree and project checkout ones, and remembering choices between sessions.
+
 ## Server connection (`bb-client`)
 
 The server URL is resolved in this order: `--server-url`, `BB_SERVER_URL`,

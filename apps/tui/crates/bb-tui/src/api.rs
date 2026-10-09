@@ -4,16 +4,21 @@ use std::pin::Pin;
 use bb_client::BbClient;
 use bb_wire::common::JsonValue;
 use bb_wire::interaction::{InteractionResolution, RespondPluginInteractionRequest};
-use bb_wire::project::PromptHistoryQuery;
-use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
+use bb_wire::project::{ProjectBranchesQuery, ProjectBranchesResponse, PromptHistoryQuery};
+use bb_wire::prompt::{
+    ProjectExecutionDefaults, PromptHistoryEntry, ResolvedThreadExecutionOptions,
+};
 use bb_wire::queue::{
     CreateQueuedMessageRequest, SendMessageRequest, SendMessageResponse, SendQueuedMessageMode,
     SendQueuedMessageRequest, UpdateQueuedMessageRequest,
 };
 use bb_wire::system::{
-    AppKeybindingOverride, SystemExecutionOptionsQuery, SystemExecutionOptionsResponse,
+    AppKeybindingOverride, SystemEnvironmentProvider, SystemEnvironmentProvidersQuery,
+    SystemExecutionOptionsQuery, SystemExecutionOptionsResponse,
 };
-use bb_wire::thread::UpdateThreadRequest;
+use bb_wire::thread::{CreateThreadRequest, ThreadResponse, UpdateThreadRequest};
+
+use crate::new_thread::CreationConfig;
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
@@ -252,6 +257,37 @@ pub trait Api: Send + Sync + 'static {
     ) -> ApiFuture<Option<ResolvedThreadExecutionOptions>>;
 
     fn prompt_history(&self, thread_id: String) -> ApiFuture<Vec<PromptHistoryEntry>>;
+
+    fn environment_providers(
+        &self,
+        query: SystemEnvironmentProvidersQuery,
+    ) -> ApiFuture<Vec<SystemEnvironmentProvider>>;
+
+    fn creation_config(&self) -> ApiFuture<CreationConfig>;
+
+    fn project_default_execution_options(
+        &self,
+        project_id: String,
+    ) -> ApiFuture<Option<ProjectExecutionDefaults>>;
+
+    fn branch_options(
+        &self,
+        project_id: String,
+        query: ProjectBranchesQuery,
+    ) -> ApiFuture<ProjectBranchesResponse>;
+
+    fn create_thread(&self, request: CreateThreadRequest) -> ApiFuture<ThreadResponse>;
+}
+
+pub fn creation_config_from(config: &bb_wire::system::SystemConfigResponse) -> CreationConfig {
+    CreationConfig {
+        primary_host_id: config.primary_host_id.clone().filter(|id| !id.is_empty()),
+        allow_fast_service_tier: config
+            .general_settings
+            .get("allowFastServiceTier")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(true),
+    }
 }
 
 fn done<T>(_: T) -> MutationReply {
@@ -411,6 +447,68 @@ impl Api for BbClient {
         Box::pin(async move {
             client
                 .thread_prompt_history(&thread_id, &PromptHistoryQuery::default())
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn environment_providers(
+        &self,
+        query: SystemEnvironmentProvidersQuery,
+    ) -> ApiFuture<Vec<SystemEnvironmentProvider>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .system_environment_providers(&query)
+                .await
+                .map(|response| response.providers)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn creation_config(&self) -> ApiFuture<CreationConfig> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .system_config()
+                .await
+                .map(|config| creation_config_from(&config))
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn project_default_execution_options(
+        &self,
+        project_id: String,
+    ) -> ApiFuture<Option<ProjectExecutionDefaults>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .project_default_execution_options(&project_id)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn branch_options(
+        &self,
+        project_id: String,
+        query: ProjectBranchesQuery,
+    ) -> ApiFuture<ProjectBranchesResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .project_branch_options(&project_id, &query)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn create_thread(&self, request: CreateThreadRequest) -> ApiFuture<ThreadResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .create_thread(&request)
                 .await
                 .map_err(|error| error.to_string())
         })

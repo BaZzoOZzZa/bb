@@ -23,6 +23,10 @@ use crate::indicator::is_thread_read;
 use crate::input::{InputOutcome, LineInput};
 use crate::interact::{InteractionForm, handle_interaction_key, interaction_mutation_finished};
 use crate::keymap::{Command, Keymap};
+use crate::new_thread::{
+    NewThreadForm, NewThreadLoaded, NewThreadRequest, handle_new_thread_key, new_thread_paste,
+};
+use crate::prompt::PromptDraft;
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
 use crate::timeline::{LoadRequest, TimelineView};
 
@@ -38,6 +42,7 @@ pub enum Focus {
     Composer,
     Interaction,
     Panel,
+    NewThread,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +119,10 @@ pub enum Action {
         message: String,
         level: ToastLevel,
     },
+    NewThreadLoaded {
+        generation: u64,
+        loaded: NewThreadLoaded,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,6 +152,10 @@ pub enum Effect {
     },
     FetchDefaults(String),
     FetchPromptHistory(String),
+    NewThread {
+        generation: u64,
+        request: NewThreadRequest,
+    },
     Quit,
 }
 
@@ -165,6 +178,9 @@ pub struct AppState {
     pub inflight: HashMap<String, Inflight>,
     pub interaction_forms: HashMap<String, InteractionForm>,
     pub interaction_follow_ups: HashMap<String, String>,
+    pub new_thread: Option<NewThreadForm>,
+    pub new_thread_generation: u64,
+    pub new_thread_draft: Option<PromptDraft>,
     pub stop_requested: HashSet<String>,
     pub history_requested: HashSet<String>,
     pub submit_key: SubmitKey,
@@ -203,6 +219,9 @@ impl AppState {
             inflight: HashMap::new(),
             interaction_forms: HashMap::new(),
             interaction_follow_ups: HashMap::new(),
+            new_thread: None,
+            new_thread_generation: 0,
+            new_thread_draft: None,
             stop_requested: HashSet::new(),
             history_requested: HashSet::new(),
             submit_key: SubmitKey::default(),
@@ -367,6 +386,13 @@ impl AppState {
         if self.sidebar_visible {
             panes.push(Focus::Sidebar);
         }
+        if self.new_thread.is_some() {
+            panes.push(Focus::NewThread);
+            if self.panel_visible {
+                panes.push(Focus::Panel);
+            }
+            return panes;
+        }
         panes.push(Focus::Main);
         if self.open_interaction_panel() {
             panes.push(Focus::Interaction);
@@ -395,6 +421,7 @@ impl AppState {
 
     pub(crate) fn open(&mut self, thread_id: String) -> Vec<Effect> {
         let mut effects = Vec::new();
+        self.close_new_thread();
         if self.open_thread.as_deref() != Some(thread_id.as_str()) {
             effects.push(Effect::WatchThread(Some(thread_id.clone())));
             if let Some(previous) = self.open_thread.clone() {
@@ -542,6 +569,13 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
     effects
         .into_iter()
         .filter(|effect| match effect {
+            Effect::NewThread {
+                request: NewThreadRequest::Create(_),
+                ..
+            } => {
+                state.toast("Read-only mode: cannot create thread", ToastLevel::Error);
+                false
+            }
             Effect::Mutate(mutation) => {
                 if !mutation.is_silent() {
                     state.toast(
@@ -582,6 +616,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             let mut effects = composer_snapshot(state);
             effects.extend(state.sync_timeline());
             state.sync_interactions();
+            effects.extend(state.sync_new_thread());
             effects
         }
         Action::MutationFinished { mutation, result } if mutation.is_interaction() => {
@@ -657,7 +692,14 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             history_loaded(state, &thread_id, result);
             Vec::new()
         }
+        Action::Paste(text) if state.focus == Focus::NewThread => {
+            new_thread_paste(state, &text);
+            Vec::new()
+        }
         Action::Paste(text) => paste(state, &text),
+        Action::NewThreadLoaded { generation, loaded } => {
+            state.new_thread_loaded(generation, loaded)
+        }
     }
 }
 
@@ -682,6 +724,7 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
             handle_queue_key(state, thread_id, selected, key)
         }
+        Mode::Normal if state.focus == Focus::NewThread => handle_new_thread_key(state, key),
         Mode::Normal if state.focus == Focus::Interaction => handle_interaction_key(state, key),
         Mode::Normal if state.focus == Focus::Composer && state.open_interaction_panel() => {
             state.focus = Focus::Interaction;
@@ -926,6 +969,8 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             }
         }
         Command::NextPending => return state.jump_to_pending(),
+        Command::NewThread => return state.open_new_thread(),
+        Command::NewThreadInEnvironment => return state.open_new_thread_in_environment(),
         Command::ThreadNext => return state.step_thread(true),
         Command::ThreadPrevious => return state.step_thread(false),
         Command::Jump(n) => {

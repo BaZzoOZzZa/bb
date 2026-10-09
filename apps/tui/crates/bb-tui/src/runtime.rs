@@ -9,8 +9,11 @@ use ratatui::Terminal;
 use ratatui::backend::Backend as TerminalBackend;
 use tokio::sync::mpsc;
 
+use bb_wire::system::SystemEnvironmentProvidersQuery;
+
 use crate::api::Api;
 use crate::app::{Action, AppState, Effect, ToastLevel, update};
+use crate::new_thread::{NewThreadLoaded, NewThreadRequest};
 use crate::platform::Platform;
 use crate::time::now_ms;
 use crate::ui;
@@ -135,12 +138,63 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                     let _ = tx.send(Action::PromptHistoryLoaded { thread_id, result });
                 });
             }
+            Effect::NewThread {
+                generation,
+                request,
+            } => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let loaded = run_new_thread_request(api.as_ref(), request).await;
+                    let _ = tx.send(Action::NewThreadLoaded { generation, loaded });
+                });
+            }
             Effect::Quit => {}
         }
     }
 
     pub fn watched_thread(&self) -> Option<&str> {
         self.thread.as_ref().map(|(id, _)| id.as_str())
+    }
+}
+
+pub async fn run_new_thread_request<A: Api>(api: &A, request: NewThreadRequest) -> NewThreadLoaded {
+    match request {
+        NewThreadRequest::Providers { project_id } => {
+            let result = api
+                .environment_providers(SystemEnvironmentProvidersQuery {
+                    project_id: project_id.clone(),
+                    host_id: None,
+                })
+                .await;
+            NewThreadLoaded::Providers { project_id, result }
+        }
+        NewThreadRequest::Config => NewThreadLoaded::Config(api.creation_config().await),
+        NewThreadRequest::ProjectDefaults { project_id } => {
+            let result = api
+                .project_default_execution_options(project_id.clone())
+                .await;
+            NewThreadLoaded::ProjectDefaults { project_id, result }
+        }
+        NewThreadRequest::Branches { project_id, query } => {
+            let host_id = query.host_id.clone();
+            let result = api
+                .branch_options(project_id.clone(), query)
+                .await
+                .map(Box::new);
+            NewThreadLoaded::Branches {
+                project_id,
+                host_id,
+                result,
+            }
+        }
+        NewThreadRequest::Catalog { query } => {
+            let result = api.execution_options(query.clone()).await.map(Box::new);
+            NewThreadLoaded::Catalog { query, result }
+        }
+        NewThreadRequest::Create(request) => {
+            NewThreadLoaded::Created(api.create_thread(*request).await.map(Box::new))
+        }
     }
 }
 

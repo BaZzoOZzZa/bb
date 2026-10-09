@@ -521,3 +521,110 @@ async fn renders_live_pending_interactions_read_only() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only"]
+async fn renders_live_new_thread_form_read_only() {
+    use bb_tui::app::Effect;
+    use bb_tui::new_thread::{FormField, NewThreadRequest};
+    use bb_tui::runtime::run_new_thread_request;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let store = Store::spawn(
+        Arc::new(client.clone()),
+        NoRealtime,
+        None,
+        StoreConfig::default(),
+    );
+    let _interest = store.watch_sidebar();
+    let mut rx = store.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            {
+                let snapshot = rx.borrow_and_update();
+                if snapshot.sidebar.data.is_some() && snapshot.hosts.data.is_some() {
+                    break;
+                }
+            }
+            rx.changed().await.expect("store");
+        }
+    })
+    .await
+    .expect("sidebar and hosts loaded");
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    state.read_only = true;
+    update(&mut state, Action::Snapshot(store.snapshot()));
+
+    async fn drive(state: &mut AppState, client: &BbClient, effects: Vec<Effect>) {
+        let mut pending = effects;
+        while !pending.is_empty() {
+            for effect in std::mem::take(&mut pending) {
+                if let Effect::NewThread {
+                    generation,
+                    request,
+                } = effect
+                {
+                    assert!(
+                        !matches!(request, NewThreadRequest::Create(_)),
+                        "live test must never create threads"
+                    );
+                    let loaded = run_new_thread_request(client, request).await;
+                    pending.extend(update(
+                        state,
+                        Action::NewThreadLoaded { generation, loaded },
+                    ));
+                }
+            }
+        }
+    }
+
+    let project_count = state
+        .snapshot
+        .sidebar
+        .data
+        .as_ref()
+        .map_or(0, |sidebar| sidebar.projects.len() + 1);
+    for index in 0..project_count.min(4) {
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('n'))));
+        drive(&mut state, &client, effects).await;
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
+        drive(&mut state, &client, effects).await;
+        for _ in 0..index {
+            let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Down)));
+            drive(&mut state, &client, effects).await;
+        }
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
+        drive(&mut state, &client, effects).await;
+        let resolved = state.resolved_new_thread().expect("form");
+        assert!(resolved.environment_providers.is_some());
+        println!("--- project #{index}: {}", resolved.project_label);
+        for line in render_lines(&state, 120, 24) {
+            println!("{line}");
+        }
+        let form = state.new_thread_form().expect("form");
+        assert_eq!(form.field, FormField::Environment);
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
+        drive(&mut state, &client, effects).await;
+        for line in render_lines(&state, 120, 24) {
+            println!("{line}");
+        }
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Esc)));
+        drive(&mut state, &client, effects).await;
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Esc)));
+        drive(&mut state, &client, effects).await;
+        assert!(state.new_thread_form().is_none());
+    }
+}
