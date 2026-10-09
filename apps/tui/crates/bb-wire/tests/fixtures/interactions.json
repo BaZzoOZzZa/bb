@@ -1,0 +1,181 @@
+[
+  {
+    "id": "int_cmd",
+    "threadId": "thr_demo",
+    "status": "pending",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "resolvedAt": null,
+    "turnId": "turn_2",
+    "providerId": "codex",
+    "providerThreadId": "pt_1",
+    "providerRequestId": "req_1",
+    "payload": {
+      "kind": "approval",
+      "subject": {
+        "kind": "command",
+        "itemId": "call_20",
+        "command": "rm -rf build",
+        "cwd": "/work/demo",
+        "actions": [{ "type": "listFiles", "command": "ls", "path": null }],
+        "sessionGrant": { "network": null, "fileSystem": { "read": [], "write": ["/work/demo"] } }
+      },
+      "reason": "Needs write access",
+      "availableDecisions": ["allow_once", "allow_for_session", "deny"]
+    },
+    "resolution": null
+  },
+  {
+    "id": "int_grant",
+    "threadId": "thr_demo",
+    "status": "resolved",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "resolvedAt": 1760000101000,
+    "turnId": "turn_2",
+    "providerId": "claude-code",
+    "providerThreadId": "pt_2",
+    "providerRequestId": "req_2",
+    "payload": {
+      "kind": "approval",
+      "subject": {
+        "kind": "permission_grant",
+        "itemId": "call_21",
+        "toolName": "WebFetch",
+        "permissions": { "network": { "enabled": true }, "fileSystem": null }
+      },
+      "reason": null,
+      "availableDecisions": ["allow_once", "deny", "allow_forever"]
+    },
+    "resolution": { "decision": "allow_for_session", "grantedPermissions": null }
+  },
+  {
+    "id": "int_plan",
+    "threadId": "thr_demo",
+    "status": "pending",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "expiresAt": 1760000700000,
+    "resolvedAt": null,
+    "turnId": "turn_2",
+    "providerId": "claude-code",
+    "providerThreadId": "pt_2",
+    "providerRequestId": "req_3",
+    "payload": {
+      "kind": "approval",
+      "subject": { "kind": "plan", "itemId": "call_22", "plan": "1. Do it", "planFilePath": null },
+      "reason": null,
+      "availableDecisions": ["allow_once", "deny"]
+    },
+    "resolution": null
+  },
+  {
+    "id": "int_question",
+    "threadId": "thr_demo",
+    "status": "resolved",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "resolvedAt": 1760000102000,
+    "turnId": "turn_2",
+    "providerId": "codex",
+    "providerThreadId": "pt_1",
+    "providerRequestId": "req_4",
+    "payload": {
+      "kind": "user_question",
+      "questions": [
+        {
+          "id": "q_color",
+          "prompt": "Pick colors",
+          "multiSelect": true,
+          "options": [
+            { "value": "red", "label": "Red" },
+            { "value": "blue", "label": "Blue" }
+          ],
+          "allowFreeText": true
+        }
+      ]
+    },
+    "resolution": {
+      "kind": "user_answer",
+      "answers": { "q_color": { "selected": ["red"], "freeText": "and teal" } }
+    }
+  },
+  {
+    "id": "int_auq",
+    "threadId": "thr_demo",
+    "status": "pending",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "resolvedAt": null,
+    "turnId": null,
+    "origin": { "kind": "plugin", "pluginId": "ask-user-question", "rendererId": "ask-user-question" },
+    "payload": {
+      "kind": "plugin",
+      "title": "Question",
+      "data": {
+        "questions": [
+          {
+            "id": "q1",
+            "prompt": "Which library?",
+            "shortLabel": "Library",
+            "multiSelect": false,
+            "options": [
+              { "value": "a", "label": "chrono", "description": "Popular", "preview": "use chrono::Utc;" },
+              { "value": "b", "label": "time", "description": "Lean" }
+            ],
+            "allowFreeText": true
+          }
+        ]
+      }
+    },
+    "resolution": null
+  },
+  {
+    "id": "int_secret",
+    "threadId": "thr_demo",
+    "status": "pending",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "resolvedAt": null,
+    "turnId": "turn_2",
+    "origin": { "kind": "plugin", "pluginId": "secrets", "rendererId": "secret-request" },
+    "payload": {
+      "kind": "plugin",
+      "title": "Add secrets",
+      "data": {
+        "purpose": "Deploy",
+        "destination": { "kind": "dotenv", "path": "/work/demo/.env" },
+        "fields": [{ "name": "API_KEY", "description": null }]
+      },
+      "presentation": { "label": { "pending": "Requesting API_KEY", "completed": "Requested API_KEY" }, "icon": { "glyph": "key" } }
+    },
+    "resolution": null
+  },
+  {
+    "id": "int_ext",
+    "threadId": "thr_demo",
+    "status": "pending",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "resolvedAt": null,
+    "turnId": "turn_2",
+    "providerId": "pi",
+    "providerThreadId": "pt_3",
+    "providerRequestId": "req_5",
+    "origin": { "kind": "provider", "providerId": "pi", "providerThreadId": "pt_3", "providerRequestId": "req_5" },
+    "payload": { "kind": "acme/picker", "title": "Pick a file", "data": { "choices": ["a", "b"] } },
+    "resolution": { "kind": "request_answer", "value": "a" }
+  },
+  {
+    "id": "int_mystery",
+    "threadId": "thr_demo",
+    "status": "teleporting",
+    "statusReason": null,
+    "createdAt": 1760000100000,
+    "resolvedAt": null,
+    "turnId": null,
+    "origin": { "kind": "oracle", "seer": "x" },
+    "payload": { "kind": "mystery" },
+    "resolution": { "verdict": "unclear" }
+  }
+]

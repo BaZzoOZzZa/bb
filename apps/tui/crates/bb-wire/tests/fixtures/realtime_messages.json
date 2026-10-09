@@ -1,0 +1,54 @@
+[
+  {
+    "type": "changed",
+    "entity": "thread",
+    "id": "thr_demo",
+    "metadata": {
+      "timelineSequence": 45,
+      "eventTypes": ["item/completed", "future/event"],
+      "hasPendingInteraction": false,
+      "projectId": "proj_demo",
+      "statusChange": {
+        "status": "idle",
+        "runtime": { "displayStatus": "idle" },
+        "activity": {
+          "activeWorkflowCount": 0,
+          "activeBackgroundAgentCount": 0,
+          "activeBackgroundCommandCount": 0,
+          "activePlanModeCount": 0,
+          "activeGoalCount": 0
+        },
+        "latestAttentionAt": 1760000200000,
+        "updatedAt": 1760000200000
+      }
+    },
+    "changes": ["events-appended", "status-changed", "warp-drive-engaged"]
+  },
+  {
+    "type": "changed",
+    "entity": "thread",
+    "metadata": { "statusChange": "garbage" },
+    "changes": ["thread-created"]
+  },
+  { "type": "changed", "entity": "project", "id": "proj_demo", "changes": ["threads-changed"] },
+  { "type": "changed", "entity": "environment", "id": "env_1", "changes": ["git-refs-changed", "status-changed"] },
+  { "type": "changed", "entity": "host", "id": "host_local", "changes": ["host-disconnected"] },
+  { "type": "changed", "entity": "system", "changes": ["plugins-changed", "config-changed"] },
+  { "type": "changed", "entity": "galaxy", "changes": ["supernova"] },
+  { "type": "pong" },
+  {
+    "type": "plugin-signal",
+    "pluginId": "push-notifications",
+    "channel": "notification",
+    "payload": { "id": "n1", "title": "Turn finished", "body": "Fix README", "threadId": "thr_demo", "channels": ["desktop"] }
+  },
+  {
+    "type": "thread-open",
+    "projectId": "proj_demo",
+    "threadId": "thr_demo",
+    "split": "right",
+    "file": { "source": "workspace", "path": "README.md", "lineNumber": 3 }
+  },
+  { "type": "thread-pane-action", "projectId": "proj_demo", "threadId": "thr_demo", "action": "maximize" },
+  { "type": "hologram", "data": 1 }
+]

@@ -1,0 +1,527 @@
+{
+  "health": { "ok": true, "launchId": "launch_1", "serverMove": { "moveId": "mv_1", "state": "ready" } },
+  "health_bad_move": { "ok": true, "serverMove": 42 },
+  "version": {
+    "currentCommit": null,
+    "installKind": "npm",
+    "currentVersion": "1.2.3",
+    "latestVersion": "1.3.0",
+    "source": "npm",
+    "updateAvailable": true,
+    "isDevelopment": false,
+    "upgradeCommand": "npm i -g @get-bb/bb"
+  },
+  "attention": { "hasAttention": true },
+  "config": {
+    "serverAccess": { "providers": [], "defaultProviderId": "direct", "effectiveUrl": null, "urlSource": null },
+    "generalSettings": { "completedTurnDisplay": "collapse" },
+    "keybindings": [
+      {
+        "command": "palette.open",
+        "desktopOnly": false,
+        "shortcut": { "key": "k", "mod": true, "meta": false, "control": false, "alt": false, "shift": false },
+        "when": { "all": [], "none": ["modalOpen"] }
+      },
+      { "command": "broken", "shortcut": 7 }
+    ],
+    "defaultKeybindings": [
+      { "command": "thread.new", "desktopOnly": false, "shortcut": null, "when": { "all": [], "none": [] } }
+    ],
+    "keybindingOverrides": [
+      { "command": "plugin:automations/open", "shortcut": null, "platform": "linux" }
+    ],
+    "experiments": {},
+    "performanceDiagnosticsAvailable": false,
+    "appearance": { "id": "default" },
+    "customThemes": [],
+    "pluginThemes": [],
+    "featureFlags": {},
+    "hostDaemonPort": 38887,
+    "localHelperPorts": [],
+    "serverUrl": "http://127.0.0.1:38886",
+    "primaryHostId": "host_local",
+    "primaryHostPlatform": "linux",
+    "voiceTranscriptionEnabled": false,
+    "dataDir": "/home/user/.bb"
+  },
+  "thread_response": {
+    "id": "thr_demo",
+    "projectId": "proj_demo",
+    "environmentId": "env_1",
+    "providerId": "codex",
+    "title": "Fix README",
+    "titleFallback": null,
+    "sectionId": null,
+    "status": "idle",
+    "parentThreadId": null,
+    "lifecycleOwnerThreadId": null,
+    "sourceThreadId": null,
+    "originKind": "fork",
+    "originPluginId": null,
+    "visibility": "visible",
+    "archivedAt": null,
+    "pinnedAt": null,
+    "deletedAt": null,
+    "lastReadAt": 1760000000000,
+    "latestAttentionAt": 1760000000000,
+    "createdAt": 1759000000000,
+    "updatedAt": 1760000000000,
+    "runtime": { "displayStatus": "waiting-for-host" },
+    "activeBackgroundAgentCount": 0,
+    "canRestoreEnvironment": false,
+    "canSpawnChild": true,
+    "queuedMessageCount": 2,
+    "environment": {
+      "id": "env_1",
+      "name": null,
+      "projectId": "proj_demo",
+      "hostId": "host_local",
+      "path": "/work/demo/.worktrees/fix-readme",
+      "isGitRepo": true,
+      "isWorktree": true,
+      "branchName": "bb/fix-readme",
+      "baseBranch": "main",
+      "defaultBranch": "main",
+      "mergeBaseBranch": null,
+      "status": "ready",
+      "environmentProviderId": null,
+      "lifecycle": { "phase": "active", "retireAt": null, "teardown": null },
+      "hostLifecycle": "active",
+      "environmentProviderSelection": null,
+      "environmentProviderInstanceKey": null,
+      "managed": true,
+      "workspaceProvisionType": "managed-worktree",
+      "createdAt": 1759000000000,
+      "updatedAt": 1759000000000
+    },
+    "host": {
+      "id": "host_local",
+      "name": "laptop",
+      "type": "persistent",
+      "status": "connected",
+      "machineProviderId": null,
+      "lifecycle": { "phase": "active", "suspendedAt": null, "message": null, "pendingLog": "", "teardown": null },
+      "maxPermissionMode": "full",
+      "lastSeenAt": 1760000000000,
+      "lastRejectedProtocolVersion": null,
+      "createdAt": 1759000000000,
+      "updatedAt": 1760000000000
+    },
+    "environmentHostName": "laptop"
+  },
+  "thread_search": {
+    "active": {
+      "total": 1,
+      "results": [
+        {
+          "thread": {
+            "id": "thr_demo",
+            "projectId": "proj_demo",
+            "providerId": "codex",
+            "status": "idle",
+            "visibility": "visible",
+            "latestAttentionAt": 1,
+            "createdAt": 1,
+            "updatedAt": 1,
+            "runtime": { "displayStatus": "idle" },
+            "queuedWork": "none",
+            "environmentWorkspaceDisplayKind": "other"
+          },
+          "matches": [
+            { "sourceKind": "user_message", "text": "fix the readme", "highlightRanges": [{ "start": 4, "end": 7 }], "sourceSeq": 1 },
+            { "sourceKind": "tool_output", "text": "readme", "highlightRanges": [], "sourceSeq": null }
+          ]
+        }
+      ]
+    },
+    "archived": { "total": 0, "results": [] }
+  },
+  "queued_messages": [
+    {
+      "id": "qm_1",
+      "origin": "app",
+      "originPluginId": null,
+      "initiator": "user",
+      "senderThreadId": null,
+      "threadId": "thr_demo",
+      "content": [{ "type": "text", "text": "next step", "mentions": [] }],
+      "model": "gpt-5",
+      "reasoningLevel": "high",
+      "permissionMode": "auto",
+      "serviceTier": "default",
+      "groupWithNext": false,
+      "sendAt": null,
+      "waitingOn": { "kind": "thread-busy" },
+      "failureReason": null,
+      "payload": { "kind": "inline" },
+      "editable": true,
+      "createdAt": 1760000300000,
+      "updatedAt": 1760000300000
+    },
+    {
+      "id": "qm_2",
+      "origin": null,
+      "originPluginId": null,
+      "initiator": "system",
+      "senderThreadId": null,
+      "threadId": "thr_demo",
+      "content": [{ "type": "localImage", "path": "/tmp/a.png" }, { "type": "hologram", "beam": true }],
+      "model": "gpt-5",
+      "reasoningLevel": "medium",
+      "permissionMode": "workspace-write",
+      "serviceTier": "default",
+      "groupWithNext": true,
+      "sendAt": 1760000900000,
+      "waitingOn": { "kind": "plugin", "pluginId": "limiter", "reason": "Rate limited" },
+      "failureReason": "Provider unavailable",
+      "payload": { "kind": "retry", "retryOfTurnRequestId": "creq_abcdefghij", "attempt": 2, "reason": "Retry" },
+      "editable": false,
+      "createdAt": 1760000300000,
+      "updatedAt": 1760000300000
+    }
+  ],
+  "send_sent": { "ok": true, "delivery": "sent" },
+  "send_queued": {
+    "ok": true,
+    "delivery": "queued",
+    "queuedMessage": {
+      "id": "qm_3",
+      "initiator": "user",
+      "threadId": "thr_demo",
+      "content": [{ "type": "text", "text": "hi", "mentions": [] }],
+      "model": "gpt-5",
+      "reasoningLevel": "low",
+      "permissionMode": "full",
+      "serviceTier": "default",
+      "groupWithNext": false,
+      "sendAt": null,
+      "waitingOn": { "kind": "host-offline", "hostName": "laptop" },
+      "failureReason": null,
+      "payload": { "kind": "inline" },
+      "editable": true,
+      "createdAt": 1,
+      "updatedAt": 1
+    }
+  },
+  "send_future": { "ok": true, "delivery": "teleported" },
+  "retry_queued": {
+    "ok": true,
+    "delivery": "queued",
+    "turnRequestId": "creq_abcdefghij",
+    "attempt": 3,
+    "queuedMessageId": "qm_9",
+    "waitingOn": { "kind": "time" },
+    "sendAt": 1760000999000
+  },
+  "execution_options": {
+    "providers": [
+      {
+        "id": "codex",
+        "pluginId": "codex",
+        "displayName": "Codex",
+        "logoUrl": null,
+        "maintenance": { "health": true, "usage": true, "installation": true },
+        "capabilities": {
+          "supportsThreadArchive": true,
+          "supportsThreadRename": true,
+          "supportsServiceTier": true,
+          "supportsNativeUserQuestion": false,
+          "supportsFork": true,
+          "supportsSessionRewind": false,
+          "permissionModes": ["accept-edits", "auto", "full"],
+          "modelCatalogScope": "host"
+        },
+        "composerActions": [
+          { "kind": "skills", "trigger": "$" },
+          { "kind": "plan", "command": { "trigger": "/", "name": "plan", "trailingText": " " } },
+          { "kind": "dance", "moves": 3 }
+        ],
+        "completedTurnDisplay": "flat",
+        "available": true,
+        "strings": { "signInHint": "Run codex login", "expiredHint": "Expired", "installUrl": "https://example.com" },
+        "serviceTiers": [{ "id": "default", "label": "Default" }, { "id": "fast", "label": "Fast" }],
+        "reasoningLevels": [{ "id": "high", "label": "High" }],
+        "extensionKinds": { "acme/chart": { "item": true, "state": false } }
+      }
+    ],
+    "permissionCeiling": "full",
+    "models": [
+      {
+        "id": "gpt-5",
+        "model": "gpt-5",
+        "displayName": "GPT-5",
+        "description": "Default",
+        "supportedReasoningEfforts": [
+          { "reasoningEffort": "low", "description": "Fast" },
+          { "reasoningEffort": "xhigh", "description": "Deep" },
+          { "reasoningEffort": "galaxy-brain", "description": "?" }
+        ],
+        "defaultReasoningEffort": "medium",
+        "supportedServiceTiers": [{ "id": "fast" }],
+        "isDefault": true
+      }
+    ],
+    "selectedOnlyModels": [],
+    "modelLoadError": { "providerId": "pi", "code": "auth_required", "detail": null }
+  },
+  "environment_providers": {
+    "providers": [
+      {
+        "machineProviderId": null,
+        "id": "local",
+        "displayName": "This machine",
+        "description": null,
+        "icon": null,
+        "logoUrl": null,
+        "pluginId": "core",
+        "requires": { "projectCheckout": true, "gitCheckout": false, "gitRemote": false, "projectless": false },
+        "inputs": null,
+        "acceptsEmptyInputs": true,
+        "availability": { "status": "available" },
+        "machineAvailability": { "host_local": null, "host_remote": { "status": "setup-required", "message": "Install git" } }
+      },
+      {
+        "environmentProviderId": "cloud",
+        "machineProviderId": "cloud-vm",
+        "id": "cloud",
+        "displayName": "Cloud",
+        "description": "Remote VM",
+        "icon": "cloud",
+        "logoUrl": null,
+        "pluginId": "cloud-plugin",
+        "requires": { "projectCheckout": false, "gitCheckout": true, "gitRemote": true, "projectless": false },
+        "inputs": { "type": "object" },
+        "acceptsEmptyInputs": false,
+        "availability": { "status": "maintenance-window", "until": 5 },
+        "machineAvailability": {}
+      }
+    ]
+  },
+  "environment_status_available": {
+    "outcome": "available",
+    "workspace": {
+      "workingTree": {
+        "insertions": 3,
+        "deletions": 1,
+        "lineStatsComplete": true,
+        "files": [
+          { "path": "README.md", "status": "M", "insertions": 3, "deletions": 1 },
+          { "path": "new.txt", "status": "??", "insertions": null, "deletions": null }
+        ],
+        "hasUncommittedChanges": true,
+        "state": "dirty_uncommitted"
+      },
+      "checkout": { "kind": "branch", "branchName": "bb/fix-readme", "headSha": "abc123" },
+      "branch": { "currentBranch": "bb/fix-readme", "defaultBranch": "main" },
+      "mergeBase": {
+        "insertions": 10,
+        "deletions": 2,
+        "lineStatsComplete": true,
+        "files": [],
+        "mergeBaseBranch": "main",
+        "baseRef": "def456",
+        "aheadCount": 2,
+        "behindCount": 0,
+        "hasCommittedUnmergedChanges": true,
+        "commits": [
+          { "sha": "abc123abc123", "shortSha": "abc123", "subject": "Update README", "authorName": "Dev", "authoredAt": 1760000000 }
+        ]
+      }
+    }
+  },
+  "environment_status_not_applicable": { "outcome": "not_applicable", "reason": "non_git_environment", "message": "Not a git repository" },
+  "environment_status_unavailable": {
+    "outcome": "unavailable",
+    "failure": { "code": "workspace_missing", "workspacePath": "/gone", "message": "Missing" }
+  },
+  "environment_status_future": { "outcome": "quantum", "probability": 0.5 },
+  "diff_files": {
+    "outcome": "available",
+    "files": [
+      {
+        "path": "README.md",
+        "previousPath": null,
+        "changeKind": "modified",
+        "additions": 3,
+        "deletions": 1,
+        "binary": false,
+        "origin": "tracked",
+        "loadMode": "auto"
+      },
+      {
+        "path": "big.bin",
+        "previousPath": "old.bin",
+        "changeKind": "renamed",
+        "additions": 0,
+        "deletions": 0,
+        "binary": true,
+        "origin": "tracked",
+        "loadMode": "too_large"
+      }
+    ],
+    "truncated": false,
+    "shortstat": "2 files changed, 3 insertions(+), 1 deletion(-)",
+    "mergeBaseRef": null,
+    "initialPatches": [{ "path": "README.md", "patch": "@@ -1 +1 @@\n-a\n+b\n", "truncated": false }]
+  },
+  "diff": {
+    "outcome": "available",
+    "diff": { "diff": "diff --git a/x b/x\n", "truncated": false, "shortstat": "1 file changed", "files": "M\tx", "mergeBaseRef": "abc" }
+  },
+  "diff_file": { "path": "logo.png", "content": "iVBORw0KGgo=", "contentEncoding": "base64", "mimeType": "image/png", "sizeBytes": 8 },
+  "pull_request": {
+    "outcome": "available",
+    "pullRequest": {
+      "number": 42,
+      "title": "Fix README",
+      "state": "open",
+      "url": "https://example.com/pr/42",
+      "baseRefName": "main",
+      "headRefName": "bb/fix-readme",
+      "updatedAt": "2026-10-01T10:00:00Z",
+      "autoMerge": false,
+      "inMergeQueue": null,
+      "checks": { "state": "passing", "totalCount": 3, "passedCount": 3, "failedCount": 0, "pendingCount": 0 },
+      "review": { "state": "review_requested", "reviewRequestCount": 1 },
+      "mergeability": { "state": "mergeable", "mergeStateStatus": "CLEAN", "mergeable": "MERGEABLE" },
+      "attention": "review_requested"
+    }
+  },
+  "pull_request_absent": { "outcome": "absent" },
+  "action_commit": { "ok": true, "action": "commit", "message": "Committed", "commitSha": "abc", "commitSubject": "Update README" },
+  "branches": {
+    "checkout": { "kind": "detached", "headSha": null },
+    "defaultBranch": "main",
+    "isWorktree": false,
+    "defaultBranchRelation": "local-behind",
+    "hasUncommittedChanges": false,
+    "operation": { "kind": "rebase", "hasConflicts": true },
+    "originDefaultBranch": "main",
+    "branches": ["main", "dev"],
+    "branchesTruncated": false,
+    "remoteBranches": ["origin/main"],
+    "remoteBranchesTruncated": false,
+    "selectedBranch": { "name": "dev", "kind": "local" },
+    "defaultWorktreeBaseBranch": "main"
+  },
+  "terminal_list": {
+    "sessions": [
+      {
+        "id": "term_1",
+        "threadId": "thr_demo",
+        "environmentId": "env_1",
+        "hostId": "host_local",
+        "title": "zsh",
+        "initialCwd": "/work/demo",
+        "cols": 120,
+        "rows": 40,
+        "status": "running",
+        "exitCode": null,
+        "closeReason": null,
+        "createdAt": 1760000000000,
+        "updatedAt": 1760000000000,
+        "lastUserInputAt": null
+      }
+    ]
+  },
+  "terminal_output": {
+    "chunks": [{ "seq": 7, "dataBase64": "aGVsbG8NCg==" }],
+    "nextSeq": 8,
+    "truncated": false,
+    "status": "exited",
+    "exitCode": 0,
+    "closeReason": "process-exit"
+  },
+  "terminal_frames": [
+    {
+      "type": "attached",
+      "session": {
+        "id": "term_1",
+        "threadId": null,
+        "environmentId": null,
+        "hostId": "host_local",
+        "title": "zsh",
+        "initialCwd": "/",
+        "cols": 80,
+        "rows": 24,
+        "status": "starting",
+        "exitCode": null,
+        "closeReason": null,
+        "createdAt": 1,
+        "updatedAt": 1,
+        "lastUserInputAt": null
+      },
+      "replayStartSeq": 0,
+      "nextSeq": 3
+    },
+    { "type": "output", "chunk": { "seq": 3, "dataBase64": "G1szMW1yZWQbWzBt" } },
+    { "type": "error", "code": "terminal_not_found", "message": "gone" },
+    { "type": "pong" },
+    { "type": "bell", "volume": 11 }
+  ],
+  "plugin_contributions": {
+    "cliCommands": [
+      {
+        "pluginId": "automations",
+        "name": "automation",
+        "summary": "Manage automations",
+        "commands": [{ "name": "list", "summary": "List", "usage": "bb automation list" }],
+        "rendersHelp": true
+      }
+    ],
+    "mentionProviders": [{ "pluginId": "github", "id": "issues", "label": "Issues", "triggers": ["@", "#"] }]
+  },
+  "plugin_settings": {
+    "ok": true,
+    "schema": {
+      "token": { "type": "string", "label": "Token", "secret": true },
+      "notes": { "type": "string", "label": "Notes", "experimental_multiline": true },
+      "enabled": { "type": "boolean", "label": "Enabled", "default": true },
+      "limit": { "type": "number", "label": "Limit", "default": 2.5 },
+      "mode": { "type": "select", "label": "Mode", "options": ["a", "b"], "default": "a" },
+      "project": { "type": "project", "label": "Project" },
+      "color": { "type": "color", "label": "Color" }
+    },
+    "values": { "enabled": false, "limit": 3, "mode": "b" }
+  },
+  "plugin_list": {
+    "plugins": [
+      {
+        "id": "automations",
+        "source": "builtin:automations",
+        "rootDir": "/opt/bb/plugins/automations",
+        "version": "1.0.0",
+        "provenance": "builtin",
+        "isOrphanedBuiltin": false,
+        "sourceDisplay": "Built-in",
+        "enabled": true,
+        "description": "Scheduled runs",
+        "name": "Automations",
+        "icon": null,
+        "iconUrl": null,
+        "status": "running",
+        "statusDetail": null,
+        "hasSettings": false,
+        "cliCommand": { "name": "automation", "summary": "Manage automations" },
+        "providerIds": [],
+        "icons": {}
+      }
+    ]
+  },
+  "plugin_rpc_ok": { "ok": true, "result": { "items": [1, 2] } },
+  "plugin_rpc_coded_error": { "ok": false, "error": { "code": "unknown_method", "message": "no such method" } },
+  "plugin_rpc_string_error": { "ok": false, "error": "unknown plugin \"x\"" },
+  "plugin_cli_stream": "\n\n{\"exitCode\":0,\"stdout\":\"ok\\n\",\"stderr\":\"\"}\n",
+  "error_thread_not_writable": {
+    "code": "thread_not_writable",
+    "message": "Thread is archived",
+    "details": { "reason": "archived", "archivedAt": 1760000000000, "threadStatus": "idle" },
+    "retryable": false
+  },
+  "error_server_moved": {
+    "code": "server_moved",
+    "message": "Moved",
+    "details": { "serverUrl": "http://10.0.0.2:38886", "toHostName": "desktop", "movedAt": 1760000000000 }
+  },
+  "error_plain": { "code": "not_found", "message": "Thread not found" }
+}

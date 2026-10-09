@@ -1,0 +1,131 @@
+{
+  "sections": [
+    { "id": "sec_1", "name": "Focus", "createdAt": 1759000000000, "updatedAt": 1759000000000 }
+  ],
+  "projects": [
+    {
+      "id": "proj_demo",
+      "kind": "standard",
+      "name": "demo",
+      "gitRemoteUrl": "git@example.com:acme/demo.git",
+      "createdAt": 1759000000000,
+      "updatedAt": 1759500000000,
+      "sources": [
+        {
+          "id": "src_1",
+          "projectId": "proj_demo",
+          "type": "local_path",
+          "hostId": "host_local",
+          "path": "/work/demo",
+          "isDefault": true,
+          "createdAt": 1759000000000,
+          "updatedAt": 1759000000000
+        }
+      ],
+      "threads": [
+        {
+          "id": "thr_demo",
+          "projectId": "proj_demo",
+          "environmentId": "env_1",
+          "providerId": "codex",
+          "title": "Fix README",
+          "titleFallback": null,
+          "sectionId": "sec_1",
+          "status": "active",
+          "parentThreadId": null,
+          "lifecycleOwnerThreadId": null,
+          "sourceThreadId": null,
+          "originKind": null,
+          "originPluginId": null,
+          "visibility": "visible",
+          "archivedAt": null,
+          "pinnedAt": 1759600000000,
+          "deletedAt": null,
+          "lastReadAt": 1759700000000,
+          "latestAttentionAt": 1759800000000,
+          "createdAt": 1759100000000,
+          "updatedAt": 1759800000000,
+          "runtime": { "displayStatus": "active" },
+          "activity": {
+            "activeWorkflowCount": 0,
+            "activeBackgroundAgentCount": 1,
+            "activeBackgroundCommandCount": 0,
+            "activePlanModeCount": 0,
+            "activeGoalCount": 0
+          },
+          "queuedWork": "waiting",
+          "pinSortKey": "a0",
+          "hasPendingInteraction": true,
+          "environmentHostId": "host_local",
+          "environmentName": null,
+          "environmentBranchName": "bb/fix-readme",
+          "environmentPath": "/work/demo/.worktrees/fix-readme",
+          "environmentProviderId": null,
+          "environmentIsWorktree": true,
+          "environmentWorkspaceDisplayKind": "managed-worktree"
+        },
+        {
+          "id": "thr_future",
+          "projectId": "proj_demo",
+          "environmentId": null,
+          "providerId": "claude-code",
+          "title": null,
+          "titleFallback": "Untitled draft",
+          "sectionId": null,
+          "status": "hibernating",
+          "parentThreadId": "thr_demo",
+          "lifecycleOwnerThreadId": null,
+          "sourceThreadId": null,
+          "originKind": "teleport",
+          "originPluginId": null,
+          "visibility": "visible",
+          "archivedAt": null,
+          "pinnedAt": null,
+          "deletedAt": null,
+          "lastReadAt": null,
+          "latestAttentionAt": 1759800000000,
+          "createdAt": 1759100000000,
+          "updatedAt": 1759800000000,
+          "runtime": { "displayStatus": "dreaming" },
+          "activity": {
+            "activeWorkflowCount": 0,
+            "activeBackgroundAgentCount": 0,
+            "activeBackgroundCommandCount": 0,
+            "activePlanModeCount": 0,
+            "activeGoalCount": 0,
+            "activeQuantumCount": 4
+          },
+          "queuedWork": "none",
+          "pinSortKey": null,
+          "hasPendingInteraction": false,
+          "environmentHostId": null,
+          "environmentName": null,
+          "environmentBranchName": null,
+          "environmentPath": null,
+          "environmentProviderId": null,
+          "environmentIsWorktree": null,
+          "environmentWorkspaceDisplayKind": "other",
+          "brandNewField": true
+        }
+      ],
+      "defaultExecutionOptions": {
+        "providerId": "codex",
+        "model": "gpt-5",
+        "serviceTier": "default",
+        "reasoningLevel": "high",
+        "permissionMode": "auto"
+      }
+    }
+  ],
+  "personalProject": {
+    "id": "proj_personal",
+    "kind": "personal",
+    "name": "Personal",
+    "gitRemoteUrl": null,
+    "createdAt": 1759000000000,
+    "updatedAt": 1759000000000,
+    "sources": [],
+    "threads": [],
+    "defaultExecutionOptions": null
+  }
+}
