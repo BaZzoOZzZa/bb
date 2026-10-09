@@ -193,6 +193,9 @@ pub fn render_terminal(state: &AppState, frame: &mut Frame, area: Rect, focused:
     let message = match (&state.terminals.sessions, view) {
         (_, Some(_)) => None,
         (Load::Failed(error), None) => Some(format!("Failed to list terminals: {error} · r retry")),
+        (Load::Loaded(sessions), None) if sessions.is_empty() && state.read_only => {
+            Some("No terminals for this thread.".to_owned())
+        }
         (Load::Loaded(sessions), None) if sessions.is_empty() => {
             Some("No terminals for this thread. Press n to start one.".to_owned())
         }

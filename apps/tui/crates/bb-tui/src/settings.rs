@@ -2945,6 +2945,13 @@ fn handle_content_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             state.close_settings();
             return Vec::new();
         }
+        KeyCode::Char(ch) if view.detail.is_none() && ('1'..='9').contains(&ch) => {
+            let index = usize::from(ch as u8 - b'1');
+            if let Some(section) = SettingsSection::ALL.get(index).copied() {
+                return state.set_section(section);
+            }
+            return Vec::new();
+        }
         KeyCode::Char('/') if view.detail.is_none() && view.section.filterable() => {
             view.filter_input = Some(LineInput::new(view.filter(view.section).to_owned()));
             return Vec::new();

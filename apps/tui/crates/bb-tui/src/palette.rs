@@ -1438,7 +1438,11 @@ impl AppState {
                 title: labels[found.index].clone(),
                 positions: found.positions,
                 detail: None,
-                hint: format!("{count} threads"),
+                hint: if count == 1 {
+                    "1 thread".to_owned()
+                } else {
+                    format!("{count} threads")
+                },
                 target: PaletteTarget::Project(project.project.id.clone()),
             }
         })

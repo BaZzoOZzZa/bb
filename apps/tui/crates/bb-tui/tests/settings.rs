@@ -958,3 +958,24 @@ fn form_validation_helpers() {
     assert_eq!(parse_field_input(&FieldKind::Secret, ""), Ok(None));
     assert!(parse_field_input(&FieldKind::Select(vec!["a".into()]), "b").is_err());
 }
+
+#[tokio::test]
+async fn digits_switch_sections_from_a_section_list() {
+    let api = api();
+    let mut state = state_with_hosts();
+    open(&api, &mut state, ',').await;
+    assert_eq!(
+        state.settings.as_ref().unwrap().focus,
+        SettingsFocus::Content
+    );
+    keys(&api, &mut state, &[KeyCode::Char('5')]).await;
+    assert_eq!(
+        state.settings.as_ref().unwrap().section,
+        SettingsSection::ALL[4]
+    );
+    keys(&api, &mut state, &[KeyCode::Char('1')]).await;
+    assert_eq!(
+        state.settings.as_ref().unwrap().section,
+        SettingsSection::ALL[0]
+    );
+}

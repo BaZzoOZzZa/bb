@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -123,7 +125,10 @@ pub fn attachment_line(
     Some(Line::from(truncate_spans(spans, width)))
 }
 
-fn mention_row(item: &MentionSuggestion) -> (String, Option<String>) {
+fn mention_row(
+    item: &MentionSuggestion,
+    labels: &HashMap<String, String>,
+) -> (String, Option<String>) {
     match item {
         MentionSuggestion::Path {
             path, entry_kind, ..
@@ -140,21 +145,23 @@ fn mention_row(item: &MentionSuggestion) -> (String, Option<String>) {
         MentionSuggestion::Thread {
             title,
             thread_id,
+            project_id,
             project_name,
             relation,
             ..
         } => {
             let mut detail: Vec<String> = Vec::new();
-            detail.extend(project_name.clone());
+            detail.extend(labels.get(project_id).or(project_name.as_ref()).cloned());
             detail.extend(relation.map(|relation| relation.label().to_owned()));
             (
                 title.clone().unwrap_or_else(|| thread_id.clone()),
                 (!detail.is_empty()).then(|| detail.join(" · ")),
             )
         }
-        MentionSuggestion::Project { name, .. } | MentionSuggestion::Section { name, .. } => {
-            (name.clone(), None)
-        }
+        MentionSuggestion::Project {
+            project_id, name, ..
+        } => (labels.get(project_id).unwrap_or(name).clone(), None),
+        MentionSuggestion::Section { name, .. } => (name.clone(), None),
         MentionSuggestion::Plugin {
             title, subtitle, ..
         } => (title.clone(), subtitle.clone()),
@@ -231,7 +238,16 @@ pub fn render_typeahead(
             detail: None,
             index: None,
         }],
-        MenuState::Mentions(ordered) => grouped_rows(&ordered.groups, mention_row),
+        MenuState::Mentions(ordered) => {
+            let labels = state
+                .snapshot
+                .sidebar
+                .data
+                .as_deref()
+                .map(crate::sidebar::project_labels)
+                .unwrap_or_default();
+            grouped_rows(&ordered.groups, |item| mention_row(item, &labels))
+        }
         MenuState::Commands(ordered) => {
             grouped_rows(&ordered.groups, |item| command_row(trigger, item))
         }

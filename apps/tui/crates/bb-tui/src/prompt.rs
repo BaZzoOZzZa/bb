@@ -445,6 +445,23 @@ pub fn cycle_reasoning_value(
     (candidate != current).then_some(candidate)
 }
 
+pub fn is_js_whitespace(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{9}'..='\u{D}'
+            | ' '
+            | '\u{A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
 pub fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
@@ -552,9 +569,9 @@ impl PromptDraft {
 
     pub fn to_input(&self) -> Vec<PromptInput> {
         let mut input = Vec::new();
-        let trimmed_start = self.text.trim_start();
+        let trimmed_start = self.text.trim_start_matches(is_js_whitespace);
         let lead = utf16_len(&self.text) - utf16_len(trimmed_start);
-        let text = trimmed_start.trim_end();
+        let text = trimmed_start.trim_end_matches(is_js_whitespace);
         let text_len = utf16_len(text);
         let tail = lead + text_len;
         if !text.is_empty() {
@@ -1228,6 +1245,21 @@ mod tests {
         assert_eq!((mentions[0].start, mentions[0].end), (3, 9));
         assert_eq!(utf16_slice(text, 3, 9), Some("@Other"));
         assert!(PromptDraft::from_text("   \n ").to_input().is_empty());
+    }
+
+    #[test]
+    fn draft_to_input_trims_like_javascript() {
+        let draft = PromptDraft {
+            text: "\u{FEFF}\u{3000}@x\u{85}".to_owned(),
+            mentions: vec![mention(2, 4)],
+            attachments: Vec::new(),
+        };
+        let input = draft.to_input();
+        let PromptInput::Text(TextPromptInput { text, mentions, .. }) = &input[0] else {
+            panic!("text chunk");
+        };
+        assert_eq!(text, "@x\u{85}");
+        assert_eq!((mentions[0].start, mentions[0].end), (0, 2));
     }
 
     #[test]

@@ -830,3 +830,23 @@ fn diff_keys_do_not_fall_through_to_thread_commands_while_loading() {
     assert!(state.palette.is_none());
     assert_eq!(state.focus, Focus::Panel);
 }
+
+#[test]
+fn a_wide_panel_hides_the_sidebar_instead_of_crushing_the_timeline() {
+    let mut state = open_with_environment(Some("main"));
+    press(&mut state, KeyCode::Char('>'));
+    assert_eq!(state.panel.tab, PanelTab::Diff);
+    state.focus = Focus::Main;
+    let narrow = render_lines(&state, 100, 30);
+    assert!(!narrow[0].contains("Threads"), "{}", narrow.join("\n"));
+    let timeline_width = narrow[0]
+        .split('┐')
+        .next()
+        .map_or(0, |segment| segment.chars().count());
+    assert!(timeline_width >= 40, "{}", narrow.join("\n"));
+    let wide = render_lines(&state, 200, 30);
+    assert!(wide[0].contains("Threads"), "{}", wide.join("\n"));
+    state.focus = Focus::Sidebar;
+    let focused = render_lines(&state, 100, 30);
+    assert!(focused[0].contains("Threads"), "{}", focused.join("\n"));
+}

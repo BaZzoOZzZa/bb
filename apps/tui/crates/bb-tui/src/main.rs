@@ -154,7 +154,10 @@ async fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     let enhanced = enable_terminal_extras(title, mouse);
-    let events = futures::stream::select(terminal_events(), realtime_actions(realtime.events()));
+    let terminal_input = futures::StreamExt::filter(terminal_events(), move |action| {
+        futures::future::ready(mouse || !matches!(action, bb_tui::app::Action::Mouse(_)))
+    });
+    let events = futures::stream::select(terminal_input, realtime_actions(realtime.events()));
     let result = run(
         &mut terminal,
         &mut state,

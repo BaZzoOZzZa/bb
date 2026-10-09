@@ -17,6 +17,8 @@ use crate::timeline::{Frame as TimelineFrame, Scroll};
 
 const SIDEBAR_MIN: u16 = 24;
 const SIDEBAR_MAX: u16 = 40;
+const MAIN_MIN: u16 = 40;
+const PANEL_MIN: u16 = 28;
 
 pub fn truncate(text: &str, width: usize) -> String {
     if text.width() <= width {
@@ -97,12 +99,21 @@ fn render_frame(state: &AppState, frame: &mut Frame) {
         _ => (body.width / 2).clamp(40, 120),
     };
     let maximized = state.panel_visible && state.panel.maximized;
+    let crowded = state.panel_visible
+        && !maximized
+        && state.focus != Focus::Sidebar
+        && body.width.saturating_sub(sidebar_width + panel_width) < MAIN_MIN;
+    let show_sidebar = state.sidebar_visible && !crowded;
+    let panel_width = if state.panel_visible && !maximized {
+        let room = body
+            .width
+            .saturating_sub(if show_sidebar { sidebar_width } else { 0 });
+        panel_width.min(room.saturating_sub(MAIN_MIN).max(PANEL_MIN.min(room)))
+    } else {
+        panel_width
+    };
     let [sidebar_area, main_area, panel_area] = Layout::horizontal([
-        Constraint::Length(if state.sidebar_visible {
-            sidebar_width
-        } else {
-            0
-        }),
+        Constraint::Length(if show_sidebar { sidebar_width } else { 0 }),
         if maximized {
             Constraint::Length(0)
         } else {
@@ -116,7 +127,7 @@ fn render_frame(state: &AppState, frame: &mut Frame) {
     ])
     .areas(body);
 
-    if state.sidebar_visible {
+    if show_sidebar {
         render_sidebar(state, frame, sidebar_area);
     }
     if !maximized {

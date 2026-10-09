@@ -564,7 +564,9 @@ submenu, and passing a working directory to plugin commands.
 Diff tab and focuses it (again closes it), `>`/`<` switch tabs and `Z`
 maximizes it over the timeline. In the panel `1`-`4` pick the Info, Diff,
 File and Terminal tabs, `r` reloads, and `Esc` returns from a preview, restores a
-maximized panel, then leaves the panel. The keys follow the web app's
+maximized panel, then leaves the panel. When the window is too narrow for the
+sidebar, the timeline (at least 40 columns) and the panel, the sidebar is hidden
+until it gets focus. The keys follow the web app's
 `panel.toggle`, `diff.toggle`, `panel.nextTab`, `panel.previousTab` and
 `panel.fullScreen.toggle` commands, so server keybinding overrides rebind them.
 The panel reloads when the server reports a work-status or git-refs change of
@@ -757,7 +759,7 @@ are saved like the web app: the whole settings object from `GET
 Keys: `j`/`k`, `PgUp`/`PgDn`, `g`/`G` move; `Tab`, `h`/`←` and `Esc` go to the
 section list (`Esc` first closes an open project, machine or plugin and clears
 a filter), where `j`/`k` or `1`-`7` pick a section and `Enter`/`l` return to
-it; `y` copies ids, paths and URLs; `C-r` reloads the section; `C-k` opens the
+it (`1`-`7` also switch sections from a section's list); `y` copies ids, paths and URLs; `C-r` reloads the section; `C-k` opens the
 palette; `q` or `,` close the view, and so does `Esc` in the section list. A row shows
 `[saving…]` until the server answers, and a second change to the same row
 waits for it. The palette has entries for each section ("Provider settings",

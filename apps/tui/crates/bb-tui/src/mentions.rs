@@ -366,7 +366,9 @@ impl MentionSuggestion {
     }
 
     pub fn serialized_text(&self, trigger: char) -> String {
-        let replacement = self.replacement().trim();
+        let replacement = self
+            .replacement()
+            .trim_matches(crate::prompt::is_js_whitespace);
         if replacement.starts_with(trigger) {
             replacement.to_owned()
         } else {
