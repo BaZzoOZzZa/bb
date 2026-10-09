@@ -273,6 +273,11 @@ points to; `--server-url`, `--config` and the other flags apply as usual.
 
 ## Keys
 
+The evil keymap (Doom Emacs style: modal states, `SPC` leader with which-key,
+`C-w` windows, `:` ex commands) is specified in
+[docs/keymap-evil.md](docs/keymap-evil.md), the single source of truth for
+keys. Until it is implemented, the tables below describe the current keymap.
+
 `?` shows the key list. The table below is the default
 keymap of the main screen. Keys with a web command id follow the server's
 keyboard overrides (Settings → Keyboard in the web app; `Cmd`-only shortcuts
