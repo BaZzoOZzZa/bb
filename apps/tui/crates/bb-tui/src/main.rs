@@ -104,6 +104,9 @@ async fn main() -> Result<()> {
         .submit_key
         .or(loaded.config.submit_key)
         .unwrap_or_default();
+    state.keys.which_key_delay =
+        std::time::Duration::from_millis(loaded.config.evil.which_key_delay_ms);
+    state.registers.clipboard = loaded.config.evil.clipboard;
     for warning in &loaded.warnings {
         state.toast(warning.clone(), ToastLevel::Error);
     }

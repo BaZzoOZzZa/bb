@@ -7,7 +7,9 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AppState, Focus, Mode, ToastLevel};
+use crate::composer::EditMode;
 use crate::composer_ui;
+use crate::evil::Tag;
 use crate::indicator::{Indicator, display_status_label};
 use crate::input::LineInput;
 use crate::keymap::Command;
@@ -79,9 +81,10 @@ pub fn render(state: &AppState, frame: &mut Frame) {
 fn render_frame(state: &AppState, frame: &mut Frame) {
     let area = frame.area();
     let banner = banner_text(state);
-    let [banner_area, body, status] = Layout::vertical([
+    let [banner_area, body, status, echo] = Layout::vertical([
         Constraint::Length(u16::from(banner.is_some())),
         Constraint::Fill(1),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -93,11 +96,19 @@ fn render_frame(state: &AppState, frame: &mut Frame) {
         );
     }
 
-    let sidebar_width = (body.width * 3 / 10).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
-    let panel_width = match state.panel.tab {
-        crate::panel::PanelTab::Info => (body.width * 3 / 10).clamp(28, 56),
-        _ => (body.width / 2).clamp(40, 120),
-    };
+    let sidebar_width = adjust(
+        (body.width * 3 / 10).clamp(SIDEBAR_MIN, SIDEBAR_MAX),
+        state.sidebar_width_delta,
+        body.width / 2,
+    );
+    let panel_width = adjust(
+        match state.panel.tab {
+            crate::panel::PanelTab::Info => (body.width * 3 / 10).clamp(28, 56),
+            _ => (body.width / 2).clamp(40, 120),
+        },
+        state.panel_width_delta,
+        body.width.saturating_sub(MAIN_MIN),
+    );
     let maximized = state.panel_visible && state.panel.maximized;
     let crowded = state.panel_visible
         && !maximized
@@ -144,10 +155,8 @@ fn render_frame(state: &AppState, frame: &mut Frame) {
         crate::automations_ui::render_automations(state, view, frame, body);
     }
     render_status(state, frame, status);
+    render_echo(state, frame, echo);
     render_toasts(state, frame, body);
-    if state.mode == Mode::Help {
-        render_help(state, frame, area);
-    }
     if let Mode::OpenPicker { targets, selected } = &state.mode {
         render_open_picker(targets, *selected, frame, area);
     }
@@ -168,6 +177,12 @@ fn render_frame(state: &AppState, frame: &mut Frame) {
         crate::panel_ui::render_confirm(confirm, frame, body);
     }
     crate::notifications_ui::render_notifications(state, frame, body);
+    crate::which_key::render(state, frame, body);
+}
+
+fn adjust(base: u16, delta: i16, max: u16) -> u16 {
+    let value = i32::from(base) + i32::from(delta);
+    value.clamp(12, i32::from(max.max(12))) as u16
 }
 
 fn render_open_picker(targets: &[String], selected: usize, frame: &mut Frame, area: Rect) {
@@ -766,15 +781,6 @@ fn connection_span(connection: &ConnectionState) -> Span<'static> {
     }
 }
 
-fn first_label(state: &AppState, command: Command) -> String {
-    state
-        .keymap
-        .chords_for(command)
-        .first()
-        .map(ToString::to_string)
-        .unwrap_or_default()
-}
-
 fn hints(state: &AppState) -> String {
     if let Some(hint) = crate::palette_ui::hints(state.palette.as_ref(), state.result_pane.as_ref())
     {
@@ -786,23 +792,22 @@ fn hints(state: &AppState) -> String {
     if let Some(view) = &state.settings {
         return crate::settings::settings_hints(view);
     }
-    let key = |command| first_label(state, command);
     match &state.mode {
-        Mode::Filter(_) => "type to filter · Enter keep · Esc clear".into(),
-        Mode::Rename { .. } => "Enter save · Esc cancel".into(),
-        Mode::Help => "any key closes help".into(),
-        Mode::OpenPicker { .. } => "1-9/Enter open · j/k move · Esc cancel".into(),
-        Mode::Picker(_) => "1-9/Enter choose · j/k move · Esc cancel".into(),
+        Mode::Ex(_) => String::new(),
+        Mode::Filter(_) => "type to filter · RET keep · ESC clear".into(),
+        Mode::Rename { .. } => "RET save · ESC cancel".into(),
+        Mode::OpenPicker { .. } => "1-9/RET open · j/k move · ESC cancel".into(),
+        Mode::Picker(_) => "1-9/RET choose · j/k move · ESC cancel".into(),
         Mode::Queue { .. } => {
-            "j/k select · Enter/e edit · s send now · r retry · d delete · Esc close".into()
+            "j/k select · RET/e edit · s send now · r retry · d delete · ESC close".into()
         }
-        Mode::AttachPrompt { .. } => "Enter attach · Tab complete path · Esc cancel".into(),
-        Mode::Attachments { .. } => "j/k select · d/x/Del remove · Esc close".into(),
+        Mode::AttachPrompt { .. } => "RET attach · TAB complete path · ESC cancel".into(),
+        Mode::Attachments { .. } => "j/k select · d/x/Del remove · ESC close".into(),
         Mode::Notifications { .. } => {
-            "Enter open thread · j/k move · d delete · C clear all · Esc close".into()
+            "RET open thread · j/k move · dd delete · C clear all · q close".into()
         }
         Mode::Normal if state.typeahead_visible() => {
-            "↑/↓ select · Enter/Tab insert · Esc dismiss".into()
+            "↑/↓ select · RET/TAB insert · ESC dismiss".into()
         }
         Mode::Normal if state.focus == Focus::NewThread && state.new_thread_form().is_some() => {
             crate::new_thread_ui::hints(
@@ -810,44 +815,111 @@ fn hints(state: &AppState) -> String {
                 state.submit_key.submit_label(),
             )
         }
-        Mode::Normal if state.panel.confirm.is_some() => "y/Enter confirm · Esc cancel".into(),
+        Mode::Normal if state.panel.confirm.is_some() => "y/RET confirm · ESC cancel".into(),
         Mode::Normal if state.focus == Focus::Panel && state.panel_visible => {
             crate::panel_ui::hints(state)
         }
-        Mode::Normal if state.focus == Focus::Interaction => format!(
-            "Esc leave · {} next waiting request · {} focus",
-            key(Command::NextPending),
-            key(Command::FocusNext),
-        ),
-        Mode::Normal if state.focus == Focus::Composer => format!(
-            "{} send · {} newline · ↑/↓ history · C-s steer · Esc Esc stop · @ mention · {} attach · {} model · {} queue",
+        Mode::Normal if state.focus == Focus::Interaction => {
+            "ESC leave · C-k timeline · M-w next waiting request · M-SPC leader".into()
+        }
+        Mode::Normal if state.focus == Focus::Composer => composer_hints(state),
+        Mode::Normal if state.focus == Focus::Main && state.open_thread.is_some() => {
+            "j/k rows · RET toggle · ]m/[m messages · gy yank · gx open · i write · SPC leader"
+                .into()
+        }
+        Mode::Normal if state.focus == Focus::Sidebar => {
+            "j/k move · RET open · go focus · R rename · dd archive · g/ filter · SPC leader".into()
+        }
+        Mode::Normal => "SPC leader · : ex · SPC h b b keys · SPC q q quit".into(),
+    }
+}
+
+fn composer_hints(state: &AppState) -> String {
+    match state.focused_composer().map(|composer| composer.mode) {
+        Some(EditMode::Insert) => format!(
+            "{} send · {} newline · ESC normal · C-c C-s steer · C-c C-k stop · @ mention",
             state.submit_key.submit_label(),
             state.submit_key.newline_label(),
-            key(Command::AttachFile),
-            key(Command::ModelPicker),
-            key(Command::QueueList),
         ),
-        Mode::Normal if state.focus == Focus::Main && state.open_thread.is_some() => format!(
-            "{}/{} select · {} expand · {} copy · {} open · {}/{} messages · {} follow",
-            key(Command::MoveDown),
-            key(Command::MoveUp),
-            key(Command::Open),
-            key(Command::Copy),
-            key(Command::OpenExternal),
-            key(Command::PreviousMessage),
-            key(Command::NextMessage),
-            key(Command::MoveBottom),
+        Some(EditMode::Visual { .. }) => {
+            "d delete · y yank · c change · > indent · o other end · ESC normal".into()
+        }
+        _ => "i insert · RET send · u undo · p put · C-k timeline · SPC leader".into(),
+    }
+}
+
+fn buffer_label(state: &AppState) -> (String, String) {
+    if let Some(pane) = &state.result_pane {
+        return (pane.title.clone(), String::new());
+    }
+    if let Some(view) = &state.settings {
+        return ("*settings*".into(), view.section.label().to_owned());
+    }
+    if state.automations.is_some() {
+        return ("*automations*".into(), String::new());
+    }
+    if matches!(state.mode, Mode::Notifications { .. }) {
+        return ("*notifications*".into(), String::new());
+    }
+    let title = |state: &AppState| {
+        state
+            .open_thread
+            .as_deref()
+            .map(|thread_id| state.thread_title(thread_id))
+            .unwrap_or_default()
+    };
+    match state.focus {
+        Focus::Sidebar if state.sidebar_visible => (
+            "*threads*".into(),
+            format!(
+                "{}/{}",
+                (state.selected + 1).min(state.rows.len()),
+                state.rows.len()
+            ),
         ),
-        Mode::Normal => format!(
-            "{}/{} move · {} open · {} filter · {} help · {} quit · {} commands",
-            key(Command::MoveDown),
-            key(Command::MoveUp),
-            key(Command::Open),
-            key(Command::Filter),
-            key(Command::Help),
-            key(Command::Quit),
-            key(Command::PaletteOpen),
+        Focus::Panel if state.panel_visible => (
+            format!("*panel: {}*", state.panel.tab.title()),
+            String::new(),
         ),
+        Focus::NewThread => ("*new thread*".into(), String::new()),
+        Focus::Composer => {
+            let position = state
+                .focused_composer()
+                .map(|composer| {
+                    let cursor = composer.textarea().cursor();
+                    format!("{}:{}", cursor.0 + 1, cursor.1 + 1)
+                })
+                .unwrap_or_default();
+            (format!("{} [message]", title(state)), position)
+        }
+        Focus::Interaction => (format!("{} [request]", title(state)), String::new()),
+        _ => {
+            let position = state
+                .timeline()
+                .map(|timeline| {
+                    if timeline.scroll == Scroll::Bottom {
+                        "Bot".to_owned()
+                    } else {
+                        match timeline.selected_index() {
+                            Some(index) => format!("{}/{}", index + 1, timeline.items.len()),
+                            None => "Top".to_owned(),
+                        }
+                    }
+                })
+                .unwrap_or_default();
+            (title(state), position)
+        }
+    }
+}
+
+fn tag_color(tag: Tag) -> Color {
+    match tag {
+        Tag::Normal => Color::Green,
+        Tag::Insert => Color::Blue,
+        Tag::Visual | Tag::VisualLine => Color::Magenta,
+        Tag::Operator => Color::Cyan,
+        Tag::Replace => Color::Red,
+        Tag::Command => Color::Yellow,
     }
 }
 
@@ -859,7 +931,7 @@ fn render_status(state: &AppState, frame: &mut Frame, area: Rect) {
     };
     let mut spans = vec![
         Span::styled(
-            truncate(&server, width / 3),
+            truncate(&server, width / 4),
             Style::new().bg(Color::DarkGray).fg(Color::White),
         ),
         Span::raw(" "),
@@ -898,22 +970,78 @@ fn render_status(state: &AppState, frame: &mut Frame, area: Rect) {
     if unread > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            format!(
-                "{} {unread} new",
-                first_label(state, Command::Notifications)
-            ),
+            format!("! {unread} new"),
             Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ));
     }
-    let used: usize = spans.iter().map(|span| span.content.width()).sum();
-    let hint = hints(state);
-    let available = width.saturating_sub(used + 2);
-    if available > 8 {
-        let hint = truncate(&hint, available);
-        pad_to(&mut spans, used, width.saturating_sub(hint.width() + 1));
-        spans.push(Span::styled(hint, Style::new().fg(Color::DarkGray)));
+    let tag = crate::evil::tag(state);
+    let tag_text = format!(" {} ", tag.label());
+    let showcmd = state.keys.showcmd();
+    let (buffer, position) = buffer_label(state);
+    let mut right = Vec::new();
+    if !showcmd.is_empty() {
+        right.push(Span::styled(
+            format!("{showcmd} "),
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
     }
+    if !position.is_empty() {
+        right.push(Span::styled(
+            format!("{position} "),
+            Style::new().fg(Color::Gray),
+        ));
+    }
+    right.push(Span::styled(
+        tag_text,
+        Style::new()
+            .bg(tag_color(tag))
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    ));
+    let right_width: usize = right.iter().map(|span| span.content.width()).sum();
+    let used: usize = spans.iter().map(|span| span.content.width()).sum();
+    let room = width.saturating_sub(used + right_width + 3);
+    if room > 4 && !buffer.is_empty() {
+        let buffer = truncate(&buffer, room);
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            buffer,
+            Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let used: usize = spans.iter().map(|span| span.content.width()).sum();
+    pad_to(&mut spans, used, width.saturating_sub(right_width));
+    spans.extend(right);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_echo(state: &AppState, frame: &mut Frame, area: Rect) {
+    let width = usize::from(area.width);
+    if let Mode::Ex(line) = &state.mode {
+        let text = format!(":{}", line.input.text());
+        frame.render_widget(Paragraph::new(truncate(&text, width)), area);
+        let x = area.x + 1 + line.input.cursor_width() as u16;
+        if x < area.right() {
+            frame.set_cursor_position((x, area.y));
+        }
+        return;
+    }
+    if let Some(echo) = &state.keys.echo {
+        let style = if echo.error {
+            Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+        };
+        frame.render_widget(
+            Paragraph::new(truncate(&echo.text, width)).style(style),
+            area,
+        );
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(truncate(&hints(state), width)).style(Style::new().fg(Color::DarkGray)),
+        area,
+    );
 }
 
 fn render_toasts(state: &AppState, frame: &mut Frame, area: Rect) {
@@ -943,146 +1071,4 @@ fn render_toasts(state: &AppState, frame: &mut Frame, area: Rect) {
         frame.render_widget(Clear, rect);
         frame.render_widget(Paragraph::new(text).style(style), rect);
     }
-}
-
-fn help_entries(state: &AppState) -> Vec<(String, String)> {
-    let composer = [
-        (
-            state.submit_key.submit_label().to_owned(),
-            "Composer: send (queues while running)".to_owned(),
-        ),
-        (
-            state.submit_key.newline_label().to_owned(),
-            "Composer: new line".to_owned(),
-        ),
-        (
-            "C-s".to_owned(),
-            "Composer: steer the running turn".to_owned(),
-        ),
-        ("↑/↓".to_owned(), "Composer: prompt history".to_owned()),
-        (
-            "mouse".to_owned(),
-            "Click: open / focus / select · wheel: scroll".to_owned(),
-        ),
-        (
-            "Esc Esc".to_owned(),
-            "Composer: stop the running turn".to_owned(),
-        ),
-        ("C-c".to_owned(), "Composer: clear, then stop".to_owned()),
-        (
-            "y/s/d".to_owned(),
-            "Request: allow once / for session / deny".to_owned(),
-        ),
-        (
-            "1-9 Space".to_owned(),
-            "Question: choose / toggle option".to_owned(),
-        ),
-        (
-            "C-x".to_owned(),
-            "Question, secret, plugin request: cancel (provider question: stop turn)".to_owned(),
-        ),
-        (
-            "j/k Enter".to_owned(),
-            "New thread: move between fields / pick a value".to_owned(),
-        ),
-        (
-            "i / Tab".to_owned(),
-            "New thread: edit the prompt / next field".to_owned(),
-        ),
-        (
-            "1-4".to_owned(),
-            "Panel: Info / Diff / File / Terminal tab".to_owned(),
-        ),
-        (
-            "C-\\ A".to_owned(),
-            "Terminal: stop typing, attach fullscreen".to_owned(),
-        ),
-        (
-            "s n/N [/]".to_owned(),
-            "Diff: scope, next/previous hunk, file".to_owned(),
-        ),
-        (
-            "p e".to_owned(),
-            "Panel: preview file, open in $EDITOR".to_owned(),
-        ),
-        (
-            "C M R W".to_owned(),
-            "Panel: commit, merge, ready, draft PR".to_owned(),
-        ),
-    ];
-    Command::ALL
-        .iter()
-        .filter_map(|command| match command {
-            Command::Jump(1) => Some((
-                format!(
-                    "{}…{}",
-                    state.keymap.label_for(Command::Jump(1)),
-                    state.keymap.label_for(Command::Jump(9))
-                ),
-                "Open thread #1-9".to_owned(),
-            )),
-            Command::Jump(_) => None,
-            command => {
-                let label = state.keymap.label_for(*command);
-                (!label.is_empty()).then(|| (label, command.description()))
-            }
-        })
-        .chain(composer)
-        .collect()
-}
-
-fn render_help(state: &AppState, frame: &mut Frame, area: Rect) {
-    let entries = help_entries(state);
-    let key_width = entries
-        .iter()
-        .map(|(key, _)| key.width())
-        .max()
-        .unwrap_or(0);
-    let desc_width = entries
-        .iter()
-        .map(|(_, desc)| desc.width())
-        .max()
-        .unwrap_or(0);
-    let per_column = usize::from(area.height.saturating_sub(2)).max(1);
-    let columns = entries.len().div_ceil(per_column).max(1);
-    let rows = entries.len().div_ceil(columns);
-    let fit = usize::from(area.width.saturating_sub(2)) / columns;
-    let desc_width = desc_width.min(fit.saturating_sub(key_width + 4)).max(1);
-    let column_width = key_width + desc_width + 4;
-    let width = ((column_width * columns + 2) as u16).min(area.width);
-    let height = (rows as u16 + 2).min(area.height);
-    let rect = Rect {
-        x: area.x + (area.width - width) / 2,
-        y: area.y + (area.height - height) / 2,
-        width,
-        height,
-    };
-    let lines: Vec<Line> = (0..rows)
-        .map(|row| {
-            let mut spans = Vec::new();
-            for column in 0..columns {
-                let Some((key, desc)) = entries.get(column * rows + row) else {
-                    continue;
-                };
-                spans.push(Span::styled(
-                    format!(" {key:<key_width$}  "),
-                    Style::new().fg(Color::Cyan),
-                ));
-                spans.push(Span::raw(format!(
-                    "{:<desc_width$} ",
-                    truncate(desc, desc_width)
-                )));
-            }
-            Line::from(spans)
-        })
-        .collect();
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .title(" Keys "),
-        ),
-        rect,
-    );
 }

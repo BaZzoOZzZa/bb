@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use bb_store::{NoRealtime, Store, StoreConfig};
 use bb_tui::app::{Action, AppState, Effect, Focus, update};
+use bb_tui::keymap::Direction;
 use bb_tui::runtime::EffectRunner;
 use crossterm::event::{KeyCode, KeyModifiers};
 use support::*;
@@ -23,7 +24,7 @@ fn split_state() -> (AppState, Vec<Effect>) {
     state.open("thr_old".into());
     state.focus = Focus::Main;
     select(&mut state, "thr_other");
-    let effects = press(&mut state, KeyCode::Char('V'));
+    let effects = keys(&mut state, "C-w v");
     (state, effects)
 }
 
@@ -91,7 +92,7 @@ fn tab_cycles_through_every_pane_and_its_composer() {
     state.focus = Focus::Sidebar;
     let mut stops = Vec::new();
     for _ in 0..5 {
-        press(&mut state, KeyCode::Tab);
+        keys(&mut state, "C-w w");
         stops.push((state.focus, state.open_thread.clone().unwrap()));
     }
     assert_eq!(
@@ -113,7 +114,7 @@ fn closing_panes_returns_to_a_single_thread() {
     state.focus = Focus::Main;
     for thread in ["thr_other", "thr_unread", "thr_wait"] {
         select(&mut state, thread);
-        press(&mut state, KeyCode::Char('V'));
+        keys(&mut state, "C-w v");
     }
     assert_eq!(state.splits.len(), 4);
     select(&mut state, "thr_old");
@@ -124,7 +125,7 @@ fn closing_panes_returns_to_a_single_thread() {
     assert!(!lines.contains("1 · Write docs"), "{lines}");
     alt(&mut state, 'z');
 
-    let effects = press(&mut state, KeyCode::Char('X'));
+    let effects = keys(&mut state, "C-w q");
     assert_eq!(state.splits, vec!["thr_old", "thr_other", "thr_unread"]);
     assert_eq!(state.open_thread.as_deref(), Some("thr_unread"));
     assert!(effects.contains(&Effect::WatchSplits(vec![
@@ -132,19 +133,82 @@ fn closing_panes_returns_to_a_single_thread() {
         "thr_other".into(),
         "thr_unread".into()
     ])));
-    press(&mut state, KeyCode::Char('X'));
-    let effects = press(&mut state, KeyCode::Char('X'));
+    keys(&mut state, ": c l o s e RET");
+    let effects = keys(&mut state, "C-w c");
     assert!(state.splits.is_empty());
     assert!(effects.contains(&Effect::WatchSplits(Vec::new())));
     assert_eq!(state.open_thread.as_deref(), Some("thr_old"));
-    press(&mut state, KeyCode::Char('X'));
+    keys(&mut state, "C-w q");
     assert_eq!(state.open_thread.as_deref(), Some("thr_old"));
+    assert!(!state.quit);
     assert!(
         state
-            .toasts
-            .iter()
-            .any(|toast| toast.message == "Only one pane is open")
+            .keys
+            .echo
+            .as_ref()
+            .is_some_and(|echo| echo.error && echo.text.starts_with("E444"))
     );
+}
+
+#[test]
+fn window_commands_move_focus_by_geometry_and_rearrange_panes() {
+    let (mut state, _) = split_state();
+    state.focus = Focus::Main;
+    keys(&mut state, "C-w h");
+    assert_eq!(
+        (state.focus, state.open_thread.as_deref()),
+        (Focus::Main, Some("thr_old"))
+    );
+    keys(&mut state, "C-j");
+    assert_eq!(
+        (state.focus, state.open_thread.as_deref()),
+        (Focus::Composer, Some("thr_old"))
+    );
+    keys(&mut state, "C-w l");
+    assert_eq!(
+        (state.focus, state.open_thread.as_deref()),
+        (Focus::Composer, Some("thr_other"))
+    );
+    keys(&mut state, "C-w l");
+    assert_eq!(state.open_thread.as_deref(), Some("thr_other"));
+    keys(&mut state, "C-k C-h C-h");
+    assert_eq!(state.focus, Focus::Sidebar);
+    keys(&mut state, "C-w h");
+    assert_eq!(state.focus, Focus::Sidebar);
+    keys(&mut state, "C-w p");
+    assert_eq!(
+        (state.focus, state.open_thread.as_deref()),
+        (Focus::Main, Some("thr_old"))
+    );
+    keys(&mut state, "2 C-w w");
+    assert_eq!(state.open_thread.as_deref(), Some("thr_other"));
+    keys(&mut state, "SPC 1");
+    assert_eq!(state.open_thread.as_deref(), Some("thr_old"));
+    keys(&mut state, "C-w x");
+    assert_eq!(state.splits, vec!["thr_other", "thr_old"]);
+    assert_eq!(state.open_thread.as_deref(), Some("thr_old"));
+    keys(&mut state, "C-w H");
+    assert_eq!(state.splits, vec!["thr_old", "thr_other"]);
+    keys(&mut state, "C-w r");
+    assert_eq!(state.splits, vec!["thr_other", "thr_old"]);
+    keys(&mut state, "C-w o");
+    assert!(state.split_maximized && !state.sidebar_visible);
+    assert_eq!(state.windows().len(), 2);
+    keys(&mut state, "C-w o");
+    assert!(!state.split_maximized && state.sidebar_visible);
+    keys(&mut state, "C-w >");
+    assert_eq!(state.sidebar_width_delta, 4);
+    keys(&mut state, "C-w =");
+    assert_eq!(state.sidebar_width_delta, 0);
+    keys(&mut state, "C-w t");
+    assert_eq!(state.focus, Focus::Sidebar);
+    keys(&mut state, "C-w b");
+    assert_eq!(
+        (state.focus, state.open_thread.as_deref()),
+        (Focus::Composer, Some("thr_old"))
+    );
+    state.focus_direction(Direction::Up);
+    assert_eq!(state.focus, Focus::Main);
 }
 
 #[test]
@@ -158,7 +222,7 @@ fn a_fifth_pane_is_refused() {
     state.open("thr_old".into());
     for thread in ["thr_other", "thr_unread", "thr_wait", "thr_extra"] {
         select(&mut state, thread);
-        press(&mut state, KeyCode::Char('V'));
+        keys(&mut state, "C-w v");
     }
     assert_eq!(state.splits.len(), 4);
     assert!(!state.splits.contains(&"thr_extra".to_owned()));

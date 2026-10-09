@@ -507,6 +507,10 @@ impl Default for AutomationsView {
 }
 
 impl AutomationsView {
+    pub fn captures_keys(&self) -> bool {
+        self.form.is_some() || self.confirm.is_some() || self.filter_input.is_some()
+    }
+
     pub fn filter_text(&self) -> &str {
         match &self.filter_input {
             Some(input) => input.text(),
@@ -2499,22 +2503,22 @@ fn choose(state: &mut AppState, choice: FormChoice) -> Vec<Effect> {
 pub fn automations_hints(view: &AutomationsView) -> String {
     if let Some(form) = &view.form {
         if form.edit.is_some() {
-            return "Enter save field · Esc cancel".into();
+            return "RET save field · ESC cancel".into();
         }
         if form.choice.is_some() {
-            return "j/k move · Enter choose · Esc cancel".into();
+            return "j/k move · RET choose · ESC cancel".into();
         }
-        return "j/k field · Enter edit · C-s save · Esc discard".into();
+        return "j/k field · RET edit · C-s save · ESC discard".into();
     }
     if view.confirm.is_some() {
-        return "y/Enter delete · Esc cancel".into();
+        return "y/RET delete · ESC cancel".into();
     }
     if view.filter_input.is_some() {
-        return "type to filter · Enter keep · Esc clear".into();
+        return "type to filter · RET keep · ESC clear".into();
     }
     if view.detail.is_some() {
-        "j/k move · Enter open thread · Space pause/resume · r run now · e edit · d delete · m more runs · Esc back".into()
+        "j/k move · RET open thread · ~ pause/resume · r run now · e edit · dd delete · gm more runs · q back".into()
     } else {
-        "j/k move · Enter details · n new · Space pause/resume · r run now · e edit · d delete · / filter · R reload · Esc close".into()
+        "j/k move · RET details · o new · ~ pause/resume · r run now · e edit · dd delete · g/ filter · gr reload · q close".into()
     }
 }

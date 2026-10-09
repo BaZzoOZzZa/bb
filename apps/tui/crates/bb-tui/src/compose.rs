@@ -11,7 +11,7 @@ use bb_wire::thread::{ThreadDisplayStatus, ThreadStatus};
 use bb_wire::timeline::{ModelFallback, ThreadTimelineResponse};
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::api::{Mutation, MutationReply};
 use crate::app::{AppState, Effect, Focus, Mode, ToastLevel};
@@ -19,7 +19,7 @@ use crate::attach::{attach_command_argument, complete_path, list_dir, pasted_fil
 use crate::composer::{Composer, ComposerKey, EDIT_HOLD_RENEWALS_PER_LEASE, EDIT_HOLD_RETRY};
 use crate::execution::{ExecutionState, Load, PickerOption, ResolvedExecution};
 use crate::input::{InputOutcome, LineInput};
-use crate::keymap::{Command, Keymap};
+use crate::keymap::Command;
 use crate::prompt::{
     ExecutionSelection, PromptDraft, ShortcutInputs, ShortcutRequest, SubmitMode, SubmitModeInputs,
     build_auto_follow_up_request, build_create_queued_follow_up_request,
@@ -464,7 +464,7 @@ impl AppState {
         })]
     }
 
-    fn cancel_queued_edit(&mut self, thread_id: &str) -> Vec<Effect> {
+    pub(crate) fn cancel_queued_edit(&mut self, thread_id: &str) -> Vec<Effect> {
         let Some(edit) = self
             .composers
             .get_mut(thread_id)
@@ -670,6 +670,13 @@ pub(crate) fn composer_command(state: &mut AppState, command: Command) -> Option
                 state.focus = Focus::Interaction;
             } else if state.composer_available() {
                 state.focus = Focus::Composer;
+                if let Some(composer) = state
+                    .open_thread
+                    .clone()
+                    .and_then(|thread_id| state.composers.get_mut(&thread_id))
+                {
+                    composer.enter_insert();
+                }
             } else if has_thread {
                 state.toast("This thread is archived", ToastLevel::Info);
             }
@@ -759,44 +766,32 @@ pub(crate) fn handle_composer_key(state: &mut AppState, key: KeyEvent) -> Vec<Ef
                 None => state.submit(false),
             }
         }
-        ComposerKey::Steer => state.submit(true),
         ComposerKey::Escape => {
-            if composer.editing.is_some() {
-                return state.cancel_queued_edit(&thread_id);
-            }
-            if state.submit_mode(&thread_id).can_stop() {
-                let composer = state.composers.get_mut(&thread_id).expect("composer");
-                if composer.arm_escape(now) {
-                    return state.stop_turn();
-                }
-                return Vec::new();
-            }
-            state.focus = Focus::Main;
+            composer.enter_normal();
             Vec::new()
         }
-        ComposerKey::Interrupt => {
-            if composer.editing.is_some() {
-                return state.cancel_queued_edit(&thread_id);
-            }
-            if !composer.is_empty() {
-                composer.clear(now);
-                return Vec::new();
-            }
-            if state.submit_mode(&thread_id).can_stop() {
-                return state.stop_turn();
-            }
-            let mut effects = state.flush_all_drafts();
-            state.quit = true;
-            effects.push(Effect::Quit);
-            effects
-        }
         ComposerKey::Edited | ComposerKey::Handled => Vec::new(),
-        ComposerKey::Unhandled => match state.keymap.lookup(&key) {
-            Some(command) if Keymap::is_composer_command(command) => {
-                crate::app::run_command(state, command)
+        ComposerKey::Unhandled => {
+            insert_unhandled(state, &key);
+            Vec::new()
+        }
+    }
+}
+
+pub(crate) fn insert_unhandled(state: &mut AppState, key: &KeyEvent) {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('o') if ctrl => {
+            let target = state.active_composer_target();
+            if let Some(composer) = target.and_then(|target| state.composer_for_mut(&target)) {
+                composer.enter_normal();
+                composer.one_shot = true;
             }
-            _ => Vec::new(),
-        },
+        }
+        KeyCode::Char('r') if ctrl => {
+            state.keys.await_char = Some((crate::vi::CharAct::InsertRegister, None));
+        }
+        _ => {}
     }
 }
 

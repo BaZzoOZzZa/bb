@@ -30,6 +30,7 @@ Contents:
 20. [Conflicts and resolutions](#20-conflicts-and-resolutions)
 21. [Out of scope for the first cut](#21-out-of-scope-for-the-first-cut)
 22. [Implementation notes](#22-implementation-notes)
+23. [Implementation status](#23-implementation-status)
 
 Notation: `C-x` is Ctrl+x, `M-x` is Alt+x, `S-x` is Shift+x, `RET` Enter,
 `ESC` Escape, `TAB` Tab, `SPC` Space. `a b` is a key sequence. `{N}` is an
@@ -81,7 +82,9 @@ highlighted, then the existing status items (waiting requests, notifications,
 read-only marker, server). Messages (`E492: Not an editor command: foo`,
 `search hit BOTTOM, continuing at TOP`, `SPC x y is undefined`) appear in the
 echo area, the line under the status bar used by the ex and search lines,
-until the next key.
+until the next key. With no message and no ex or search line, the echo area
+shows short key hints for the focused buffer in a dim color (the old status
+bar hints moved there).
 
 The cursor shape follows the state when the terminal supports DECSCUSR: block
 in normal, visual and operator-pending, bar in insert and command-line,
@@ -360,7 +363,7 @@ Every `C-w` key of section 6 also works as `SPC w` key (`SPC w v`), plus:
 | `C-w t`, `C-w b` | Top-left window (sidebar or pane 1), bottom-right window | |
 | `C-w v`, `C-w s` | Open the thread under the cursor (sidebar or palette) or the focused thread in a new split right of the focused pane (`s` gives the same vertical split; panes are always side by side) | |
 | `C-w n` | New thread in a new split | |
-| `C-w q`, `C-w c` | Close the focused window: a split pane (one pane left ends the split), the right panel, the sidebar (hides it), a special view | `pane.close` |
+| `C-w q`, `C-w c` | Close the focused window: a split pane (one pane left ends the split), the right panel, the sidebar (hides it), a special view. On the last window it echoes `E444: Cannot close last window` instead of quitting (quitting stays explicit: `:q`, `ZQ`, `SPC q q`) | `pane.close` |
 | `C-w o` | Only: maximize the focused pane or the right panel, again restores. Nothing is closed | `pane.maximize.toggle`, `panel.fullScreen.toggle` |
 | `C-w =` | Restore all windows (unmaximize, show the sidebar if it was hidden by `C-w o`) | |
 | `C-w x`, `C-w r` | Swap the focused pane with the next one / rotate panes | |
@@ -691,7 +694,7 @@ input line; there is no normal state inside them.
 | typing | Filter |
 | `C-j`, `C-n`, `↓`, `TAB` | Next candidate |
 | `C-k`, `C-p`, `↑`, `S-TAB` | Previous candidate |
-| `C-d`, `C-u`, `PgDn`, `PgUp` | Page down / up |
+| `C-d`, `PgDn` / `PgUp` | Page down / up (`C-u` keeps its editing meaning below) |
 | `M-<`, `M->` | First / last candidate |
 | `RET` | Accept |
 | `C-RET` | Accept the typed input as is (no candidate) where free text is allowed |
@@ -1152,3 +1155,62 @@ always sends.
   and override precedence over evil keys.
 - The Russian translation happens once, when a key event enters the evil
   layer outside insert state.
+
+## 23. Implementation status
+
+What the first step built, and what later steps add. The tables above stay
+the target; this list says which parts already run.
+
+Built:
+
+- The key engine: one trie per scope (global, leader, `C-w`, sidebar,
+  timeline, composer normal / visual / insert, new-thread rows, each right
+  panel tab, notifications, settings, automations, output pane), counts,
+  registers, character arguments (`f t r "`), the which-key popup (delay,
+  paging, `Bksp`, undefined-key message), `SPC h k`, `SPC h b b`, `SPC h ?`,
+  `M-SPC` from every state, the Russian layout, direct chords with server
+  overrides and their precedence rules (section 16).
+- The modeline: state tag, pending keys, buffer name, position; the echo area
+  with messages, the ex line and hints.
+- The whole leader map of section 5 except the entries listed below, all of
+  section 6, the global keys of section 4.
+- The sidebar keys of section 8 except visual-line batches, `]b`/`[b` and
+  `]w`/`[w` everywhere.
+- Timeline rows: `j k { } gg G {N}G H M L C-d C-u C-f C-b C-e C-y zz zt zb`,
+  `]m [m`, `RET TAB za zo zc zO zC zR zM`, `gy`, `gx`, `i a A o O I gi`, `gr`.
+- The composer: normal, insert, visual and visual-line states, the motions of
+  section 7 inside the draft (`h j k l w b e ge W B E gE 0 ^ $ g_ gg G { } %
+  f F t T ; ,`), operators `d c y > < gu gU g~` with motions, text objects and
+  doubled-key line forms, `x X s S r ~ J gJ D C Y p P u C-r v V`, registers of
+  section 11 (named, numbered, small delete, black hole, clipboard), one undo
+  step per command or insert session, insert keys `C-w C-u C-h C-n C-p C-j
+  C-r C-o`, `C-c C-c/C-s/C-k/C-a`, `C-RET`/`M-RET`, normal `RET`, the new
+  `submit_key` default, the new-thread prompt as the same modal editor.
+- Minibuffers: the vertico keys of section 12 except `C-;`, `C-r` and
+  `M-p`/`M-n`; `SPC '`.
+- Ex commands of section 13 except `:marks`, `:delm`, `:h {topic}`, `@:`,
+  `:wq` ranges; `:set` for `whichkeydelay`, `clipboard`, `submitkey`,
+  `sidebar`, `panel`, `follow`; the `[evil]` settings table with
+  `which_key_delay_ms` and `clipboard`.
+- Right panel, terminal, notifications, settings and automations keys of
+  section 14, mapped onto the existing view actions.
+
+Not built yet:
+
+- Search (`/ ? n N * #`, `g*`, `:noh` highlight), marks and the jump list
+  (`m`, `'`, `` ` ``, `C-o`, `C-i`), `:marks`, `:delm`.
+- The timeline line-and-column cursor: `h l w b e 0 $`, visual selection over
+  rendered text, `yy`/`y{motion}`, text objects, `]]`/`[[`, `]e`/`[e`, `gf`;
+  sidebar visual-line batches.
+- Composer `.` repeat, `R` replace state, `U`, `gv`, `C-v`, `'[ '] '< '>`.
+- Which-key listings for registers and marks; `C-;` embark actions; minibuffer
+  history (`M-p`/`M-n`).
+- Cursor shape by state (DECSCUSR), relative line numbers (`SPC t l`,
+  `:set rnu`), `scrolloff`, mouse drag selection and click-to-position in the
+  composer.
+- Leader entries `SPC f r`, `SPC h x`, `SPC s s/b/i/r/c`, `SPC t h`,
+  `SPC g o P`; `SPC ,` searches all projects instead of the focused one.
+- Diff `gy` (path only), terminal `yy` (the line; it yanks the screen),
+  `SPC b y` in the terminal tab, notification visual delete, request panel
+  `x` toggle, automation form `:w`/`C-c C-c` (it keeps `C-s`).
+

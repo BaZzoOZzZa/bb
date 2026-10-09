@@ -383,6 +383,7 @@ impl NewThreadForm {
     pub fn activate_prompt(&mut self) {
         self.field = FormField::Prompt;
         self.prompt_active = true;
+        self.composer.enter_insert();
     }
 
     fn config(&self) -> CreationConfig {
@@ -1364,6 +1365,7 @@ impl AppState {
     }
 
     pub(crate) fn close_new_thread(&mut self) {
+        self.split_new_thread = false;
         if let Some(form) = self.new_thread.take() {
             let draft = form.composer.draft().clone();
             self.new_thread_draft = (!draft.is_empty()).then_some(draft);
@@ -1404,7 +1406,7 @@ impl AppState {
         }
     }
 
-    fn submit_new_thread(&mut self) -> Vec<Effect> {
+    pub(crate) fn submit_new_thread(&mut self) -> Vec<Effect> {
         let Some(form) = self.new_thread.as_ref() else {
             return Vec::new();
         };
@@ -1474,6 +1476,9 @@ impl AppState {
                         .to_owned();
                     self.toast(format!("Created: {title}"), ToastLevel::Info);
                     let mut effects = vec![Effect::RefreshSidebar];
+                    if std::mem::take(&mut self.split_new_thread) {
+                        self.insert_split(&thread.thread.id);
+                    }
                     effects.extend(self.open(thread.thread.id.clone()));
                     self.focus = Focus::Main;
                     effects
@@ -1571,14 +1576,14 @@ fn form_command(state: &mut AppState, command: Command) -> Option<Vec<Effect>> {
     Some(Vec::new())
 }
 
-fn prompt_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+pub(crate) fn prompt_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     let now = state.clock;
     let submit_key = state.submit_key;
     let Some(form) = state.new_thread.as_mut() else {
         return Vec::new();
     };
     match form.composer.handle_key(key, submit_key, now) {
-        ComposerKey::Submit | ComposerKey::Steer => {
+        ComposerKey::Submit => {
             match crate::compose::take_attach_command(
                 state,
                 &crate::typeahead::ComposerTarget::NewThread,
@@ -1588,15 +1593,7 @@ fn prompt_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
         }
         ComposerKey::Escape => {
-            form.prompt_active = false;
-            Vec::new()
-        }
-        ComposerKey::Interrupt => {
-            if form.composer.is_empty() {
-                state.close_new_thread();
-            } else {
-                form.composer.clear(now);
-            }
+            form.composer.enter_normal();
             Vec::new()
         }
         ComposerKey::Edited | ComposerKey::Handled => Vec::new(),
@@ -1606,10 +1603,10 @@ fn prompt_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 form.move_field(&resolved, key.code == KeyCode::Tab);
                 Vec::new()
             }
-            _ => match state.keymap.lookup(&key) {
-                Some(command) => form_command(state, command).unwrap_or_default(),
-                None => Vec::new(),
-            },
+            _ => {
+                crate::compose::insert_unhandled(state, &key);
+                Vec::new()
+            }
         },
     }
 }
@@ -1625,14 +1622,9 @@ pub(crate) fn handle_new_thread_key(state: &mut AppState, key: KeyEvent) -> Vec<
     if form.field == FormField::Prompt && form.prompt_active {
         return prompt_key(state, key);
     }
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let field = form.field;
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') if !ctrl => {
-            state.close_new_thread();
-            Vec::new()
-        }
-        KeyCode::Char('c') if ctrl => {
+        KeyCode::Esc | KeyCode::Char('q') => {
             state.close_new_thread();
             Vec::new()
         }
@@ -1650,26 +1642,25 @@ pub(crate) fn handle_new_thread_key(state: &mut AppState, key: KeyEvent) -> Vec<
             }
             Vec::new()
         }
-        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Right => {
+        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
             state.open_form_picker(field);
             Vec::new()
         }
-        KeyCode::Char('i') | KeyCode::Char('c') => {
+        KeyCode::Char('i') => {
             if let Some(form) = state.new_thread.as_mut() {
                 form.activate_prompt();
             }
             Vec::new()
         }
-        _ => match state.keymap.lookup(&key) {
-            Some(command) => form_command(state, command).unwrap_or_else(|| match command {
-                Command::SidebarToggle | Command::Help | Command::PanelToggle => {
-                    crate::app::run_command(state, command)
-                }
-                _ => Vec::new(),
-            }),
-            None => Vec::new(),
-        },
+        _ => Vec::new(),
     }
+}
+
+pub(crate) fn new_thread_command(state: &mut AppState, command: Command) -> Option<Vec<Effect>> {
+    if state.focus != Focus::NewThread || state.new_thread.is_none() {
+        return None;
+    }
+    form_command(state, command)
 }
 
 pub(crate) fn new_thread_paste(state: &mut AppState, text: &str) {

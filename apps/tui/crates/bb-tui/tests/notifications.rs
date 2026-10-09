@@ -154,7 +154,8 @@ fn background_turn_completion_notifies_once_after_coalescing() {
     );
     assert_eq!(state.notifications.unread(), 1);
     assert!(alerts(&advance(&mut state, Duration::from_secs(5))).is_empty());
-    let status = render_lines(&state, 120, 12).pop().unwrap();
+    let lines = render_lines(&state, 120, 12);
+    let status = lines[lines.len() - 2].clone();
     assert!(status.contains("! 1 new"), "{status}");
 }
 
@@ -370,7 +371,7 @@ fn notification_center_lists_jumps_deletes_and_clears() {
     advance(&mut state, Duration::from_secs(3));
     assert_eq!(state.notifications.unread(), 2);
 
-    press(&mut state, KeyCode::Char('!'));
+    keys(&mut state, "SPC n n");
     assert_eq!(state.mode, Mode::Notifications { selected: 0 });
     assert_eq!(state.notifications.unread(), 0);
     let screen = render_lines(&state, 110, 16).join("\n");
@@ -390,8 +391,8 @@ fn notification_center_lists_jumps_deletes_and_clears() {
     assert_eq!(state.focus, Focus::Main);
     assert!(effects.contains(&Effect::WatchThread(Some(BACKGROUND.into()))));
 
-    press(&mut state, KeyCode::Char('!'));
-    press(&mut state, KeyCode::Char('d'));
+    keys(&mut state, ": n o t i f RET");
+    keys(&mut state, "d d");
     assert_eq!(state.notifications.len(), 1);
     press(&mut state, KeyCode::Char('C'));
     assert!(state.notifications.is_empty());
@@ -469,14 +470,15 @@ async fn event_loop_delivers_plugin_signals_and_fetches_interactions() {
         entry.has_pending_interaction = true;
         entry.thread.latest_attention_at = NOW_MS + 1_000;
     });
-    tx.send(Action::Key(KeyEvent::new(
-        KeyCode::Char('r'),
-        crossterm::event::KeyModifiers::CONTROL,
-    )))
-    .unwrap();
+    for ch in [' ', 'b', 'r'] {
+        tx.send(Action::Key(KeyEvent::from(KeyCode::Char(ch))))
+            .unwrap();
+    }
     wait_until(|| platform.alerts.lock().unwrap().len() == 2).await;
-    tx.send(Action::Key(KeyEvent::from(KeyCode::Char('q'))))
-        .unwrap();
+    for ch in [' ', 'q', 'q'] {
+        tx.send(Action::Key(KeyEvent::from(KeyCode::Char(ch))))
+            .unwrap();
+    }
     let state = handle.await.unwrap();
     let bodies: Vec<String> = state
         .notifications

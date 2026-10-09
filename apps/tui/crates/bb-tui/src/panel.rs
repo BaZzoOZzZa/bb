@@ -1098,6 +1098,72 @@ impl AppState {
         ))
     }
 
+    pub(crate) fn preview_path(&mut self, path: &str) -> Vec<Effect> {
+        self.focus = Focus::Panel;
+        self.open_preview(
+            path,
+            &WorkspaceDiffTarget::Uncommitted,
+            None,
+            DiffFileSide::New,
+            None,
+        )
+    }
+
+    pub(crate) fn previewed_path(&self) -> Option<String> {
+        let preview = self.panel.preview.as_ref()?;
+        Some(
+            preview
+                .absolute
+                .clone()
+                .unwrap_or_else(|| preview.path.clone()),
+        )
+    }
+
+    pub(crate) fn edit_previewed(&mut self) -> Vec<Effect> {
+        let Some((path, line)) = self
+            .panel
+            .preview
+            .as_ref()
+            .map(|preview| (preview.path.clone(), preview.line))
+        else {
+            self.keys.error("No previewed file");
+            return Vec::new();
+        };
+        self.edit_effect(&path, line)
+    }
+
+    pub(crate) fn diff_fold_all(&mut self, open: bool) -> Vec<Effect> {
+        let Some(document) = self.panel.document_mut() else {
+            return Vec::new();
+        };
+        document.set_all_collapsed(!open);
+        self.diff_loads()
+    }
+
+    pub(crate) fn diff_hunk(&mut self, forward: bool) -> Vec<Effect> {
+        if !self.panel_visible || self.panel.tab != PanelTab::Diff {
+            self.focus = Focus::Panel;
+            let mut effects = self.set_panel_tab(PanelTab::Diff);
+            effects.extend(self.diff_hunk_jump(forward));
+            return effects;
+        }
+        self.diff_hunk_jump(forward)
+    }
+
+    fn diff_hunk_jump(&mut self, forward: bool) -> Vec<Effect> {
+        let Some(document) = self.panel.document_mut() else {
+            return Vec::new();
+        };
+        if !document.jump_hunk(forward) {
+            self.keys.message(if forward {
+                "No more hunks below"
+            } else {
+                "No more hunks above"
+            });
+        }
+        self.diff_loads()
+    }
+
     fn edit_effect(&mut self, path: &str, line: Option<u32>) -> Vec<Effect> {
         match self.absolute_path(path) {
             Some(path) => vec![Effect::EditFile { path, line }],

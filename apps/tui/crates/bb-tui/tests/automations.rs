@@ -196,6 +196,15 @@ async fn ctrl(api: &MockApi, state: &mut AppState, ch: char) -> Vec<Effect> {
     run_automations(api, state, effects).await
 }
 
+async fn seq(api: &MockApi, state: &mut AppState, text: &str) -> Vec<Effect> {
+    let mut rest = Vec::new();
+    for chord in bb_tui::keymap::seq(text) {
+        let effects = update(state, Action::Key(chord.event()));
+        rest.extend(run_automations(api, state, effects).await);
+    }
+    rest
+}
+
 async fn type_text(api: &MockApi, state: &mut AppState, text: &str) {
     let codes: Vec<KeyCode> = text.chars().map(KeyCode::Char).collect();
     keys(api, state, &codes).await;
@@ -203,7 +212,7 @@ async fn type_text(api: &MockApi, state: &mut AppState, text: &str) {
 
 async fn open_view(api: &MockApi) -> AppState {
     let mut state = loaded_state(sample_sidebar());
-    let effects = press(&mut state, KeyCode::Char('A'));
+    let effects = support::keys(&mut state, "SPC o A");
     assert_eq!(
         effects,
         vec![Effect::Automations(AutomationRequest::Overview)]
@@ -320,7 +329,7 @@ async fn list_and_detail_render_overview_runs_and_definition() {
     }
     assert!(!text.contains("provider crashed"), "{text}");
 
-    keys(&api, &mut state, &[KeyCode::Char('m')]).await;
+    seq(&api, &mut state, "g m").await;
     let text = screen(&state);
     assert!(text.contains("provider crashed"), "{text}");
     assert!(!text.contains("Load more runs"), "{text}");
@@ -336,18 +345,18 @@ async fn list_and_detail_render_overview_runs_and_definition() {
 async fn pause_resume_and_run_now_call_the_plugin_rpc() {
     let api = api();
     let mut state = open_triage(&api).await;
-    let effects = press(&mut state, KeyCode::Char(' '));
+    let effects = press(&mut state, KeyCode::Char('~'));
     assert_eq!(
         effects,
         vec![Effect::Automations(AutomationRequest::Mutate(
             AutomationMutation::Pause(triage())
         ))]
     );
-    assert!(press(&mut state, KeyCode::Char(' ')).is_empty());
+    assert!(press(&mut state, KeyCode::Char('~')).is_empty());
     run_automations(&api, &mut state, effects).await;
     assert!(toasts(&state).contains(&"Automation paused".to_owned()));
     assert!(screen(&state).contains("[paused]"), "{}", screen(&state));
-    keys(&api, &mut state, &[KeyCode::Char(' ')]).await;
+    seq(&api, &mut state, "~").await;
     assert!(toasts(&state).contains(&"Automation resumed".to_owned()));
 
     keys(&api, &mut state, &[KeyCode::Char('r')]).await;
@@ -368,7 +377,7 @@ async fn pause_resume_and_run_now_call_the_plugin_rpc() {
 async fn enter_on_a_run_opens_its_thread() {
     let api = api();
     let mut state = open_triage(&api).await;
-    keys(&api, &mut state, &[KeyCode::Char('m'), KeyCode::Char('G')]).await;
+    seq(&api, &mut state, "g m G").await;
     let effects = press(&mut state, KeyCode::Enter);
     assert!(state.automations.is_none());
     assert_eq!(state.open_thread.as_deref(), Some("thr_old"));
@@ -420,12 +429,12 @@ async fn plugin_signals_refresh_the_open_view() {
 async fn delete_asks_first_and_removes_the_automation() {
     let api = api();
     let mut state = open_view(&api).await;
-    keys(&api, &mut state, &[KeyCode::Char('G'), KeyCode::Char('d')]).await;
+    seq(&api, &mut state, "G d d").await;
     assert!(screen(&state).contains("Delete automation?"));
     assert!(screen(&state).contains("Weekly report"));
     keys(&api, &mut state, &[KeyCode::Char('n')]).await;
     assert!(api.automations.mutations().is_empty());
-    keys(&api, &mut state, &[KeyCode::Char('d'), KeyCode::Char('y')]).await;
+    seq(&api, &mut state, "d d y").await;
     assert_eq!(
         api.automations.mutations(),
         vec![(
@@ -443,7 +452,7 @@ async fn delete_asks_first_and_removes_the_automation() {
 async fn create_form_validates_and_sends_an_agent_automation() {
     let api = api();
     let mut state = open_view(&api).await;
-    let effects = press(&mut state, KeyCode::Char('n'));
+    let effects = press(&mut state, KeyCode::Char('o'));
     assert!(effects.contains(&Effect::Automations(AutomationRequest::Providers)));
     assert!(
         effects.contains(&Effect::Automations(AutomationRequest::ProjectDefaults {
@@ -536,7 +545,7 @@ async fn create_form_validates_and_sends_an_agent_automation() {
 async fn one_shot_automation_sends_a_future_run_time() {
     let api = api();
     let mut state = open_view(&api).await;
-    let effects = press(&mut state, KeyCode::Char('n'));
+    let effects = press(&mut state, KeyCode::Char('o'));
     run_automations(&api, &mut state, effects).await;
     set_field(&api, &mut state, "Name", "Release check").await;
     move_to_field(&api, &mut state, "Schedule").await;
@@ -614,9 +623,7 @@ async fn read_only_mode_refuses_every_change() {
     let api = api();
     let mut state = open_triage(&api).await;
     state.read_only = true;
-    for key in [' ', ' ', 'r'] {
-        keys(&api, &mut state, &[KeyCode::Char(key)]).await;
-    }
+    seq(&api, &mut state, "~ ~ r").await;
     let messages = toasts(&state);
     assert_eq!(
         messages
@@ -626,7 +633,7 @@ async fn read_only_mode_refuses_every_change() {
         2
     );
     assert!(messages.contains(&"Read-only mode: cannot run the automation".to_owned()));
-    keys(&api, &mut state, &[KeyCode::Char('d'), KeyCode::Char('y')]).await;
+    seq(&api, &mut state, "d d y").await;
     assert!(toasts(&state).contains(&"Read-only mode: cannot delete the automation".to_owned()));
     keys(&api, &mut state, &[KeyCode::Char('e')]).await;
     set_field(&api, &mut state, "Name", "Renamed").await;
@@ -641,17 +648,12 @@ async fn failures_and_unreadable_automations_are_reported() {
     let api = api();
     *api.automations.reject.lock().unwrap() = Some("plugin is not running".into());
     let mut state = open_triage(&api).await;
-    keys(&api, &mut state, &[KeyCode::Char(' ')]).await;
+    seq(&api, &mut state, "~").await;
     assert!(
         toasts(&state)
             .contains(&"Failed to pause the automation: plugin is not running".to_owned())
     );
-    keys(
-        &api,
-        &mut state,
-        &[KeyCode::Esc, KeyCode::Char('g'), KeyCode::Enter],
-    )
-    .await;
+    seq(&api, &mut state, "ESC g g RET").await;
     let text = screen(&state);
     assert!(text.contains("cannot be read"), "{text}");
     keys(&api, &mut state, &[KeyCode::Char('e'), KeyCode::Char('r')]).await;
@@ -667,7 +669,7 @@ async fn failures_and_unreadable_automations_are_reported() {
             .any(|message| message.contains("cannot run until it is fixed"))
     );
     assert!(state.automations.as_ref().unwrap().form.is_none());
-    keys(&api, &mut state, &[KeyCode::Char('d')]).await;
+    seq(&api, &mut state, "d d").await;
     assert!(screen(&state).contains("Delete automation?"));
 }
 
@@ -678,8 +680,8 @@ async fn palette_entries_open_the_view_and_the_form() {
     let effects = update(
         &mut state,
         Action::Key(crossterm::event::KeyEvent::new(
-            KeyCode::Char('k'),
-            KeyModifiers::CONTROL,
+            KeyCode::Char('x'),
+            KeyModifiers::ALT,
         )),
     );
     let _ = effects;

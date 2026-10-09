@@ -223,12 +223,7 @@ async fn renders_live_timelines_read_only() {
             .position(|row| row.thread().is_some_and(|thread| thread.id == thread_id))
             .expect("sidebar row");
         state.selected = index;
-        let _ignored_effects = update(
-            &mut state,
-            Action::Key(crossterm::event::KeyEvent::from(
-                crossterm::event::KeyCode::Enter,
-            )),
-        );
+        let _ignored_effects = keys_now(&mut state, "g o");
         let mut expanded = 0;
         while expanded < 2_000 {
             let next = state.timeline().and_then(|timeline| {
@@ -241,12 +236,7 @@ async fn renders_live_timelines_read_only() {
                 break;
             };
             state.timelines.get_mut(&thread_id).unwrap().selected = Some(key);
-            let _ = update(
-                &mut state,
-                Action::Key(crossterm::event::KeyEvent::from(
-                    crossterm::event::KeyCode::Char('l'),
-                )),
-            );
+            let _ = keys_now(&mut state, "z o");
             expanded += 1;
         }
         total_items += state.timeline().map_or(0, |timeline| timeline.items.len());
@@ -405,7 +395,7 @@ async fn renders_live_composer_read_only() {
             continue;
         };
         state.selected = index;
-        update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
+        keys_now(&mut state, "g o");
         update(
             &mut state,
             Action::ExecutionOptionsLoaded {
@@ -431,7 +421,7 @@ async fn renders_live_composer_read_only() {
         if defaults.is_some() {
             assert!(!resolved.model.is_empty(), "{thread_id}: no model");
         }
-        update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('c'))));
+        update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('i'))));
         if !history.is_empty() {
             update(&mut state, Action::Key(KeyEvent::from(KeyCode::Up)));
             assert!(
@@ -445,7 +435,7 @@ async fn renders_live_composer_read_only() {
                 .iter()
                 .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) <= 140)
         );
-        let footer = &lines[lines.len() - 3];
+        let footer = &lines[lines.len() - 4];
         assert!(
             footer.contains(&resolved.model_label) || resolved.model.is_empty(),
             "{thread_id}: {footer}"
@@ -510,12 +500,7 @@ async fn renders_live_pending_interactions_read_only() {
         state.waiting
     );
     for _ in 0..state.waiting {
-        update(
-            &mut state,
-            Action::Key(crossterm::event::KeyEvent::from(
-                crossterm::event::KeyCode::Char('w'),
-            )),
-        );
+        keys_now(&mut state, "M-w");
         for line in render_lines(&state, 120, 30) {
             println!("{line}");
         }
@@ -598,7 +583,7 @@ async fn renders_live_new_thread_form_read_only() {
         .as_ref()
         .map_or(0, |sidebar| sidebar.projects.len() + 1);
     for index in 0..project_count.min(4) {
-        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('n'))));
+        let effects = keys_now(&mut state, "SPC b N");
         drive(&mut state, &client, effects).await;
         let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
         drive(&mut state, &client, effects).await;
@@ -635,7 +620,7 @@ async fn renders_live_palette_read_only() {
     use bb_tui::app::Effect;
     use bb_tui::palette::{PaletteKind, PaletteRequest};
     use bb_tui::runtime::run_palette_request;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent};
 
     let found = discover_server(
         &DiscoveryInput::from_env(None),
@@ -712,10 +697,9 @@ async fn renders_live_palette_read_only() {
             println!("{line}");
         }
     }
-    let ctrl = |ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
     let esc = KeyEvent::from(KeyCode::Esc);
 
-    keys(&mut state, &client, vec![ctrl('k')]).await;
+    keys(&mut state, &client, support::chords("M-x")).await;
     let plugin_items = state
         .palette
         .as_ref()
@@ -740,12 +724,7 @@ async fn renders_live_palette_read_only() {
         })
         .find(|word| word.chars().count() >= 4 && word.chars().all(char::is_alphanumeric))
         .unwrap_or_else(|| "test".into());
-    keys(
-        &mut state,
-        &client,
-        vec![KeyEvent::from(KeyCode::Char('f'))],
-    )
-    .await;
+    keys(&mut state, &client, support::chords("SPC /")).await;
     keys(&mut state, &client, text(&word)).await;
     let palette = state.palette.as_ref().expect("threads palette");
     assert_eq!(palette.kind, PaletteKind::Threads);
@@ -771,7 +750,7 @@ async fn renders_live_palette_read_only() {
     };
     state.selected = index;
     state.focus = bb_tui::app::Focus::Sidebar;
-    keys(&mut state, &client, vec![ctrl('p')]).await;
+    keys(&mut state, &client, support::chords("SPC SPC")).await;
     keys(&mut state, &client, text("md")).await;
     let palette = state.palette.as_ref().expect("files palette");
     assert!(palette.source.is_some());
@@ -918,13 +897,7 @@ async fn renders_live_mentions_read_only() {
     };
     state.selected = index;
     state.focus = Focus::Sidebar;
-    keys(&mut state, &client, vec![KeyEvent::from(KeyCode::Enter)]).await;
-    keys(
-        &mut state,
-        &client,
-        vec![KeyEvent::from(KeyCode::Char('c'))],
-    )
-    .await;
+    keys(&mut state, &client, support::chords("g o i")).await;
     assert_eq!(state.focus, Focus::Composer);
     println!("mention triggers loaded: {:?}", state.mention_providers);
 
@@ -1079,10 +1052,10 @@ async fn renders_live_panel_read_only() {
         };
         state.selected = index;
         state.focus = bb_tui::app::Focus::Sidebar;
-        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
+        let effects = keys_now(&mut state, "g o");
         drive(&mut state, &client, effects).await;
         if !state.panel_visible {
-            let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('i'))));
+            let effects = keys_now(&mut state, "SPC o i");
             drive(&mut state, &client, effects).await;
         }
         state.panel.tab = PanelTab::Info;
@@ -1099,7 +1072,7 @@ async fn renders_live_panel_read_only() {
         assert!(!state.panel.status.is_failed(), "{:?}", state.panel.status);
         print(&state, &format!("{thread_id} info"));
 
-        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('D'))));
+        let effects = keys_now(&mut state, "SPC g g");
         let skipped = drive(&mut state, &client, effects).await;
         let started = Instant::now();
         if let Some(document) = state.panel.document() {
@@ -1125,7 +1098,7 @@ async fn renders_live_panel_read_only() {
             .document()
             .is_some_and(|document| !document.files.is_empty())
         {
-            let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('p'))));
+            let effects = keys_now(&mut state, "g f");
             drive(&mut state, &client, effects).await;
             if let Some(preview) = &state.panel.preview {
                 println!(
@@ -1138,7 +1111,7 @@ async fn renders_live_panel_read_only() {
             print(&state, &format!("{thread_id} file"));
             update(&mut state, Action::Key(KeyEvent::from(KeyCode::Esc)));
         }
-        update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('D'))));
+        keys_now(&mut state, "SPC g g");
         drop(interest);
     }
 }
@@ -1260,12 +1233,7 @@ async fn renders_live_notifications_read_only() {
             println!("{thread_id}: {}", describe_interaction(interaction));
         }
     }
-    update(
-        &mut state,
-        Action::Key(crossterm::event::KeyEvent::from(
-            crossterm::event::KeyCode::Char('!'),
-        )),
-    );
+    keys_now(&mut state, "SPC n n");
     let screen = render_lines(&state, 120, 20).join("\n");
     assert!(screen.contains("Notifications (1)"), "{screen}");
     if std::env::var_os("BB_TUI_LIVE_PRINT").is_some() {
@@ -1314,13 +1282,7 @@ async fn lists_live_thread_terminals_read_only() {
         .map(|entry| entry.thread.id.clone())
         .expect("a thread with an environment");
     state.open(thread_id.clone());
-    let effects = update(
-        &mut state,
-        Action::Key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('T'),
-            crossterm::event::KeyModifiers::SHIFT,
-        )),
-    );
+    let effects = keys_now(&mut state, "SPC o t");
     let scope = effects
         .iter()
         .find_map(|effect| match effect {
@@ -1373,6 +1335,10 @@ async fn run_live_settings(
     }
 }
 
+fn keys_now(state: &mut AppState, text: &str) -> Vec<bb_tui::app::Effect> {
+    support::keys(state, text)
+}
+
 fn live_key(code: crossterm::event::KeyCode) -> Action {
     Action::Key(crossterm::event::KeyEvent::from(code))
 }
@@ -1416,7 +1382,7 @@ async fn renders_live_settings_read_only() {
     );
     state.read_only = true;
     update(&mut state, Action::Snapshot(store.snapshot()));
-    let effects = update(&mut state, live_key(KeyCode::Char(',')));
+    let effects = keys_now(&mut state, "SPC h ,");
     run_live_settings(&client, &mut state, effects).await;
     let print = std::env::var_os("BB_TUI_LIVE_PRINT").is_some();
     let mut screens = Vec::new();
@@ -1431,7 +1397,7 @@ async fn renders_live_settings_read_only() {
         screens[0]
     );
 
-    let refused = update(&mut state, live_key(KeyCode::Char(' ')));
+    let refused = update(&mut state, live_key(KeyCode::Char('~')));
     assert!(refused.is_empty(), "{refused:?}");
 
     for (digit, label) in [
@@ -1442,10 +1408,8 @@ async fn renders_live_settings_read_only() {
         ('6', "Installed plugins"),
         ('7', "Archived threads"),
     ] {
-        update(&mut state, live_key(KeyCode::Esc));
-        let effects = update(&mut state, live_key(KeyCode::Char(digit)));
+        let effects = keys_now(&mut state, &format!("{digit} g t"));
         run_live_settings(&client, &mut state, effects).await;
-        update(&mut state, live_key(KeyCode::Enter));
         if digit == '5' || digit == '6' {
             let effects = update(&mut state, live_key(KeyCode::Enter));
             run_live_settings(&client, &mut state, effects).await;

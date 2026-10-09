@@ -89,7 +89,7 @@ fn set_interactions(state: &mut AppState, items: Vec<PendingInteraction>) {
 fn waiting_state(items: Vec<PendingInteraction>) -> AppState {
     let mut state = loaded_state(sample_sidebar());
     set_interactions(&mut state, items);
-    let effects = key(&mut state, KeyCode::Char('w'));
+    let effects = press_mod(&mut state, KeyCode::Char('w'), KeyModifiers::ALT);
     assert!(effects.contains(&Effect::WatchThread(Some(THREAD.into()))));
     assert_eq!(state.open_thread.as_deref(), Some(THREAD));
     assert_eq!(state.focus, Focus::Interaction);
@@ -529,7 +529,7 @@ fn read_only_mode_never_resolves() {
 #[test]
 fn panel_takes_over_from_the_composer_and_counts_queued_requests() {
     let mut state = loaded_state(sample_sidebar());
-    key(&mut state, KeyCode::Char('w'));
+    press_mod(&mut state, KeyCode::Char('w'), KeyModifiers::ALT);
     assert_eq!(state.focus, Focus::Interaction);
     assert!(screen(&state).contains("Loading the request…"));
     key(&mut state, KeyCode::Esc);
@@ -540,11 +540,11 @@ fn panel_takes_over_from_the_composer_and_counts_queued_requests() {
     set_interactions(&mut state, vec![second, command_approval()]);
     let text = screen(&state);
     assert!(
-        text.contains("⚑ Approval needed · 1 of 2 · c to answer"),
+        text.contains("⚑ Approval needed · 1 of 2 · i to answer"),
         "{text}"
     );
     assert!(!text.contains("Message"), "{text}");
-    key(&mut state, KeyCode::Char('c'));
+    key(&mut state, KeyCode::Char('i'));
     assert_eq!(state.focus, Focus::Interaction);
     let mutation = only_mutation(key(&mut state, KeyCode::Char('d')));
     match mutation {
@@ -561,7 +561,7 @@ fn next_pending_cycles_waiting_threads_and_reports_none() {
     sidebar.projects[0].threads[0].has_pending_interaction = false;
     sidebar.projects[0].threads[2].has_pending_interaction = false;
     let mut state = loaded_state(sidebar);
-    assert!(key(&mut state, KeyCode::Char('w')).is_empty());
+    assert!(press_mod(&mut state, KeyCode::Char('w'), KeyModifiers::ALT).is_empty());
     let text = screen(&state);
     assert!(text.contains("No requests are waiting for you"), "{text}");
     assert!(!text.contains("? 1 waiting"), "{text}");
@@ -573,16 +573,16 @@ fn next_pending_cycles_waiting_threads_and_reports_none() {
     snapshot.sidebar.data = Some(Arc::new(sidebar));
     update(&mut state, Action::Snapshot(Arc::new(snapshot)));
     assert!(screen(&state).contains("? 2 waiting"));
-    key(&mut state, KeyCode::Char('w'));
+    press_mod(&mut state, KeyCode::Char('w'), KeyModifiers::ALT);
     let first = state.open_thread.clone().unwrap();
-    key(&mut state, KeyCode::Char('w'));
+    press_mod(&mut state, KeyCode::Char('w'), KeyModifiers::ALT);
     let second = state.open_thread.clone().unwrap();
     assert_ne!(first, second);
     key(&mut state, KeyCode::Esc);
-    key(&mut state, KeyCode::Char('w'));
+    press_mod(&mut state, KeyCode::Char('w'), KeyModifiers::ALT);
     assert_eq!(state.open_thread.as_deref(), Some(second.as_str()));
     assert_eq!(state.focus, Focus::Interaction);
-    key(&mut state, KeyCode::Char('w'));
+    press_mod(&mut state, KeyCode::Char('w'), KeyModifiers::ALT);
     assert_eq!(state.open_thread.as_deref(), Some(first.as_str()));
 }
 
@@ -650,7 +650,11 @@ async fn event_loop_answers_a_question_against_the_fake_backend() {
     let send = |code: KeyCode| tx.send(Action::Key(KeyEvent::from(code))).unwrap();
 
     wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
-    send(KeyCode::Char('w'));
+    tx.send(Action::Key(KeyEvent::new(
+        KeyCode::Char('w'),
+        KeyModifiers::ALT,
+    )))
+    .unwrap();
     wait_for(&store, |snapshot| {
         !snapshot.pending_interactions(THREAD).is_empty()
     })
@@ -681,6 +685,8 @@ async fn event_loop_answers_a_question_against_the_fake_backend() {
     .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     send(KeyCode::Esc);
+    send(KeyCode::Char(' '));
+    send(KeyCode::Char('q'));
     send(KeyCode::Char('q'));
     let (terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
         .await

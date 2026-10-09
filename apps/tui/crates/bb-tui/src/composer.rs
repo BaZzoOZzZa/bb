@@ -9,17 +9,18 @@ use crate::chips::{
 };
 use crate::mentions::{ActiveTrigger, TypeaheadTrigger, find_active_trigger};
 use crate::prompt::{DraftAttachment, PromptDraft};
+use crate::vi;
 use bb_wire::prompt::{PromptMentionResource, PromptTextMention};
 
 pub const DRAFT_SAVE_DELAY: Duration = Duration::from_millis(400);
-pub const ESC_STOP_WINDOW: Duration = Duration::from_millis(1500);
+const MAX_UNDO: usize = 200;
 pub const EDIT_HOLD_RENEWALS_PER_LEASE: u32 = 4;
 pub const EDIT_HOLD_RETRY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SubmitKey {
-    #[default]
     Enter,
+    #[default]
     ModifierEnter,
 }
 
@@ -36,15 +37,15 @@ impl SubmitKey {
 
     pub fn submit_label(self) -> &'static str {
         match self {
-            Self::Enter => "Enter",
-            Self::ModifierEnter => "M-Enter",
+            Self::Enter => "RET",
+            Self::ModifierEnter => "C-RET",
         }
     }
 
     pub fn newline_label(self) -> &'static str {
         match self {
-            Self::Enter => "S-Enter/C-j",
-            Self::ModifierEnter => "Enter",
+            Self::Enter => "S-RET/C-j",
+            Self::ModifierEnter => "RET",
         }
     }
 }
@@ -52,12 +53,28 @@ impl SubmitKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerKey {
     Submit,
-    Steer,
     Escape,
-    Interrupt,
     Edited,
     Handled,
     Unhandled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditMode {
+    #[default]
+    Normal,
+    Insert,
+    Visual {
+        line: bool,
+        anchor: usize,
+        head: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Snapshot {
+    draft: PromptDraft,
+    cursor: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,10 +117,14 @@ pub struct Composer {
     history_index: Option<usize>,
     history_stash: Option<PromptDraft>,
     pub editing: Option<QueuedEdit>,
-    pub esc_armed_at: Option<Instant>,
     pub pending_restore: Option<PromptDraft>,
     pub dismissed_trigger: Option<DismissedTrigger>,
     pub uploads: Vec<String>,
+    pub mode: EditMode,
+    pub last_insert: Option<usize>,
+    pub one_shot: bool,
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
 }
 
 fn configure(textarea: &mut TextArea<'static>) {
@@ -168,10 +189,14 @@ impl Composer {
             history_index: None,
             history_stash: None,
             editing: None,
-            esc_armed_at: None,
             pending_restore: None,
             dismissed_trigger: None,
             uploads: Vec::new(),
+            mode: EditMode::Normal,
+            last_insert: None,
+            one_shot: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
     }
 
@@ -475,7 +500,7 @@ impl Composer {
         Some(edit)
     }
 
-    fn history_step(&mut self, older: bool) -> bool {
+    pub fn history_step(&mut self, older: bool) -> bool {
         if self.history.is_empty() {
             return false;
         }
@@ -499,24 +524,6 @@ impl Composer {
         true
     }
 
-    pub fn arm_escape(&mut self, now: Instant) -> bool {
-        match self.esc_armed_at {
-            Some(at) if now.duration_since(at) <= ESC_STOP_WINDOW => {
-                self.esc_armed_at = None;
-                true
-            }
-            _ => {
-                self.esc_armed_at = Some(now);
-                false
-            }
-        }
-    }
-
-    pub fn escape_armed(&self, now: Instant) -> bool {
-        self.esc_armed_at
-            .is_some_and(|at| now.duration_since(at) <= ESC_STOP_WINDOW)
-    }
-
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -526,38 +533,41 @@ impl Composer {
         let ctrl = has(&key, KeyModifiers::CONTROL);
         let alt = has(&key, KeyModifiers::ALT);
         let shift = has(&key, KeyModifiers::SHIFT);
-        if key.code != KeyCode::Esc {
-            self.esc_armed_at = None;
-        }
         match key.code {
             KeyCode::Enter => {
                 let plain = !ctrl && !alt && !shift;
-                let action = match submit_key {
-                    SubmitKey::Enter if plain => ComposerKey::Submit,
-                    SubmitKey::Enter if ctrl => ComposerKey::Steer,
-                    SubmitKey::Enter => {
-                        self.textarea.insert_newline();
-                        ComposerKey::Edited
-                    }
-                    SubmitKey::ModifierEnter if alt || ctrl => ComposerKey::Submit,
-                    SubmitKey::ModifierEnter => {
-                        self.textarea.insert_newline();
-                        ComposerKey::Edited
-                    }
-                };
-                if action == ComposerKey::Edited {
-                    self.sync(now);
+                if ctrl || alt || (plain && submit_key == SubmitKey::Enter) {
+                    return ComposerKey::Submit;
                 }
-                action
+                self.textarea.insert_newline();
+                self.sync(now);
+                ComposerKey::Edited
             }
             KeyCode::Char('j') if ctrl && !alt => {
                 self.textarea.insert_newline();
                 self.sync(now);
                 ComposerKey::Edited
             }
-            KeyCode::Char('s') if ctrl && !alt => ComposerKey::Steer,
-            KeyCode::Char('o') if ctrl && !alt => ComposerKey::Unhandled,
-            KeyCode::Char('c') if ctrl && !alt => ComposerKey::Interrupt,
+            KeyCode::Char('u') if ctrl && !alt => {
+                let head = self.textarea.lines()[self.textarea.cursor().0].clone();
+                let column = self.textarea.cursor().1;
+                let indent = head.chars().take_while(|ch| ch.is_whitespace()).count();
+                let target = if column > indent { indent } else { 0 };
+                for _ in target..column {
+                    self.textarea.delete_char();
+                }
+                self.sync(now);
+                ComposerKey::Edited
+            }
+            KeyCode::Char('n') if ctrl && !alt => {
+                self.history_step(false);
+                ComposerKey::Handled
+            }
+            KeyCode::Char('p') if ctrl && !alt => {
+                self.history_step(true);
+                ComposerKey::Handled
+            }
+            KeyCode::Char('o' | 'r' | 'v' | 's' | 'c') if ctrl && !alt => ComposerKey::Unhandled,
             KeyCode::Esc => ComposerKey::Escape,
             KeyCode::Up if !ctrl && !alt && !shift => {
                 let at_top = self.textarea.cursor().0 == 0;
@@ -602,6 +612,179 @@ impl Composer {
 
     pub fn clear(&mut self, now: Instant) {
         self.set_draft(PromptDraft::default(), now);
+    }
+
+    pub fn chars(&self) -> Vec<char> {
+        self.text().chars().collect()
+    }
+
+    pub fn is_insert(&self) -> bool {
+        self.mode == EditMode::Insert
+    }
+
+    pub fn checkpoint(&mut self) {
+        self.undo.push(Snapshot {
+            draft: self.draft.clone(),
+            cursor: self.cursor_char(),
+        });
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    fn restore(&mut self, snapshot: Snapshot, now: Instant) {
+        let placeholder = self.textarea.placeholder_text().to_owned();
+        self.textarea = textarea_with(&snapshot.draft.text);
+        self.textarea.set_placeholder_text(placeholder);
+        self.draft = snapshot.draft;
+        self.dismissed_trigger = None;
+        self.history_index = None;
+        self.history_stash = None;
+        let cursor = vi::clamp_normal(&self.chars(), snapshot.cursor);
+        self.set_cursor_char(cursor);
+        self.mark_dirty(now);
+    }
+
+    pub fn undo(&mut self, now: Instant) -> bool {
+        let Some(snapshot) = self.undo.pop() else {
+            return false;
+        };
+        self.redo.push(Snapshot {
+            draft: self.draft.clone(),
+            cursor: self.cursor_char(),
+        });
+        self.restore(snapshot, now);
+        true
+    }
+
+    pub fn redo(&mut self, now: Instant) -> bool {
+        let Some(snapshot) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(Snapshot {
+            draft: self.draft.clone(),
+            cursor: self.cursor_char(),
+        });
+        self.restore(snapshot, now);
+        true
+    }
+
+    pub fn replace_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        text: &str,
+        cursor: usize,
+        now: Instant,
+    ) {
+        let chars = self.chars();
+        let start = start.min(chars.len());
+        let end = end.clamp(start, chars.len());
+        let mut next: String = chars[..start].iter().collect();
+        next.push_str(text);
+        next.extend(chars[end..].iter());
+        self.reset_text(&next, cursor);
+        self.sync(now);
+    }
+
+    pub fn enter_insert(&mut self) {
+        if self.mode != EditMode::Insert {
+            self.checkpoint();
+        }
+        self.textarea.cancel_selection();
+        self.mode = EditMode::Insert;
+    }
+
+    pub fn enter_normal(&mut self) {
+        self.textarea.cancel_selection();
+        let mut cursor = self.cursor_char();
+        if let EditMode::Visual { head, .. } = self.mode {
+            cursor = head;
+        }
+        if self.mode == EditMode::Insert {
+            self.last_insert = Some(cursor);
+            let chars = self.chars();
+            if cursor > vi::line_start(&chars, cursor) {
+                cursor -= 1;
+            }
+        }
+        self.mode = EditMode::Normal;
+        self.one_shot = false;
+        let cursor = vi::clamp_normal(&self.chars(), cursor);
+        self.set_cursor_char(cursor);
+    }
+
+    pub fn move_to(&mut self, cursor: usize, backward: bool) {
+        let chars = self.chars();
+        let cursor = match self.mode {
+            EditMode::Insert => cursor.min(chars.len()),
+            _ => vi::clamp_normal(&chars, cursor),
+        };
+        self.set_cursor_char(cursor);
+        self.snap_cursor(backward);
+        if let EditMode::Visual { line, anchor, .. } = self.mode {
+            let head = self.cursor_char();
+            self.mode = EditMode::Visual { line, anchor, head };
+            self.refresh_selection();
+        }
+    }
+
+    pub fn start_visual(&mut self, line: bool) {
+        let cursor = self.cursor_char();
+        self.mode = EditMode::Visual {
+            line,
+            anchor: cursor,
+            head: cursor,
+        };
+        self.refresh_selection();
+    }
+
+    pub fn set_visual(&mut self, line: bool, anchor: usize, head: usize) {
+        self.mode = EditMode::Visual { line, anchor, head };
+        self.refresh_selection();
+    }
+
+    pub fn visual_range(&self) -> Option<vi::Range> {
+        let EditMode::Visual { line, anchor, head } = self.mode else {
+            return None;
+        };
+        let chars = self.chars();
+        if line {
+            return Some(vi::lines_between(&chars, anchor, head));
+        }
+        let start = anchor.min(head);
+        let end = (anchor.max(head) + 1).min(chars.len());
+        Some(vi::Range {
+            start,
+            end: end.max(start),
+            linewise: false,
+        })
+    }
+
+    pub fn refresh_selection(&mut self) {
+        let EditMode::Visual { line, anchor, head } = self.mode else {
+            return;
+        };
+        let chars = self.chars();
+        let (start, end) = if line {
+            let low = anchor.min(head);
+            let high = anchor.max(head);
+            (vi::line_start(&chars, low), vi::line_end(&chars, high))
+        } else {
+            (anchor.min(head), (anchor.max(head) + 1).min(chars.len()))
+        };
+        self.textarea.cancel_selection();
+        self.set_cursor_char(start);
+        self.textarea.start_selection();
+        self.set_cursor_char(end);
+    }
+
+    pub fn cursor(&self) -> usize {
+        match self.mode {
+            EditMode::Visual { head, .. } => head,
+            _ => self.cursor_char(),
+        }
     }
 }
 
@@ -649,7 +832,7 @@ mod tests {
                 SubmitKey::Enter,
                 now
             ),
-            ComposerKey::Steer
+            ComposerKey::Submit
         );
         assert_eq!(
             composer.handle_key(key(KeyCode::Enter), SubmitKey::ModifierEnter, now),
@@ -666,6 +849,39 @@ mod tests {
         let submitted = composer.take_submission(now);
         assert_eq!(submitted.text, "ab\n\nc\n");
         assert!(composer.is_empty());
+    }
+
+    #[test]
+    fn ctrl_u_deletes_to_the_indentation_then_the_line_start() {
+        let now = Instant::now();
+        let mut composer = Composer::new("thr");
+        type_text(&mut composer, "  foo bar", now);
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        composer.handle_key(ctrl_u, SubmitKey::Enter, now);
+        assert_eq!(composer.text(), "  ");
+        composer.handle_key(ctrl_u, SubmitKey::Enter, now);
+        assert_eq!(composer.text(), "");
+    }
+
+    #[test]
+    fn undo_restores_snapshots_and_redo_reapplies() {
+        let now = Instant::now();
+        let mut composer = Composer::new("thr");
+        composer.enter_insert();
+        type_text(&mut composer, "hello world", now);
+        composer.enter_normal();
+        assert_eq!(composer.cursor_char(), 10);
+        composer.checkpoint();
+        composer.replace_range(5, 11, "", 4, now);
+        assert_eq!(composer.text(), "hello");
+        assert!(composer.undo(now));
+        assert_eq!(composer.text(), "hello world");
+        assert!(composer.undo(now));
+        assert_eq!(composer.text(), "");
+        assert!(!composer.undo(now));
+        assert!(composer.redo(now));
+        assert!(composer.redo(now));
+        assert_eq!(composer.text(), "hello");
     }
 
     #[test]
@@ -740,17 +956,6 @@ mod tests {
         fresh.load_stored(Some(r#"{"text":"line1\nline2"}"#));
         assert_eq!(fresh.line_count(), 2);
         assert_eq!(fresh.draft().text, "line1\nline2");
-    }
-
-    #[test]
-    fn double_escape_within_window() {
-        let start = Instant::now();
-        let mut composer = Composer::new("thr");
-        assert!(!composer.arm_escape(start));
-        assert!(composer.escape_armed(start));
-        assert!(composer.arm_escape(start + Duration::from_millis(300)));
-        assert!(!composer.arm_escape(start + Duration::from_secs(1)));
-        assert!(!composer.arm_escape(start + Duration::from_secs(4)));
     }
 
     #[test]

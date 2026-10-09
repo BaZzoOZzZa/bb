@@ -510,7 +510,7 @@ pub fn panel_view(state: &AppState, thread_id: &str, width: usize) -> PanelView 
             .chords_for(Command::FocusComposer)
             .first()
             .map(ToString::to_string)
-            .unwrap_or_else(|| "Tab".to_owned());
+            .unwrap_or_else(|| "i".to_owned());
         title.push(Span::styled(format!("· {key} to answer "), muted()));
     }
     let (heading, mut body, mut footer, scrollable) = match (&form.kind, &form.body) {

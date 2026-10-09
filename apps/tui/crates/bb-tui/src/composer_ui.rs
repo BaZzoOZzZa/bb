@@ -304,20 +304,20 @@ pub fn composer_height(state: &AppState, thread_id: &str, width: usize) -> u16 {
 
 fn submit_hint(state: &AppState, thread_id: &str) -> Vec<Span<'static>> {
     let key = state.submit_key.submit_label();
-    let now = state.clock;
     let composer = state.composers.get(thread_id);
-    if composer.is_some_and(|composer| composer.escape_armed(now)) {
-        return vec![label("Esc again to stop", Color::Yellow)];
-    }
+    let key = match composer.map(|composer| composer.mode) {
+        Some(crate::composer::EditMode::Insert) => key,
+        _ => "RET",
+    };
     if composer.is_some_and(|composer| composer.editing.is_some()) {
-        return vec![Span::styled(format!("{key} save · Esc cancel"), muted())];
+        return vec![Span::styled(format!("{key} save · ESC cancel"), muted())];
     }
     let text = match state.submit_mode(thread_id) {
         SubmitMode::Ready => format!("{key} send"),
         SubmitMode::Queue if state.enter_steers => {
-            format!("{key} steer · C-s queue · Esc Esc stop")
+            format!("{key} steer · C-c C-s queue · C-c C-k stop")
         }
-        SubmitMode::Queue => format!("{key} queue · C-s steer · Esc Esc stop"),
+        SubmitMode::Queue => format!("{key} queue · C-c C-s steer · C-c C-k stop"),
         SubmitMode::QueueWhileStopping => format!("{key} queue · stopping"),
         SubmitMode::Blocked(BlockedReason::PendingInteraction) => {
             return vec![Span::styled(
@@ -448,7 +448,11 @@ fn editor_title(state: &AppState, thread_id: &str) -> String {
     } else {
         format!(
             " Message · {} to type ",
-            state.keymap.label_for(Command::FocusComposer)
+            state
+                .keymap
+                .chords_for(Command::FocusComposer)
+                .first()
+                .map_or_else(|| "i".to_owned(), ToString::to_string)
         )
     }
 }

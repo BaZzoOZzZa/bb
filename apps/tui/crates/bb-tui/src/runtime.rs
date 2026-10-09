@@ -932,6 +932,13 @@ where
         terminal
             .draw(|frame| ui::render(state, frame))
             .map_err(|error| anyhow!(error))?;
+        let deadline = state.keys.deadline();
+        let which_key = async move {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         let action = tokio::select! {
             biased;
             Some(action) = rx.recv() => action,
@@ -946,9 +953,20 @@ where
                     continue;
                 }
             },
+            () = which_key => Action::Tick { now: Instant::now(), now_ms: now_ms() },
             _ = tick.tick() => Action::Tick { now: Instant::now(), now_ms: now_ms() },
         };
         dispatch(state, &mut runner, action);
+        if state.keys.needs_arming() {
+            dispatch(
+                state,
+                &mut runner,
+                Action::Tick {
+                    now: Instant::now(),
+                    now_ms: now_ms(),
+                },
+            );
+        }
         while let Ok(action) = rx.try_recv() {
             dispatch(state, &mut runner, action);
         }

@@ -45,6 +45,12 @@ fn key(tx: &mpsc::UnboundedSender<Action>, code: KeyCode) {
         .expect("send key");
 }
 
+fn keys(tx: &mpsc::UnboundedSender<Action>, text: &str) {
+    for chord in bb_tui::keymap::seq(text) {
+        tx.send(Action::Key(chord.event())).expect("send key");
+    }
+}
+
 #[tokio::test]
 async fn event_loop_applies_mutations_through_api_and_refreshes_sidebar() {
     let backend = FakeBackend::new(sample_sidebar());
@@ -87,7 +93,7 @@ async fn event_loop_applies_mutations_through_api_and_refreshes_sidebar() {
     });
 
     wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
-    key(&tx, KeyCode::Char('p'));
+    key(&tx, KeyCode::Char('+'));
     wait_for(&store, |snapshot| {
         snapshot
             .sidebar_thread("thr_wait")
@@ -116,7 +122,7 @@ async fn event_loop_applies_mutations_through_api_and_refreshes_sidebar() {
     let mutations_api = api.clone();
     wait_until(move || mutations_api.recorded().len() == 3).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    key(&tx, KeyCode::Char('q'));
+    keys(&tx, "SPC q q");
 
     let (terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
@@ -152,7 +158,7 @@ async fn event_loop_applies_mutations_through_api_and_refreshes_sidebar() {
         text.contains("Archived (u to undo): Fix flaky test"),
         "{text}"
     );
-    assert!(lines.last().unwrap().starts_with(" office "), "{text}");
+    assert!(lines[lines.len() - 2].starts_with(" office "), "{text}");
 }
 
 #[tokio::test]
@@ -215,7 +221,7 @@ async fn timeline_loads_turn_details_older_rows_and_copies_through_the_store() {
     });
 
     wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
-    key(&tx, KeyCode::Enter);
+    keys(&tx, "g o");
     wait_for(&store, |snapshot| {
         snapshot
             .timeline(THREAD)
@@ -223,7 +229,7 @@ async fn timeline_loads_turn_details_older_rows_and_copies_through_the_store() {
     })
     .await;
 
-    key(&tx, KeyCode::Char('g'));
+    keys(&tx, "g g");
     wait_for(&store, |snapshot| {
         snapshot
             .timeline(THREAD)
@@ -231,9 +237,7 @@ async fn timeline_loads_turn_details_older_rows_and_copies_through_the_store() {
     })
     .await;
     tokio::time::sleep(Duration::from_millis(30)).await;
-    key(&tx, KeyCode::Char('g'));
-    key(&tx, KeyCode::Char('j'));
-    key(&tx, KeyCode::Enter);
+    keys(&tx, "g g j RET");
     wait_for(&store, |snapshot| {
         snapshot
             .turn_details
@@ -241,12 +245,11 @@ async fn timeline_loads_turn_details_older_rows_and_copies_through_the_store() {
             .any(|entry| entry.loaded && entry.rows.len() == 1)
     })
     .await;
-    key(&tx, KeyCode::Char('k'));
-    key(&tx, KeyCode::Char('y'));
+    keys(&tx, "k g y");
     let copied = platform.clone();
     wait_until(move || !copied.copied.lock().unwrap().is_empty()).await;
     tokio::time::sleep(Duration::from_millis(30)).await;
-    key(&tx, KeyCode::Char('q'));
+    keys(&tx, "SPC q q");
     let (terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
         .expect("loop exits")
@@ -341,16 +344,16 @@ async fn composer_queues_sends_queued_saves_drafts_and_stops_through_the_loop() 
     });
 
     wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
-    key(&tx, KeyCode::Char('/'));
+    keys(&tx, "g /");
     type_text(&tx, "Refactor");
     key(&tx, KeyCode::Enter);
-    key(&tx, KeyCode::Enter);
+    keys(&tx, "g o");
     let execution = api.clone();
     wait_until(move || !execution.execution_queries.lock().unwrap().is_empty()).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    key(&tx, KeyCode::Char('c'));
+    key(&tx, KeyCode::Char('i'));
     type_text(&tx, "queue me");
-    key(&tx, KeyCode::Enter);
+    chord(&tx, KeyCode::Enter, KeyModifiers::CONTROL);
     wait_for(&store, |snapshot| snapshot.queued("thr_other").len() == 1).await;
 
     chord(&tx, KeyCode::Char('q'), KeyModifiers::ALT);
@@ -375,9 +378,7 @@ async fn composer_queues_sends_queued_saves_drafts_and_stops_through_the_loop() 
             .is_some_and(|raw| raw.contains("draft text"))
     })
     .await;
-    chord(&tx, KeyCode::Char('c'), KeyModifiers::CONTROL);
-    key(&tx, KeyCode::Esc);
-    key(&tx, KeyCode::Esc);
+    keys(&tx, "ESC d d C-c C-k");
     let recorded = api.clone();
     wait_until(move || {
         recorded
@@ -386,8 +387,7 @@ async fn composer_queues_sends_queued_saves_drafts_and_stops_through_the_loop() 
             .any(|mutation| matches!(mutation, Mutation::Stop { .. }))
     })
     .await;
-    key(&tx, KeyCode::Tab);
-    key(&tx, KeyCode::Char('q'));
+    keys(&tx, "SPC q q");
 
     let (_terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
@@ -513,13 +513,13 @@ async fn event_loop_creates_a_thread_from_the_new_thread_form_and_opens_it() {
         snapshot.sidebar.data.is_some() && snapshot.hosts.data.is_some()
     })
     .await;
-    key(&tx, KeyCode::Char('n'));
+    keys(&tx, "SPC b N");
     let ready_api = api.clone();
     wait_until(move || !ready_api.execution_queries.lock().unwrap().is_empty()).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     key(&tx, KeyCode::Char('i'));
     type_text(&tx, "Ship it");
-    key(&tx, KeyCode::Enter);
+    chord(&tx, KeyCode::Enter, crossterm::event::KeyModifiers::CONTROL);
     let created = api.clone();
     wait_until(move || !created.created.lock().unwrap().is_empty()).await;
     wait_for(&store, |snapshot| {
@@ -527,8 +527,7 @@ async fn event_loop_creates_a_thread_from_the_new_thread_form_and_opens_it() {
     })
     .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    key(&tx, KeyCode::Esc);
-    key(&tx, KeyCode::Char('q'));
+    keys(&tx, "ESC SPC q q");
 
     let (terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
@@ -605,7 +604,7 @@ async fn palette_debounces_thread_search_and_runs_plugin_commands_through_api() 
     });
     wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
 
-    key(&tx, KeyCode::Char('f'));
+    keys(&tx, "SPC /");
     for ch in "flaky".chars() {
         key(&tx, KeyCode::Char(ch));
     }
@@ -622,11 +621,7 @@ async fn palette_debounces_thread_search_and_runs_plugin_commands_through_api() 
     assert_eq!(queries, ["flaky"]);
     key(&tx, KeyCode::Esc);
 
-    tx.send(Action::Key(KeyEvent::new(
-        KeyCode::Char('k'),
-        crossterm::event::KeyModifiers::CONTROL,
-    )))
-    .unwrap();
+    keys(&tx, "M-x");
     tokio::time::sleep(Duration::from_millis(50)).await;
     for ch in "keep status".chars() {
         key(&tx, KeyCode::Char(ch));
@@ -640,8 +635,7 @@ async fn palette_debounces_thread_search_and_runs_plugin_commands_through_api() 
     tokio::time::sleep(Duration::from_millis(50)).await;
     tx.send(Action::Resize).unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
-    key(&tx, KeyCode::Esc);
-    key(&tx, KeyCode::Char('q'));
+    keys(&tx, "ESC SPC q q");
     let (_terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
         .expect("loop exits")

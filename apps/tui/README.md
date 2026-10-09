@@ -139,7 +139,7 @@ The credential lets the holder act on the server as you. Do not share
 | `COLORFGBG` | read by `appearance = "auto"` to detect a light background |
 | `XDG_CONFIG_HOME` | base for `bb-tui/config.toml`, `servers.json`, `credentials.json` |
 | `XDG_STATE_HOME` | base for `bb-tui/drafts/` and `bb-tui/palette-recents.json` |
-| `VISUAL`, `EDITOR` | editor for `e` in the right panel |
+| `VISUAL`, `EDITOR` | editor for `e` in the right panel and `SPC f e` |
 | `TMUX` | wraps OSC notifications for tmux passthrough |
 
 ## Settings file
@@ -149,7 +149,7 @@ Use `--config <path>` or `BB_TUI_CONFIG` to point somewhere else. The file is
 optional, and every key has a default:
 
 ```toml
-submit_key = "enter"
+submit_key = "ctrl-enter"
 theme = "base16-ocean.dark"
 appearance = "auto"
 mouse = true
@@ -165,11 +165,15 @@ desktop = "auto"
 desktop_when = "unfocused"
 plugin_signals = true
 terminal_title = false
+
+[evil]
+which_key_delay_ms = 300
+clipboard = "unnamedplus"
 ```
 
 | Key | Values |
 |---|---|
-| `submit_key` | `enter` or `ctrl-enter`. `--submit-key` and `BB_TUI_SUBMIT_KEY` override it |
+| `submit_key` | what insert-state `RET` does in the composer: `ctrl-enter` (default: `RET` inserts a new line, `C-RET`/`M-RET` send) or `enter` (`RET` sends, `S-RET`/`C-j` insert a new line). Normal-state `RET` always sends. `--submit-key` and `BB_TUI_SUBMIT_KEY` override it |
 | `theme` | syntax highlighting theme for code blocks, diffs and previews: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`. Default `base16-ocean.dark`, or `InspiredGitHub` on a light background |
 | `appearance` | `auto` (detect from `COLORFGBG`, else dark), `dark` or `light`. `--appearance` and `BB_TUI_APPEARANCE` override it |
 | `mouse` | `true` captures the mouse for clicks and scrolling; `false` leaves it to the terminal. `--no-mouse` overrides it |
@@ -179,6 +183,8 @@ terminal_title = false
 | `notifications.desktop` | `auto`, `osc9`, `osc777`, `native`, `off` |
 | `notifications.desktop_when` | `unfocused` (default) or `always` |
 | `notifications.plugin_signals` | show push-notifications plugin signals |
+| `evil.which_key_delay_ms` | milliseconds an incomplete key sequence waits before the which-key popup opens (default 300; `:set whichkeydelay=N` changes it for the session) |
+| `evil.clipboard` | `"unnamedplus"` (default) also writes yanks to the system clipboard with OSC 52; `""` keeps yanks in the registers only (`"+y` still writes the clipboard) |
 | `notifications.terminal_title` | set the terminal title to `bb`, `(N) bb` with N threads needing attention, or `● bb` when the server reports attention elsewhere. The previous title is restored on exit (xterm title stack) |
 
 Unknown keys and invalid values are reported as toasts at startup, and the
@@ -213,7 +219,8 @@ select with `Shift` held while the mouse is captured):
 |---|---|---|
 | Sidebar | a thread opens it; a project header folds it | moves the selection 3 rows |
 | Timeline | focuses the pane (another split pane becomes the focused one) and selects the row | scrolls 3 lines; scrolling up stops following new output, scrolling to the end resumes it |
-| Composer, request panel | focuses it | |
+| Composer | focuses it in insert state | |
+| Request panel | focuses it | |
 | Right panel | focuses it | moves 3 rows (Info, Diff, File); scrolls back 3 lines (Terminal) |
 | Palette, pickers, settings, automations, dialogs | | moves the selection |
 
@@ -273,77 +280,109 @@ points to; `--server-url`, `--config` and the other flags apply as usual.
 
 ## Keys
 
-The evil keymap (Doom Emacs style: modal states, `SPC` leader with which-key,
-`C-w` windows, `:` ex commands) is specified in
+Navigation follows Doom Emacs with evil-mode. The full keymap, including the
+parts that are not built yet, is specified in
 [docs/keymap-evil.md](docs/keymap-evil.md), the single source of truth for
-keys. Until it is implemented, the tables below describe the current keymap.
+keys. In short:
 
-`?` shows the key list. The table below is the default
-keymap of the main screen. Keys with a web command id follow the server's
-keyboard overrides (Settings → Keyboard in the web app; `Cmd`-only shortcuts
-are skipped), so a key you rebind in the web app is rebound here too. Each
-feature section below has the keys that work inside that view.
+- **States.** Every buffer is in normal state. The composer (and the
+  new-thread prompt) is a modal editor with normal, insert and visual states;
+  `i`, `a`, `I`, `A`, `o`, `O` enter insert state, `ESC` leaves it. The
+  minibuffers (palette, pickers, filter, rename, attach prompt) and the ex
+  line are always typing. The state tag sits at the right end of the status
+  bar (`<N>` normal, `<I>` insert, `<V>`/`<L>` visual, `<O>` operator
+  pending, `<E>` ex line), left of it the pending keys (`2d`, `SPC b`), the
+  buffer name and the position.
+- **Leader.** `SPC` starts a key sequence (`M-SPC` from any state, including
+  insert, transients and minibuffers). When no key follows for 300 ms the
+  which-key popup lists the continuations; `C-n`/`C-p` page it, `Bksp` goes
+  back a level, `ESC`/`C-g` cancel. An undefined key prints `SPC b z is
+  undefined` in the echo line.
+- **Windows.** The sidebar, each split pane's timeline and composer (or
+  request panel) and the right panel are windows: `C-h`/`C-j`/`C-k`/`C-l`
+  or `C-w h/j/k/l` move by geometry, `C-w w`/`W` cycle, `C-w p` goes back,
+  `C-w v` opens a split, `C-w q` closes a window, `C-w o` maximizes, `C-w =`
+  restores, `C-w x`/`r`/`H`/`L` rearrange panes, `C-w <`/`>` resize the side
+  window. Counts work: `2 C-w w` focuses pane 2.
+- **Ex line.** `:` opens it in the echo line (`TAB` completes, `↑`/`↓`
+  walk the history): `:q`, `:qa`, `:w`, `:w!`, `:x`, `:wa`, `:e [path]`,
+  `:b {thread|N}`, `:bn`, `:bp`, `:b#`, `:bd`, `:bu`, `:unarchive`,
+  `:sp`/`:vs [thread]`, `:new`/`:vnew`/`:enew [prompt]`, `:close`, `:only`,
+  `:rename {title}`, `:pin`, `:unpin`, `:read`, `:unread`, `:set`,
+  `:messages`, `:registers`, `:{N}`, `:palette`, `:find`, `:search`,
+  `:project`, `:filter`, `:diff`, `:panel [tab]`, `:sidebar`,
+  `:terminal [new|attach|close]`, `:settings [section]`,
+  `:automations [new]`, `:notifications [clear]`, `:attach [path]`,
+  `:attachments`, `:model`, `:reasoning`, `:permission`, `:stop`,
+  `:steer [text]`, `:queue`, `:answer`, `:commit`, `:merge`, `:ready`,
+  `:draft`, `:reload`.
+- **Quitting** needs `SPC q q`, `:qa`, `:q` on the last window, `ZZ` or `ZQ`;
+  `q` and `C-c` never quit.
+- **Help.** `SPC h b b` (or `F1`) lists the bindings of the focused buffer,
+  `SPC h ?` the whole keymap, `SPC h k` describes the next key sequence,
+  `SPC h e` shows the message history. The command palette shows each
+  command's first key sequence, and Settings → Keyboard lists every sequence.
+- **Russian layout.** In normal state Cyrillic letters act as the Latin
+  letter on the same key (`о` is `j`).
+
+Common keys:
 
 | Keys | Action | Web command id |
 |---|---|---|
-| `C-k`, `:` | Command palette | `palette.open` |
-| `C-p` | Quick open a file of this thread's workspace | `file.quickOpen` |
-| `f` | Search threads (titles and messages) | `thread.search` |
-| `P` | Switch project | |
-| `j`/`k`, `↓`/`↑` | Move down / up | |
-| `g`/`G`, `Home`/`End` | Go to top / bottom | |
-| `PgDn`/`C-f`, `PgUp` | Page down / up | |
-| `C-d`, `C-u` | Half page down / up | |
-| `Enter` | Open thread / expand row | |
-| `Space` | Fold / unfold group or row | |
-| `h`/`←`, `l`/`→` | Collapse / expand group or row | |
-| `]`, `[` | Next / previous user message | |
-| `y` | Copy the selected row (OSC 52) | |
-| `o` | Open the row's link or file | |
-| `/` | Filter the sidebar | |
-| `r` | Rename thread | `thread.rename` |
-| `a` | Archive / unarchive thread | `thread.archive` |
-| `u` | Undo last archive | |
-| `m` | Mark read / unread | |
-| `p` | Pin / unpin thread | |
-| `J`, `K` | Open next / previous thread | `thread.next`, `thread.previous` |
-| `M-1` … `M-9` | Open thread #1-9 | `thread.jump.1` … `thread.jump.9` |
-| `n` | New thread | `thread.new` |
-| `N` | New thread in this thread's environment | |
-| `c` | Focus the composer | `composer.focus` |
-| `C-o` | Attach a file | |
-| `M-a` | Message attachments | |
-| `S` | Stop the running turn | |
-| `M-q` | Queued messages | |
-| `M-t` | Toggle what Enter does while running (queue / steer) | |
+| `SPC :`, `M-x` | Command palette | `palette.open` |
+| `SPC SPC`, `SPC .`, `SPC f f` | Quick open a file of this thread's workspace | `file.quickOpen` |
+| `SPC /`, `SPC ,`, `SPC b b` | Search threads (titles and messages) | `thread.search` |
+| `SPC p p`, `SPC TAB TAB` | Switch project | |
+| `SPC '` | Reopen the last minibuffer with its query | |
+| `j`/`k`, `gg`/`G`, `{N}G`, `C-d`/`C-u`, `C-f`/`C-b` | Move, top / bottom, line N, half page, page | |
+| `C-e`/`C-y`, `zz`/`zt`/`zb`, `H`/`M`/`L` | Scroll a line, cursor line to the middle / top / bottom, window top / middle / bottom | |
+| `RET`, `TAB`, `za`, `zo`/`zc`, `zR`/`zM` | Open / toggle, fold, unfold, all folds | |
+| `]b`/`[b`, `SPC b n`/`SPC b p` | Open next / previous thread | `thread.next`, `thread.previous` |
+| `` SPC ` `` | Alternate thread | |
+| `]w`/`[w`, `M-w`, `SPC n r` | Next waiting thread / answer the next waiting request | |
+| `M-1` … `M-9`, `SPC TAB 1` … `9` | Open thread #1-9 | `thread.jump.1` … `thread.jump.9` |
+| `SPC b N`, `SPC a a`, `SPC x` | New thread | `thread.new` |
+| `SPC b c`, `SPC m n` | New thread in this thread's environment | |
+| `SPC b R` | Rename thread | `thread.rename` |
+| `SPC b k`, `SPC b d` | Archive / unarchive thread | `thread.archive` |
+| `SPC b u` | Undo the last archive | |
+| `SPC b m`, `SPC b !` | Pin / unpin, mark read / unread | |
+| `SPC b r`, `gr` | Reload data | `window.reload` |
+| `SPC a c`, `i` in the timeline | Focus the composer in insert state | `composer.focus` |
+| `C-c C-c`, `SPC m s`, `:w` | Send the draft | |
+| `C-c C-s`, `SPC m S`, `:w!` | Steer the running turn | |
+| `C-c C-k`, `SPC m k`, `:stop` | Stop the running turn | |
+| `C-c C-a`, `SPC m a` | Attach a file | |
+| `M-a`, `SPC m A` | Message attachments | |
+| `M-q`, `SPC m q` | Queued messages | |
+| `M-t`, `SPC t q` | Toggle what sending does while a turn runs (queue / steer) | |
 | `M-m`, `M-e`, `M-p` | Model, reasoning and permission pickers | `modelPicker.toggle` (model) |
 | `M-.`, `M-,` | Next / previous model | `modelPicker.cycleModel`, `modelPicker.cycleModelBackward` |
 | `M-r`, `M-R` | Next / previous reasoning level | `modelPicker.cycleReasoning`, `modelPicker.cycleReasoningBackward` |
-| `w`, `M-w` | Answer the next waiting request | |
-| `!` | Notification center | |
-| `Tab`, `S-Tab` | Focus next / previous pane | `pane.focus.next`, `pane.focus.previous` |
-| `C-b` | Toggle sidebar | `sidebar.toggle` |
-| `i` | Toggle right panel | `panel.toggle` |
-| `D` | Show / hide the git diff | `diff.toggle` |
-| `>`, `<` | Next / previous panel tab | `panel.nextTab`, `panel.previousTab` |
-| `Z` | Maximize / restore the right panel | `panel.fullScreen.toggle` |
-| `T` | Thread terminals | `terminal.open` |
-| `,` | Settings | `settings.open` |
-| `A` | Automations | |
-| `V` | Open the selected thread in a split pane | |
+| `SPC n n` | Notification center | |
+| `SPC o p`, `SPC t s` | Toggle the sidebar | `sidebar.toggle` |
+| `SPC o i`, `SPC t p` | Toggle the right panel | `panel.toggle` |
+| `SPC g g`, `SPC o d` | Show / hide the git diff | `diff.toggle` |
+| `gt`, `gT`, `{N}gt` | Next / previous / Nth panel tab | `panel.nextTab`, `panel.previousTab` |
+| `C-w o` in the panel, `SPC w m m` | Maximize / restore the right panel | `panel.fullScreen.toggle` |
+| `SPC o t` | Thread terminals | `terminal.open` |
+| `SPC h ,` | Settings | `settings.open` |
+| `SPC o A` | Automations | |
+| `C-w w`, `C-w W` | Next / previous window | `pane.focus.next`, `pane.focus.previous` |
 | `M-h`/`M-←`, `M-l`/`M-→` | Focus the split pane to the left / right | `pane.focus.left`, `pane.focus.right` |
-| — | Focus split pane 1-4 | `pane.focus.1` … `pane.focus.4` |
-| `X` | Close the focused split pane | `pane.close` |
+| `SPC 1` … `SPC 4` | Focus split pane 1-4 | `pane.focus.1` … `pane.focus.4` |
+| `C-w q`, `C-w c`, `:close` | Close the focused window | `pane.close` |
 | `M-z` | Maximize / restore the focused split pane | `pane.maximize.toggle` |
-| `C-r` | Reload data | `window.reload` |
-| `Esc` | Back / clear filter / close | `app.back` |
-| `?` | Help | |
-| `q`, `C-c` | Quit (`C-c` in the composer clears the draft first) | |
+| `ESC`, `C-g` | Keyboard quit: cancel a sequence or count, leave visual state, back out of a special view, clear the sidebar filter | `app.back` |
+| `SPC q q`, `:qa` | Quit | |
 
-Commands without a default key (commit, merge, mark ready, convert to draft,
-new terminal, attach terminal fullscreen, new automation, settings sections)
-run from the command palette. Inside the right panel `C`, `M`, `R` and `W`
-run the git actions.
+Server keybinding overrides (Settings → Keyboard in the web app; `Cmd`-only
+shortcuts are skipped) give a command with a web command id a direct chord.
+It replaces the command's default direct chord (`M-x`, `M-1`, …), shadows
+the evil binding of the same key in normal state, and works in insert state
+and minibuffers when it has `Ctrl` or `Alt` and is not one of the editing
+keys `C-w C-u C-h C-r C-o C-v C-j C-k C-n C-p C-a C-e C-c C-[`. Leader
+sequences, `C-w` sequences and ex commands stay.
 
 ## Thread timeline
 
@@ -357,16 +396,21 @@ tool and diff content are fetched when expanded.
 
 | Keys | Action |
 |---|---|
-| `j`/`k`, `g`/`G` | Select row, jump to top / bottom (bottom resumes following) |
-| `PgUp`/`PgDn`, `C-u`/`C-d` | Scroll a page / half page |
-| `Enter`, `Space`, `l`/`h` | Toggle, expand, collapse (or go to parent) |
-| `[`/`]` | Previous / next user message |
-| `y` | Copy the selected row to the clipboard (OSC 52) |
-| `o` | Open the row's link or file with `xdg-open` / `open` (picker if several) |
+| `j`/`k`, `{`/`}`, `gg`/`G`, `{N}G` | Select row, first / last row (`G` resumes following), row N |
+| `C-f`/`C-b`, `C-d`/`C-u`, `C-e`/`C-y` | Scroll a page, half a page, a line |
+| `zz`, `zt`, `zb`, `H`/`M`/`L` | Selected row to the middle / top / bottom, select the top / middle / bottom row |
+| `RET`, `TAB`, `za`, `zo`, `zc`, `zR`, `zM` | Toggle, expand, collapse (or go to the parent), expand / collapse all |
+| `]m`/`[m` | Next / previous user message |
+| `gy` | Yank the row's source (message Markdown, command, tool input, patch) to the registers and the clipboard (OSC 52) |
+| `gx` | Open the row's link or file with `xdg-open` / `open` (picker if several) |
+| `i`, `a`, `A`, `o`, `O`, `I`, `gi` | Focus the composer in insert state (at the end of the draft; `I` at its start, `gi` where insert was left) |
+| `SPC b y` | Yank the loaded timeline as plain text |
+| `SPC t f` | Follow new output / stop following |
 
 ## Composer
 
-The bottom of the thread view is the composer (`c` or `Tab` focuses it). It
+The bottom of the thread view is the composer (`i` in the timeline, `C-j`,
+`C-w j` or a click focuses it). It
 follows the web app's follow-up rules from `client-core/src/prompt`: an idle
 thread gets `POST /threads/:id/send` with `mode: "queue-if-active"`; while the
 thread is active, starting, provisioning, stopping or waiting for its host,
@@ -376,22 +420,48 @@ message with `mode: "steer"`. Sending is blocked while the agent waits for an
 answer to a pending request, and on an idle thread until its default execution
 options have loaded.
 
-| Keys (composer focused) | Action |
+The composer is a modal editor. Insert state types; normal state edits with
+vim keys; visual state selects. Each normal-state command and each insert
+session is one undo step.
+
+| Keys (insert state) | Action |
 |---|---|
-| `Enter` | Send (queue while running) |
-| `Shift-Enter`, `Alt-Enter`, `C-j` | New line |
-| `C-s` (`C-Enter` where the terminal reports it) | Steer the running turn |
-| `↑`/`↓` on the first/last line | Prompt history (`GET /threads/:id/prompt-history`) |
-| `Esc Esc` | Stop the running turn (a single `Esc` leaves the composer when idle) |
-| `C-c` | Clear the draft; on an empty draft stop the turn, or quit when idle |
+| `C-RET`, `M-RET`, `C-c C-c` | Send (queue while running) |
+| `RET` | New line (send with `submit_key = "enter"`) |
+| `S-RET`, `C-j` | New line |
+| `C-c C-s` | Steer the running turn |
+| `C-c C-k` | Stop the running turn |
+| `ESC` | Normal state |
+| `C-w`, `C-u`, `C-h` | Delete the word before the cursor, to the indentation / line start, a character |
+| `C-n`/`C-p`, `↑`/`↓` on the first/last line | Prompt history (`GET /threads/:id/prompt-history`) |
+| `C-r {reg}` | Insert a register |
+| `C-o` | Run one normal-state command, then return to insert |
+
+| Keys (normal state) | Action |
+|---|---|
+| `RET`, `:w`, `SPC m s` | Send |
+| `:w!`, `SPC m S` | Steer |
+| `h j k l`, `w b e ge W B E gE`, `0 ^ $ g_`, `gg G`, `{ }`, `%`, `f F t T ; ,` | Motions (with counts) |
+| `i a I A o O gi` | Insert state |
+| `x X s S r ~ J gJ D C Y p P` | Edit commands |
+| `d c y > < gu gU g~` + motion or text object (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a<`), or doubled for a line | Operators |
+| `u`, `C-r` | Undo, redo |
+| `"{reg}` | Use a register: `""`, `"0`, `"1`-`"9`, `"-`, `"a`-`"z` (`"A`-`"Z` append), `"_`, `"+` |
+| `v`, `V` | Visual / visual-line state; then motions, text objects, `d x c s y > < u U ~ J p r o` |
+| `C-p`, `C-n` | Prompt history |
+| `C-k`, `C-w k` | Focus the timeline |
+
+Yanks also go to the system clipboard (OSC 52) unless `clipboard = ""` in the
+`[evil]` settings. Mention chips stay atomic: deleting part of one removes the
+whole chip.
 
 | Keys (thread open) | Action |
 |---|---|
 | `M-m`, `M-e`, `M-p` | Model, reasoning level and permission mode pickers |
 | `M-.`/`M-,`, `M-r`/`M-R` | Cycle model, cycle reasoning level |
-| `M-t` | Toggle what Enter does while running: queue (default) or steer |
-| `M-q` | Queued messages: `j`/`k`, `Enter`/`e` edit, `s` send now, `r` retry a failed one, `d` delete |
-| `S` | Stop the running turn |
+| `M-t`, `SPC t q` | Toggle what sending does while running: queue (default) or steer |
+| `M-q`, `SPC m q` | Queued messages: `j`/`k`, `RET`/`e` edit, `s` send now, `r` retry a failed one, `d` delete |
+| `C-c C-k`, `SPC m k`, `:stop` | Stop the running turn |
 
 Pickers use `GET /system/execution-options?providerId=&environmentId=` and
 `GET /threads/:id/default-execution-options`: only the provider's permission
@@ -402,16 +472,18 @@ fallback is used until you pick another model. Picked values are sent as
 
 Editing a queued message holds it on the server (`POST
 /queued-messages/:id/edit-hold`, renewed four times per lease) and saves with
-`PATCH` and `expectedUpdatedAt`; `Esc` cancels and restores your draft.
+`PATCH` and `expectedUpdatedAt`; `ESC` in normal state cancels and restores
+your draft.
 Above the editor the composer shows the plan-mode, goal, todo and model-fallback
 banners, the queue, and a footer with the model, reasoning level, permission
 mode and context-window usage.
 
 Unsent drafts are saved per thread under `$XDG_STATE_HOME/bb-tui/drafts`
 (`~/.local/state/bb-tui/drafts`) in the web app's draft format.
-`--submit-key ctrl-enter` (or `BB_TUI_SUBMIT_KEY=ctrl-enter`, or `submit_key` in the settings file) makes Enter
-insert a new line and `Alt-Enter`/`C-Enter` send. Bracketed paste and the kitty
-keyboard protocol are enabled when the terminal supports them.
+`--submit-key enter` (or `BB_TUI_SUBMIT_KEY=enter`, or `submit_key` in the
+settings file) makes insert-state `RET` send and `S-RET`/`C-j` insert a new
+line. Bracketed paste and the kitty keyboard protocol are enabled when the
+terminal supports them.
 
 ## Mentions and attachments
 
@@ -428,9 +500,11 @@ A trigger opens after whitespace or `(`, `[`, `{`; `@` queries may contain
 spaces. The popup groups and ranks results like the web menu (exact, prefix,
 substring, then supporting-text matches; paths first when the query contains
 `/`). Path and plugin searches wait 120 ms after the last keystroke and cancel
-the previous request. `↑`/`↓` or `C-n`/`C-p` move, `Enter`/`Tab` insert, `Esc`
-dismisses until the cursor leaves the trigger; with no rows (hint, loading)
-`Enter` still sends. A `/` text that matches no command stays plain text.
+the previous request. The popup works in insert state: `↑`/`↓` or `C-n`/`C-p`
+move, `RET`/`TAB` insert, `ESC` dismisses until the cursor leaves the trigger;
+with no rows (hint, loading) `RET` behaves as usual. A `/` text that matches
+no command stays plain text. `SPC a m` focuses the composer and starts an `@`
+mention.
 
 An inserted mention is a chip: its serialized text (`@src/a.rs`,
 `@thread:thr_…`, `/review`, `#Issue title`) is highlighted, the cursor jumps
@@ -439,14 +513,15 @@ chip. Mention ranges are kept and sent as `PromptTextMention` offsets in UTF-16
 code units, so emoji (surrogate pairs, ZWJ sequences, flags), Cyrillic and CJK
 text give the same `start`/`end` as the web editor.
 
-Attachments: `C-o` (or `:attach` alone on the draft, or the palette's
-"Attach file") opens a path prompt with `Tab` completion; `:attach <path…>` as
+Attachments: `C-c C-a` or `SPC m a` (or `:attach` alone on the draft, or the
+palette's "Attach file") opens a path prompt with `Tab` completion; `:attach <path…>` as
 the whole draft attaches directly (quote paths with spaces). Pasting text that
 is only existing file paths (absolute, `~/`, `file://` URIs, shell-quoted or
 escaped) attaches them instead of inserting text. Files are uploaded with
 `POST /projects/:id/attachments` (multipart field `file`, 35 MB limit checked
 before reading) and shown as chips above the editor; uploads in progress show
-as `… name`. `M-a` lists attachments: `j`/`k` select, `d`/`x`/`Del` remove.
+as `… name`. `M-a` (`SPC m A`) lists attachments: `j`/`k` select,
+`d`/`x`/`Del` remove.
 Drafts keep mentions and attachments in the web draft format.
 `--read-only` refuses uploads; completion only reads.
 
@@ -457,10 +532,11 @@ threads into the composer.
 ## Pending requests
 
 When the agent waits for you, the open thread replaces the composer with a
-request panel (`c` or `Tab` focuses it; it takes focus by itself if you were in
-the composer). The sidebar marks waiting threads with `?`, the status bar shows
-`? N waiting`, and `w` (`M-w` from the composer) opens the next waiting thread
-with its panel focused. With several requests on one thread they are answered
+request panel (`i` in the timeline, `C-j` or `SPC a c` focuses it; it takes
+focus by itself if you were in the composer). The sidebar marks waiting threads
+with `?`, the status bar shows `? N waiting`, and `M-w`, `SPC n r` or `SPC m r`
+opens the next waiting thread with its panel focused (`]w`/`[w` step through
+waiting threads). With several requests on one thread they are answered
 oldest first (`1 of N`).
 
 | Request | Keys |
@@ -473,16 +549,19 @@ oldest first (`1 of N`).
 
 `C-x` cancels question, secret and plugin requests (a provider question
 stops the turn instead, like the web app); approvals and plan reviews cannot
-be cancelled, only answered. `Esc` leaves the panel. As in the web app, a
+be cancelled, only answered. The panel keeps its single-key map; `ESC`,
+`C-h`/`C-j`/`C-k`/`C-l` leave it, and `M-SPC` reaches the leader. As in the web app, a
 denial or "keep planning" sends only the decision. Secret values are never
 shown unless revealed, are redacted from debug output and cleared after
 submission.
 
 ## New thread
 
-`n` opens the new-thread form in the main pane for the selected project (the
-sidebar selection, else the open thread's project). `N` starts a thread in the
-open thread's environment: it reuses that environment, keeps the thread's
+`SPC b N` (also `SPC a a`, `SPC x`, `o` in the sidebar, `:enew`) opens the
+new-thread form in the main pane for the selected project (the sidebar
+selection, else the open thread's project); `C-w n` (`:vnew`) opens the created
+thread in a new split pane. `SPC b c` (`SPC m n`, `:enew!`) starts a thread in
+the open thread's environment: it reuses that environment, keeps the thread's
 section and pin, and puts the cursor in the prompt. The form shows one row per
 choice, in order:
 
@@ -502,13 +581,14 @@ control, an offline machine, a branch change on a dirty, detached or mid-rebase
 checkout, a permission mode above the machine's limit. The line under the rows
 says why the thread cannot be created yet, or that it is ready.
 
-Keys: `j`/`k` (or `Tab`/`S-Tab`) move between rows, `Enter` opens a row's
-picker (type to filter, `Enter` choose, `Esc` cancel) and picking moves to the
-next row, `i` jumps to the prompt. In the prompt, `Enter` creates the thread
-(`--submit-key` applies), `Tab`/`S-Tab` go back to the rows, `M-m`/`M-e`/`M-p`
-open the model, reasoning and permission pickers, and `Esc` leaves the prompt.
-`Esc` on the rows closes the form; the unsent prompt is kept for the next time
-it opens. The created thread opens right away. `--read-only` refuses to create
+Keys: `j`/`k` (or `TAB`/`S-TAB`) move between rows, `RET`/`l` opens a row's
+picker (type to filter, `RET` choose, `ESC` cancel) and picking moves to the
+next row, `i`/`a`/`C-j` focus the prompt in insert state. The prompt is a modal
+composer: `C-RET` (or normal-state `RET`, `C-c C-c`) creates the thread,
+`M-m`/`M-e`/`M-p` open the model, reasoning and permission pickers, `ESC`
+goes to normal state, and `k` on the first line, `C-k` or a second `ESC`
+return to the rows. `q` or `ESC` on the rows closes the form; the unsent prompt
+is kept for the next time it opens. The created thread opens right away. `--read-only` refuses to create
 threads.
 
 Not built yet: reusing an existing git worktree by path, the service-tier
@@ -517,12 +597,13 @@ worktree and project checkout ones, and remembering choices between sessions.
 
 ## Command palette and search
 
-`C-k` (or `:`) opens the command palette, `C-p` quick-opens a file, `f`
-searches threads and `P` switches project. `C-k` and `C-p` also work from the
-composer, the request panel and the new-thread form. The palette keys follow
-the web app's `APP_COMMAND_IDS` (`palette.open`, `file.quickOpen`,
-`thread.search`), so keybinding overrides from the server settings rebind them
-too; `/` stays the in-place sidebar filter.
+`SPC :` or `M-x` opens the command palette (`M-x` also from insert state and
+the request panel), `SPC SPC` quick-opens a file, `SPC /` searches threads and
+`SPC p p` switches project; `:palette`, `:find`, `:search` and `:project` take
+the query as an argument. The palette commands follow the web app's
+`APP_COMMAND_IDS` (`palette.open`, `file.quickOpen`, `thread.search`), so
+keybinding overrides from the server settings give them direct chords. `g/`
+(`SPC s f`, `:filter`) is the in-place sidebar filter.
 
 | Mode | What it lists | Enter |
 |---|---|---|
@@ -531,10 +612,13 @@ too; `/` stays the in-place sidebar filter.
 | Projects | sidebar projects | reveal and expand the project in the sidebar |
 | Files | `GET /environments/:id/paths` for the open (or selected) thread's environment, else `GET /projects/:id/paths` | preview the file (`GET …/files/:path`) with syntax highlighting |
 
-Type to filter; `↑`/`↓`, `Tab`/`S-Tab` or `C-n`/`C-p` move, `PgUp`/`PgDn`
-page, `Esc` closes, and `Backspace` on an empty query returns to the command
-list. `C-k` in another mode switches to the command list and closes the
-palette when it is already there. Ranking ports
+The palette is a vertico-style minibuffer: type to filter; `C-j`/`C-k`,
+`C-n`/`C-p`, `↑`/`↓` or `TAB`/`S-TAB` move, `C-d`/`PgDn` and `PgUp` page,
+`M-<`/`M->` go to the first / last candidate, `ESC`/`C-g`/`C-c` close,
+`C-w`/`C-u`/`C-h` edit the query, and `Bksp` on an empty query returns to the
+command list. `M-x` in another mode switches to the command list and closes
+the palette when it is already there. `SPC '` reopens the last minibuffer with
+its query and selection. Ranking ports
 `packages/fuzzy-match` on top of nucleo: commands match their title (and their
 group as an alias), ties go to recently run commands and then to the list
 order; with an empty query the eight recently run commands come first.
@@ -552,11 +636,14 @@ previews use the same pane.
 
 | Keys (result pane) | Action |
 |---|---|
-| `j`/`k`, `PgUp`/`PgDn`/`Space`, `C-d`/`C-u`, `g`/`G` | Scroll |
-| `h`/`l`, `0` | Scroll sideways, back to the first column |
-| `y` | Copy the command's stdout, or the file's path |
-| `o` | Open the previewed file with `xdg-open` / `open` (when its workspace path is known) |
-| `Esc`, `q`, `Enter` | Close |
+| `j`/`k`, `C-f`/`C-b`, `PgUp`/`PgDn`, `C-d`/`C-u`, `gg`/`G` | Scroll |
+| `zh`/`zl`, `0` | Scroll sideways, back to the first column |
+| `yy`, `gy` | Yank the command's stdout, or the file's path |
+| `gx` | Open the previewed file with `xdg-open` / `open` (when its workspace path is known) |
+| `ESC`, `q`, `RET` | Close |
+
+The bindings list (`SPC h b b`), the keymap overview (`SPC h ?`), the message
+history (`SPC h e`, `:messages`), `:registers` and `:set` use the same pane.
 
 `--read-only` refuses to run plugin commands; searching and previews only read.
 Not built yet: the web palette's settings and plugin-page entries, the
@@ -565,11 +652,13 @@ submenu, and passing a working directory to plugin commands.
 
 ## Right panel
 
-`i` shows or hides the right panel for the open thread, `D` opens it on the
-Diff tab and focuses it (again closes it), `>`/`<` switch tabs and `Z`
-maximizes it over the timeline. In the panel `1`-`4` pick the Info, Diff,
-File and Terminal tabs, `r` reloads, and `Esc` returns from a preview, restores a
-maximized panel, then leaves the panel. When the window is too narrow for the
+`SPC o i` (`SPC t p`, `:panel`) shows or hides the right panel for the open
+thread, `SPC g g` (`SPC o d`, `:diff`) opens it on the Diff tab and focuses it
+(again closes it), `gt`/`gT` switch tabs (`{N}gt` picks tab N: 1 Info, 2 Diff,
+3 File, 4 Terminal; `:panel info|diff|file|terminal`) and `C-w o` in the panel
+or `SPC w m m` maximizes it over the timeline. `C-l`/`C-w l` move into the
+panel. In the panel `gr` reloads, and `q`/`ESC` return from a preview, restore
+a maximized panel, then leave the panel. When the window is too narrow for the
 sidebar, the timeline (at least 40 columns) and the panel, the sidebar is hidden
 until it gets focus. The keys follow the web app's
 `panel.toggle`, `diff.toggle`, `panel.nextTab`, `panel.previousTab` and
@@ -586,9 +675,9 @@ then the commits ahead of the merge base, the files they changed and the
 uncommitted files with line counts. Data comes from `GET
 /environments/:id/status` (with the environment's merge base branch, or the
 default branch when it has none) and `GET /environments/:id/pull-request`.
-`j`/`k` move, `Enter` opens a commit's diff, reveals a file in the diff, copies
-the directory or branch, or opens the pull request; `p` previews a file, `e`
-opens it in `$EDITOR`, `y` copies the SHA, path or URL.
+`j`/`k` move, `RET` opens a commit's diff, reveals a file in the diff, copies
+the directory or branch, or opens the pull request; `gf` previews a file, `e`
+opens it in `$EDITOR`, `yy` yanks the SHA, path or URL, `gx` opens a link.
 
 **Diff** lists `GET /environments/:id/diff/files` for a scope: all changes
 against the merge base, committed changes, uncommitted changes, or a single
@@ -597,7 +686,7 @@ With more than ten files every file starts collapsed (deleted files always
 do). Patches load lazily: the server's inline patches are used first, then
 `POST /environments/:id/diff/patch` fetches expanded `auto` files near the
 viewport in batches of at most 50 paths; `on_demand` files (over 500 changed
-lines or binary) load on `Enter`, `too_large` files (over 20 000 lines) are
+lines or binary) load on `RET`, `too_large` files (over 20 000 lines) are
 never fetched and can only be previewed. Only the visible rows are rendered,
 so a diff with hundreds of files opens as fast as the file list arrives. Lines
 show old/new line numbers, `+`/`-` with a tinted background and syntect
@@ -605,29 +694,32 @@ highlighting.
 
 | Keys (Diff) | Action |
 |---|---|
-| `j`/`k`, `PgUp`/`PgDn`, `C-d`/`C-u`, `g`/`G` | Move |
-| `h`/`l`, `0` | Scroll sideways, back to the first column |
-| `Enter` | Fold / unfold the file, load an on-demand diff |
-| `n`/`N` | Next / previous hunk |
-| `]`/`[` | Next / previous file |
-| `a` | Fold / unfold all files |
+| `j`/`k`, `PgUp`/`PgDn`, `C-d`/`C-u`, `C-f`/`C-b`, `gg`/`G` | Move (with counts) |
+| `zh`/`zl`, `0` | Scroll sideways, back to the first column |
+| `RET`, `TAB`, `za` | Fold / unfold the file, load an on-demand diff |
+| `]c`/`[c`, `SPC g ]`/`SPC g [` | Next / previous hunk |
+| `]f`/`[f` | Next / previous file |
+| `zR`/`zM` | Unfold / fold all files |
 | `s`/`S` | Next / previous scope |
-| `p` | Preview the file at the selected line (`GET /environments/:id/diff/file`, new side; old side for deleted files) |
+| `gf` | Preview the file at the selected line (`GET /environments/:id/diff/file`, new side; old side for deleted files) |
 | `e` | Open the file at the selected line in `$VISUAL`/`$EDITOR` |
-| `y` | Copy the line or the path |
+| `yy` | Yank the line or the path |
 
 **File** shows the previewed file with line numbers and highlighting (first
-512 KiB; binary files are described, not shown). `e` opens it in the editor:
+512 KiB; binary files are described, not shown; `j`/`k` scroll, `zh`/`zl`
+scroll sideways, `gy` or `SPC f y` yank the path). `e` or `SPC f e` opens it
+in the editor:
 the TUI leaves the alternate screen, runs `$VISUAL`, `$EDITOR` or `vi` with
 `+line` (or `--goto path:line` for VS Code-style editors) and redraws when the
 editor exits. This only works when the workspace path exists on this machine.
 
 Git actions use `POST /environments/:id/actions` and always ask for
-confirmation (`y`/`Enter` confirm, `Esc` cancel): `C` commits all uncommitted
-changes (the server stages them and writes the commit message), `M` merges the
-open pull request (`←`/`→` or `1`-`3` pick squash, merge or rebase), `R` marks
-a draft pull request ready and `W` converts an open one to draft. They are also
-in the command palette. `--read-only` refuses them; everything else in the
+confirmation (`y`/`RET` confirm, `ESC` cancel): `SPC g c c` (`:commit`)
+commits all uncommitted changes (the server stages them and writes the commit
+message), `SPC g p m` (`:merge`) merges the open pull request (`←`/`→` or
+`1`-`3` pick squash, merge or rebase), `SPC g p r` (`:ready`) marks a draft
+pull request ready and `SPC g p d` (`:draft`) converts an open one to draft.
+They are also in the command palette. `--read-only` refuses them; everything else in the
 panel only reads (the patch batch request is a `POST` but changes nothing).
 
 Not built yet: choosing another merge base branch, the file filter, context
@@ -637,8 +729,8 @@ flows (the actions API has no such actions).
 
 ## Terminals
 
-`T` (the web's `terminal.open`) opens the right panel on the **Terminal** tab
-and focuses it. The tab lists the open thread's terminals like the web thread
+`SPC o t` (the web's `terminal.open`, `:terminal`) opens the right panel on the
+**Terminal** tab and focuses it. The tab lists the open thread's terminals like the web thread
 view: `GET /terminals?threadId=` plus the environment's thread-less terminals
 (`GET /terminals?environmentId=`); exited sessions are hidden. The selected
 terminal is attached over `/ws/terminals/:id?sinceSeq=&outputAcks=1` with
@@ -649,16 +741,16 @@ The program's window title (OSC 0/2) names the tab.
 
 | Keys (Terminal tab) | Action |
 |---|---|
-| typing | Goes to the terminal while the tab is focused (cursor keys follow application-cursor mode, `Alt` sends `Esc`, F1-F12, paste is bracketed when the program asks for it) |
-| `C-\` | Stop typing into the terminal (focus stays on the panel) |
+| typing (insert state, `<I>`) | Goes to the terminal while the tab is focused, `ESC` and `C-w` included (cursor keys follow application-cursor mode, `Alt` sends `Esc`, F1-F12, paste is bracketed when the program asks for it); `M-SPC` still reaches the leader |
+| `C-\` | Normal state: stop typing into the terminal (focus stays on the panel) |
 | `S-PgUp`/`S-PgDn` | Scroll back while typing; any key returns to the live screen |
-| `Enter`/`i` | Type into the terminal again |
-| `j`/`k`, `PgUp`/`PgDn`, `C-u`/`C-d`, `g`/`G` | Scroll back / to the live screen |
-| `]`/`[` | Next / previous terminal |
-| `n` | Start a terminal in the thread (`POST /terminals`, thread target, the panel's size) |
-| `x` | Close the terminal after confirmation (`POST /terminals/:id/close`, `mode: "force"`) |
-| `A` | Attach fullscreen |
-| `y` | Copy the visible screen |
+| `i`, `a`, `I`, `A`, `RET` | Type into the terminal again |
+| `j`/`k`, `PgUp`/`PgDn`, `C-u`/`C-d`, `gg`/`G` | Scroll back / to the live screen |
+| `]t`/`[t` | Next / previous terminal |
+| `o`, `SPC o T`, `:terminal new` | Start a terminal in the thread (`POST /terminals`, thread target, the panel's size) |
+| `dd`, `x`, `:terminal close` | Close the terminal after confirmation (`POST /terminals/:id/close`, `mode: "force"`) |
+| `SPC o f`, `:terminal attach` | Attach fullscreen |
+| `yy` | Yank the visible screen |
 
 Flow control follows the web client: the output of each chunk is
 acknowledged (`ack` with `nextSeq`) only after the emulator has parsed it, and
@@ -672,7 +764,7 @@ each screen and resumes it the same way. If the server no longer has the
 missing output, the screen is cleared with a notice, as in the web app.
 Opening another thread closes the sockets.
 
-`A` (or "Attach terminal fullscreen" in the palette) suspends the TUI like
+`SPC o f` (or "Attach terminal fullscreen" in the palette) suspends the TUI like
 `bb terminal attach`: the alternate screen is left, the terminal's current
 screen is repainted, raw stdin bytes are sent as input and output bytes are
 written straight to stdout, and the window size is propagated. `C-\` or
@@ -725,32 +817,33 @@ Inside tmux the OSC sequences are wrapped in a DCS passthrough, so they need
 `set -g allow-passthrough on`. By default desktop notifications are sent only
 while the terminal is not focused.
 
-`!` (or "Show notifications" in the palette) opens the notification center,
-newest first, and marks everything read. In the center, `j`/`k` move,
-`Enter` opens the thread (with the request panel focused if it waits for
-you), `d`/`x`/`Del` delete one, `C` clears all and `Esc` closes. Opening a
+`SPC n n` (`:notifications`, or "Show notifications" in the palette) opens the
+notification center, newest first, and marks everything read. In the center,
+`j`/`k` move, `RET` opens the thread (with the request panel focused if it
+waits for you), `dd`/`x`/`Del` delete one, `C` (or `SPC n c`,
+`:notifications clear`) clears all and `q`/`ESC` close. Opening a
 thread marks its notifications read. The status bar shows `! N new` for
 unread notifications, `⚑ N` for threads that need attention, and `⚑` alone
 when `GET /system/attention` reports attention outside the listed threads.
 
 ## Server settings
 
-`,` (the web's `settings.open`, or "Open settings" in the palette) opens the
-settings view over the main area. It follows the web settings sections
+`SPC h ,` (the web's `settings.open`, `:settings [section]`, or "Open
+settings" in the palette) opens the settings view over the main area. It follows the web settings sections
 (`components/settings/settings-sections.ts`) that work without a browser:
 
 | Section | Shows | Changes |
 |---|---|---|
-| General | server URL, bb version (and the upgrade command when an update is out), data directory, server machine, then the general settings the server reports: followup behavior, Git changes, archive confirmation, history after a context clear, new branch prefix, machine server URL, streamer mode, usage data, diagnostic events | `Enter`/`Space` toggles; text fields open an input. The branch prefix is checked like the server does (at most 64 characters, must start a valid git branch name); the machine server URL must be an http(s) URL without credentials, empty means the server URL |
-| Providers | `GET /system/providers/catalog`: enabled providers in the saved order, then disabled ones, with Default / Unavailable / Disabled badges and how finished turns display | `Space` enables or disables (`PUT /system/providers/:id/enabled`), `d` makes it the default, `c` toggles collapsing finished turns, `Enter` lists its models (`GET /system/execution-options?providerId=`); "Allow faster service tiers" toggles |
-| Keyboard | every TUI command with its keys and web command id; `/` filters | `Enter` runs the command; rebinding is done in the web app (its overrides apply here) |
-| Projects | sidebar projects with remote, how many machines have a checkout, thread count | `Enter` opens the project: name, remote, id, created, checkouts per machine (path or "Not set up", primary, offline), thread defaults (`GET /projects/:id/default-execution-options`). `r` renames (`PATCH /projects/:id`), `D` deletes after confirmation (`DELETE /projects/:id`) |
-| Machines | bb version, then each machine with online/offline, server, lifecycle and needs-update badges and when it was last seen | `Enter` opens the machine: id, status, type, machine provider, permission limit, updates, projects with a checkout there, installed provider CLIs and their versions (`GET /hosts/:id/provider-clis/status`, only while online). `r` renames (`PATCH /hosts/:id`), `Enter` on the permission limit picks a new one (`PATCH /hosts/:id/permission-ceiling`) |
-| Installed plugins | `GET /plugins`: name, id, version, status badge, whether it has settings; `/` filters | `Space` enables or disables (`POST /plugins/:id/enable` / `disable`). `Enter` opens the plugin; plugins with settings get a form built from `GET /plugins/:id/settings` |
-| Archived threads | `GET /threads?archived=true` in pages of 50, grouped by project, `child` badge and when it was archived; `t` cycles all/root/child, `p` cycles the project, `/` searches the loaded titles | `Enter` opens the thread, `u` unarchives, `D`/`x`/`Del` deletes after confirmation (the dialog says how many child threads go too, from `GET /threads/:id/child-summary`); "Load more" fetches the next page |
+| General | server URL, bb version (and the upgrade command when an update is out), data directory, server machine, then the general settings the server reports: followup behavior, Git changes, archive confirmation, history after a context clear, new branch prefix, machine server URL, streamer mode, usage data, diagnostic events | `RET`/`~` toggles; text fields open an input. The branch prefix is checked like the server does (at most 64 characters, must start a valid git branch name); the machine server URL must be an http(s) URL without credentials, empty means the server URL |
+| Providers | `GET /system/providers/catalog`: enabled providers in the saved order, then disabled ones, with Default / Unavailable / Disabled badges and how finished turns display | `~` enables or disables (`PUT /system/providers/:id/enabled`), `gd` makes it the default, `zc` toggles collapsing finished turns, `RET` lists its models (`GET /system/execution-options?providerId=`); "Allow faster service tiers" toggles |
+| Keyboard | every TUI command with all its key sequences, direct chords and ex command, and its web command id; `g/` filters | `RET` runs the command; rebinding is done in the web app (its overrides apply here) |
+| Projects | sidebar projects with remote, how many machines have a checkout, thread count | `Enter` opens the project: name, remote, id, created, checkouts per machine (path or "Not set up", primary, offline), thread defaults (`GET /projects/:id/default-execution-options`). `R` renames (`PATCH /projects/:id`), `dd` deletes after confirmation (`DELETE /projects/:id`) |
+| Machines | bb version, then each machine with online/offline, server, lifecycle and needs-update badges and when it was last seen | `Enter` opens the machine: id, status, type, machine provider, permission limit, updates, projects with a checkout there, installed provider CLIs and their versions (`GET /hosts/:id/provider-clis/status`, only while online). `R` renames (`PATCH /hosts/:id`), `RET` on the permission limit picks a new one (`PATCH /hosts/:id/permission-ceiling`) |
+| Installed plugins | `GET /plugins`: name, id, version, status badge, whether it has settings; `g/` filters | `~` enables or disables (`POST /plugins/:id/enable` / `disable`). `Enter` opens the plugin; plugins with settings get a form built from `GET /plugins/:id/settings` |
+| Archived threads | `GET /threads?archived=true` in pages of 50, grouped by project, `child` badge and when it was archived; `t` cycles all/root/child, `p` cycles the project, `g/` searches the loaded titles | `RET` opens the thread, `u` unarchives, `dd`/`x`/`Del` deletes after confirmation (the dialog says how many child threads go too, from `GET /threads/:id/child-summary`); "Load more" fetches the next page |
 
 The plugin settings form keeps the server's field order and renders each
-descriptor type: `boolean` (`Enter`/`Space` toggles), `select` and `project`
+descriptor type: `boolean` (`RET`/`~` toggles), `select` and `project`
 (a picker; `1`-`9` choose), `number` (must be finite; empty clears it),
 `string` (multiline strings are edited on one line with `\n` for a line break
 and `\\` for a backslash), and secret strings (masked input, shown as `[set]`
@@ -761,11 +854,13 @@ Descriptor types the TUI does not know are shown read-only. General settings
 are saved like the web app: the whole settings object from `GET
 /system/config` with the one change merged in, `PUT /settings/general`.
 
-Keys: `j`/`k`, `PgUp`/`PgDn`, `g`/`G` move; `Tab`, `h`/`←` and `Esc` go to the
-section list (`Esc` first closes an open project, machine or plugin and clears
-a filter), where `j`/`k` or `1`-`7` pick a section and `Enter`/`l` return to
-it (`1`-`7` also switch sections from a section's list); `y` copies ids, paths and URLs; `C-r` reloads the section; `C-k` opens the
-palette; `q` or `,` close the view, and so does `Esc` in the section list. A row shows
+Keys: `j`/`k`, `PgUp`/`PgDn`, `C-d`/`C-u`, `gg`/`G` move; `C-h`, `h`/`←`,
+`TAB` and `ESC` go to the section list (`ESC` first closes an open project,
+machine or plugin and clears a filter), where `j`/`k` pick a section and
+`RET`/`l`/`C-l` return to it; `gt`/`gT` and `{N}gt` switch sections from
+anywhere in the view; `yy` yanks ids, paths and URLs; `gr` reloads the
+section; `SPC`, `:` and `M-x` keep working; `q`, `:q` or `ESC` in the section
+list close the view. A row shows
 `[saving…]` until the server answers, and a second change to the same row
 waits for it. The palette has entries for each section ("Provider settings",
 "Archived threads", …); running any other command from the palette closes the
@@ -781,20 +876,22 @@ delete (as the web app does) rather than archive.
 
 ## Automations
 
-`A` (or "Open automations" in the palette) opens the automations plugin
+`SPC o A` (`:automations`, or "Open automations" in the palette) opens the
+automations plugin
 natively, over the main area. Everything goes through the plugin's RPC
 contract (`plugins/automations/src/rpc.ts`) with `POST
 /plugins/automations/rpc/:method`:
 
 | View | Shows | Keys |
 |---|---|---|
-| List | `automations_overview`: every automation sorted by name with a status glyph (`●` active, `○` paused or finished, `◐` running, `✗` last run failed, `!` broken), project, cadence (`9AM Mon-Fri`, `Every 5 min`, a port of the web formatter; unusual expressions show the raw cron), next run or one-shot state, and `[paused]`, `[script]`, `[needs prompt]`, `[invalid]` badges | `j`/`k`, `g`/`G`, `PgUp`/`PgDn` move, `Enter` opens, `/` filters by name, project or cadence, `R`/`C-r` reloads, `Esc`/`q`/`A` close |
-| Detail | `automations_get`: status, project, schedule, cron and timezone or one-shot time, last run, run count, last run thread, mode; for agents the provider, model, reasoning, service tier, permission mode, environment (project default, reuse, new worktree, workspace path, existing thread), target thread, origin and the prompt; for scripts the interpreter, timeout, working directory, env var names, script file and script; the last error. Below, `automations_runs` run history (time, status, duration, manual trigger, skip reason, error, exit code, last output line) | `Enter` on a run (or the last/target thread row) opens its thread; `m` or "Load more runs" fetches the next page; `Esc`/`h` back |
+| List | `automations_overview`: every automation sorted by name with a status glyph (`●` active, `○` paused or finished, `◐` running, `✗` last run failed, `!` broken), project, cadence (`9AM Mon-Fri`, `Every 5 min`, a port of the web formatter; unusual expressions show the raw cron), next run or one-shot state, and `[paused]`, `[script]`, `[needs prompt]`, `[invalid]` badges | `j`/`k`, `gg`/`G`, `PgUp`/`PgDn` move, `RET` opens, `g/` filters by name, project or cadence, `gr` reloads, `q`/`ESC` close |
+| Detail | `automations_get`: status, project, schedule, cron and timezone or one-shot time, last run, run count, last run thread, mode; for agents the provider, model, reasoning, service tier, permission mode, environment (project default, reuse, new worktree, workspace path, existing thread), target thread, origin and the prompt; for scripts the interpreter, timeout, working directory, env var names, script file and script; the last error. Below, `automations_runs` run history (time, status, duration, manual trigger, skip reason, error, exit code, last output line) | `RET` on a run (or the last/target thread row) opens its thread; `gm` or "Load more runs" fetches the next page; `q`/`ESC`/`h` back |
 
-In both views `Space` pauses or resumes (`automations_pause` / `resume`; a
+In both views `~` pauses or resumes (`automations_pause` / `resume`; a
 finished or expired one-shot cannot be toggled), `r` runs it now
-(`automations_run`), `e` edits, `d`/`Del` deletes after confirmation
-(`automations_delete`), and `n` opens the create form ("New automation" in the
+(`automations_run`), `e` edits, `dd`/`x`/`Del` deletes after confirmation
+(`automations_delete`), and `o` (`SPC o N`, `:automations new`) opens the
+create form ("New automation" in the
 palette does too).
 
 The form (`automations_create` / `automations_update`) has name, project,
@@ -812,8 +909,8 @@ machine), or reusing an environment of one of the project's threads. New
 automations are sent with `origin: "human"`. Editing sends only the changed
 fields (`name`, `trigger`, and `agent` with the changed prompt, provider,
 model, reasoning, permission or environment target); script automations can
-change their name and schedule. `j`/`k` move, `Enter`/`Space` edit or choose
-(`1`-`9` pick), `C-s` saves, `Esc` discards. The prompt is edited on one line
+change their name and schedule. The form keeps its own keys: `j`/`k` move,
+`Enter`/`Space` edit or choose (`1`-`9` pick), `C-s` saves, `Esc` discards. The prompt is edited on one line
 with `\n` for a line break.
 
 The view refreshes on the plugin's realtime signals (`plugin-signal` on
@@ -837,16 +934,24 @@ their threads live (the TUI keeps watching every pane's thread).
 
 | Keys | Action |
 |---|---|
-| `V` | Open the thread selected in the sidebar in a new pane right of the focused one (focuses it if it is already in a pane) |
+| `C-w v`, `C-w s`, `:vs [thread]` | Open the thread selected in the sidebar in a new pane right of the focused one (focuses it if it is already in a pane) |
+| `C-w n`, `:vnew [prompt]` | New thread, opened in a new pane when it is created |
+| `C-h`/`C-l`, `C-w h`/`C-w l` | Focus the window to the left / right by geometry (sidebar, panes, right panel; no wrap) |
+| `C-j`/`C-k`, `C-w j`/`C-w k` | Focus the pane's composer (or request panel) / timeline |
 | `M-h`/`M-l`, `M-←`/`M-→` | Focus the pane to the left / right (wraps); `pane.focus.left` / `pane.focus.right` |
-| `Tab`/`S-Tab` | Cycle sidebar, each pane and its composer (or request panel), right panel |
-| `X` | Close the focused pane (`pane.close`); one pane left ends the split |
+| `C-w w`/`C-w W`, `{N} C-w w`, `SPC 1`-`SPC 4` | Cycle sidebar, each pane and its composer (or request panel), right panel; focus pane N |
+| `C-w p`, `C-w t`, `C-w b` | Previously focused window, top-left window, bottom-right window |
+| `C-w q`, `C-w c`, `:close` | Close the focused window (`pane.close`): a pane (one pane left ends the split), the right panel, the sidebar, a special view |
+| `C-w x`, `C-w r`, `C-w H`, `C-w L` | Swap the pane with the next one, rotate the panes, move the pane to the far left / right |
+| `C-w o`, `SPC w m m`, `SPC t z` | Show only the focused pane (hides the sidebar and panel too) / restore |
+| `C-w =` | Restore every window (unmaximize, sizes, hidden sidebar and panel) |
+| `C-w <`, `C-w >` | Narrow / widen the sidebar (or the panel when it is focused) by 4 columns, or by a count |
 | `M-z` | Show only the focused pane / restore the split (`pane.maximize.toggle`) |
 
 Opening a thread from the sidebar, search or a notification replaces the
 focused pane's thread, or focuses the pane that already shows it. The right
 panel, palette and keys act on the focused pane's thread. `pane.focus.1`-`4`
-have no default key but follow server keybinding overrides. A background pane
+(`SPC 1`-`SPC 4`) also follow server keybinding overrides. A background pane
 waiting for an answer shows a one-line notice; focus it to answer.
 
 ## Coverage compared with the web app

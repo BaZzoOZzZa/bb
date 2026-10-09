@@ -69,7 +69,7 @@ impl AppState {
         };
         if self.splits.len() >= MAX_SPLIT_PANES {
             self.toast(
-                format!("At most {MAX_SPLIT_PANES} panes · close one with X"),
+                format!("At most {MAX_SPLIT_PANES} panes · close one with C-w q"),
                 ToastLevel::Info,
             );
             return Vec::new();
@@ -89,6 +89,25 @@ impl AppState {
             effects.push(self.split_watch());
         }
         effects
+    }
+
+    pub(crate) fn insert_split(&mut self, thread_id: &str) -> bool {
+        let Some(open) = self.open_thread.clone() else {
+            return false;
+        };
+        if open == thread_id
+            || self.splits.iter().any(|id| id == thread_id)
+            || self.splits.len() >= MAX_SPLIT_PANES
+        {
+            return false;
+        }
+        if self.splits.is_empty() {
+            self.splits.push(open);
+        }
+        let index = self.focused_pane();
+        self.splits.insert(index + 1, thread_id.to_owned());
+        self.split_maximized = false;
+        true
     }
 
     pub fn focus_pane(&mut self, index: usize) -> Vec<Effect> {
@@ -112,7 +131,10 @@ impl AppState {
 
     pub fn step_pane(&mut self, delta: isize) -> Vec<Effect> {
         if !self.is_split() {
-            self.toast("Only one pane is open · V opens a split", ToastLevel::Info);
+            self.toast(
+                "Only one pane is open · C-w v opens a split",
+                ToastLevel::Info,
+            );
             return Vec::new();
         }
         let count = self.splits.len() as isize;

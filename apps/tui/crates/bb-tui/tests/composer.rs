@@ -125,7 +125,9 @@ fn open(state: &mut AppState) -> Vec<Effect> {
         .position(|row| row.thread().is_some_and(|thread| thread.id == IDLE))
         .expect("thread row");
     state.selected = index;
-    key(state, KeyCode::Enter)
+    let mut effects = key(state, KeyCode::Enter);
+    effects.extend(keys(state, "C-l"));
+    effects
 }
 
 fn load_execution(state: &mut AppState) {
@@ -154,8 +156,12 @@ fn active() -> AppState {
 }
 
 fn focus_composer(state: &mut AppState) {
-    key(state, KeyCode::Char('c'));
+    key(state, KeyCode::Char('i'));
     assert_eq!(state.focus, Focus::Composer);
+}
+
+fn send(state: &mut AppState) -> Vec<Effect> {
+    chord(state, KeyCode::Enter, KeyModifiers::CONTROL)
 }
 
 fn mutations(effects: &[Effect]) -> Vec<Mutation> {
@@ -234,7 +240,10 @@ fn enter_sends_idle_follow_up_with_execution_selection() {
     let mut state = idle();
     focus_composer(&mut state);
     type_text(&mut state, "Fix the tests");
-    let effects = key(&mut state, KeyCode::Enter);
+    assert!(mutations(&key(&mut state, KeyCode::Enter)).is_empty());
+    assert_eq!(composer_text(&state), "Fix the tests\n");
+    key(&mut state, KeyCode::Backspace);
+    let effects = send(&mut state);
     let sent = mutations(&effects);
     let [Mutation::SendMessage { thread_id, request }] = sent.as_slice() else {
         panic!("expected send, got {effects:?}");
@@ -275,6 +284,7 @@ fn picked_options_become_explicit_execution_inputs() {
     key(&mut state, KeyCode::Char('1'));
     focus_composer(&mut state);
     type_text(&mut state, "go");
+    key(&mut state, KeyCode::Esc);
     let sent = mutations(&key(&mut state, KeyCode::Enter));
     let [Mutation::SendMessage { request, .. }] = sent.as_slice() else {
         panic!("expected send");
@@ -291,11 +301,11 @@ fn picked_options_become_explicit_execution_inputs() {
 }
 
 #[test]
-fn active_thread_queues_on_enter_and_steers_with_ctrl_s() {
+fn active_thread_queues_on_send_and_steers_with_ctrl_c_ctrl_s() {
     let mut state = active();
     focus_composer(&mut state);
     type_text(&mut state, "after this");
-    let sent = mutations(&key(&mut state, KeyCode::Enter));
+    let sent = mutations(&send(&mut state));
     let [Mutation::QueueMessage { request, .. }] = sent.as_slice() else {
         panic!("expected queue, got {sent:?}");
     };
@@ -303,11 +313,7 @@ fn active_thread_queues_on_enter_and_steers_with_ctrl_s() {
     finish(&mut state, sent[0].clone(), Ok(MutationReply::Done));
 
     type_text(&mut state, "change course");
-    let sent = mutations(&chord(
-        &mut state,
-        KeyCode::Char('s'),
-        KeyModifiers::CONTROL,
-    ));
+    let sent = mutations(&keys(&mut state, "C-c C-s"));
     let [Mutation::SendMessage { request, .. }] = sent.as_slice() else {
         panic!("expected steer, got {sent:?}");
     };
@@ -318,11 +324,8 @@ fn active_thread_queues_on_enter_and_steers_with_ctrl_s() {
         &mut state,
         vec![queued("q1", "first"), queued("q2", "second")],
     );
-    let sent = mutations(&chord(
-        &mut state,
-        KeyCode::Char('s'),
-        KeyModifiers::CONTROL,
-    ));
+    key(&mut state, KeyCode::Esc);
+    let sent = mutations(&keys(&mut state, ": w ! RET"));
     assert_eq!(
         sent,
         vec![Mutation::SendQueued {
@@ -331,14 +334,7 @@ fn active_thread_queues_on_enter_and_steers_with_ctrl_s() {
             mode: SendQueuedMessageMode::Steer,
         }]
     );
-    assert!(
-        mutations(&chord(
-            &mut state,
-            KeyCode::Char('s'),
-            KeyModifiers::CONTROL
-        ))
-        .is_empty()
-    );
+    assert!(mutations(&keys(&mut state, "SPC m S")).is_empty());
 }
 
 #[test]
@@ -348,25 +344,21 @@ fn submit_mode_toggle_makes_enter_steer() {
     assert!(state.enter_steers);
     focus_composer(&mut state);
     type_text(&mut state, "now");
-    let sent = mutations(&key(&mut state, KeyCode::Enter));
+    let sent = mutations(&send(&mut state));
     let [Mutation::SendMessage { request, .. }] = sent.as_slice() else {
         panic!("expected steer");
     };
     assert_eq!(request.mode, SendMessageMode::SteerIfActive);
     finish(&mut state, sent[0].clone(), Ok(MutationReply::Done));
     type_text(&mut state, "later");
-    let sent = mutations(&chord(
-        &mut state,
-        KeyCode::Char('s'),
-        KeyModifiers::CONTROL,
-    ));
+    let sent = mutations(&keys(&mut state, "C-c C-s"));
     assert!(matches!(sent.as_slice(), [Mutation::QueueMessage { .. }]));
 
     let mut idle = idle();
     chord(&mut idle, KeyCode::Char('t'), KeyModifiers::ALT);
     focus_composer(&mut idle);
     type_text(&mut idle, "hello");
-    let sent = mutations(&key(&mut idle, KeyCode::Enter));
+    let sent = mutations(&keys(&mut idle, "C-c C-c"));
     let [Mutation::SendMessage { request, .. }] = sent.as_slice() else {
         panic!("expected plain send");
     };
@@ -374,13 +366,16 @@ fn submit_mode_toggle_makes_enter_steer() {
 }
 
 #[test]
-fn double_escape_and_ctrl_c_stop_the_turn() {
+fn ctrl_c_ctrl_k_stops_the_turn_and_escape_only_leaves_insert() {
     let mut state = active();
     focus_composer(&mut state);
     assert!(mutations(&key(&mut state, KeyCode::Esc)).is_empty());
-    assert!(screen(&state).contains("Esc again to stop"));
+    assert_eq!(state.focus, Focus::Composer);
+    assert!(!state.composer().unwrap().is_insert());
+    assert!(mutations(&key(&mut state, KeyCode::Esc)).is_empty());
+    assert_eq!(state.focus, Focus::Composer);
     assert_eq!(
-        mutations(&key(&mut state, KeyCode::Esc)),
+        mutations(&keys(&mut state, "C-c C-k")),
         vec![Mutation::Stop {
             thread_id: IDLE.into()
         }]
@@ -395,16 +390,19 @@ fn double_escape_and_ctrl_c_stop_the_turn() {
         Ok(MutationReply::Done),
     );
 
+    key(&mut state, KeyCode::Char('A'));
     type_text(&mut state, "draft");
     chord(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
-    assert_eq!(composer_text(&state), "");
+    assert_eq!(composer_text(&state), "draft");
     assert!(!state.quit);
+    assert_eq!(state.keys.showcmd(), "C-c");
+    key(&mut state, KeyCode::Esc);
+    assert!(state.composer().unwrap().is_insert());
+    key(&mut state, KeyCode::Esc);
+    keys(&mut state, "S ESC");
+    assert_eq!(composer_text(&state), "");
     assert_eq!(
-        mutations(&chord(
-            &mut state,
-            KeyCode::Char('c'),
-            KeyModifiers::CONTROL
-        )),
+        mutations(&keys(&mut state, "SPC m k")),
         vec![Mutation::Stop {
             thread_id: IDLE.into()
         }]
@@ -413,8 +411,10 @@ fn double_escape_and_ctrl_c_stop_the_turn() {
     let mut idle = idle();
     focus_composer(&mut idle);
     key(&mut idle, KeyCode::Esc);
+    assert_eq!(idle.focus, Focus::Composer);
+    keys(&mut idle, "C-k");
     assert_eq!(idle.focus, Focus::Main);
-    assert!(mutations(&key(&mut idle, KeyCode::Char('S'))).is_empty());
+    assert!(mutations(&keys(&mut idle, ": s t o p RET")).is_empty());
     assert!(
         idle.toasts
             .iter()
@@ -441,7 +441,7 @@ fn blocked_modes_keep_the_draft() {
     };
     set_pending(&mut state, true);
     assert_eq!(state.focus, Focus::Interaction);
-    assert!(mutations(&key(&mut state, KeyCode::Enter)).is_empty());
+    assert!(mutations(&send(&mut state)).is_empty());
     assert_eq!(composer_text(&state), "hello");
     let text = screen(&state);
     assert!(text.contains("Waiting for you"), "{text}");
@@ -453,7 +453,7 @@ fn blocked_modes_keep_the_draft() {
     open(&mut loading);
     focus_composer(&mut loading);
     type_text(&mut loading, "x");
-    assert!(mutations(&key(&mut loading, KeyCode::Enter)).is_empty());
+    assert!(mutations(&send(&mut loading)).is_empty());
     assert!(
         loading
             .toasts
@@ -464,7 +464,7 @@ fn blocked_modes_keep_the_draft() {
     let mut read_only = idle_read_only();
     focus_composer(&mut read_only);
     type_text(&mut read_only, "keep me");
-    assert!(key(&mut read_only, KeyCode::Enter).is_empty());
+    assert!(send(&mut read_only).is_empty());
     assert_eq!(composer_text(&read_only), "keep me");
 }
 
@@ -479,7 +479,7 @@ fn failed_send_restores_the_draft_and_success_extends_history() {
     let mut state = idle();
     focus_composer(&mut state);
     type_text(&mut state, "try this");
-    let sent = mutations(&key(&mut state, KeyCode::Enter));
+    let sent = mutations(&send(&mut state));
     let effects = finish(&mut state, sent[0].clone(), Err("boom".into()));
     assert_eq!(composer_text(&state), "try this");
     assert!(
@@ -494,7 +494,7 @@ fn failed_send_restores_the_draft_and_success_extends_history() {
             .any(|effect| matches!(effect, Effect::SaveDraft { raw: Some(_), .. }))
     );
 
-    let sent = mutations(&key(&mut state, KeyCode::Enter));
+    let sent = mutations(&send(&mut state));
     let effects = finish(&mut state, sent[0].clone(), Ok(MutationReply::Done));
     assert!(effects.contains(&Effect::FetchPromptHistory(IDLE.into())));
     assert_eq!(composer_text(&state), "");
@@ -646,7 +646,7 @@ fn queue_panel_edits_deletes_and_sends_now() {
     );
 
     type_text(&mut state, " edited");
-    let sent = mutations(&key(&mut state, KeyCode::Enter));
+    let sent = mutations(&send(&mut state));
     let [
         Mutation::UpdateQueued {
             request,
@@ -671,6 +671,7 @@ fn queue_panel_edits_deletes_and_sends_now() {
     chord(&mut state, KeyCode::Char('q'), KeyModifiers::ALT);
     key(&mut state, KeyCode::Enter);
     assert_eq!(composer_text(&state), "first");
+    assert!(mutations(&key(&mut state, KeyCode::Esc)).is_empty());
     let cancel = mutations(&key(&mut state, KeyCode::Esc));
     assert_eq!(
         cancel,
@@ -766,7 +767,7 @@ fn banners_and_footer_render_thread_state() {
     );
     assert!(text.contains("Claude-Sonnet-4-5 · High · Plan"), "{text}");
     assert!(
-        text.contains("Enter queue · C-s steer · Esc Esc stop · ctx 42% 84k/200k"),
+        text.contains("RET queue · C-c C-s steer · C-c C-k stop · ctx 42% 84k/200k"),
         "{text}"
     );
 

@@ -89,7 +89,7 @@ fn setup_with(read_only: bool) -> AppState {
         .position(|row| row.thread().is_some_and(|thread| thread.id == THREAD_ID))
         .expect("thread row");
     state.selected = index;
-    key(&mut state, KeyCode::Enter);
+    keys(&mut state, "g o");
     update(
         &mut state,
         Action::ExecutionOptionsLoaded {
@@ -111,7 +111,7 @@ fn setup_with(read_only: bool) -> AppState {
             })),
         },
     );
-    let effects = key(&mut state, KeyCode::Char('c'));
+    let effects = key(&mut state, KeyCode::Char('i'));
     assert_eq!(state.focus, Focus::Composer);
     assert_eq!(
         typeahead_requests(&effects),
@@ -242,7 +242,7 @@ fn mention_inserts_a_utf16_chip_and_sends_its_range() {
         }]
     );
     type_text(&mut state, "now");
-    let input = sent_input(&key(&mut state, KeyCode::Enter));
+    let input = sent_input(&chord(&mut state, KeyCode::Enter, KeyModifiers::CONTROL));
     assert_eq!(
         serde_json::to_value(&input).unwrap(),
         json!([{
@@ -324,7 +324,7 @@ fn empty_queries_show_a_hint_and_enter_still_sends() {
         state.typeahead.as_ref().map(|typeahead| &typeahead.menu),
         Some(MenuState::Hint(_))
     ));
-    let input = sent_input(&key(&mut state, KeyCode::Enter));
+    let input = sent_input(&chord(&mut state, KeyCode::Enter, KeyModifiers::CONTROL));
     assert_eq!(input, vec![PromptInput::text("hi @")]);
 }
 
@@ -459,7 +459,7 @@ fn unknown_slash_text_stays_literal() {
         },
     );
     assert!(!state.typeahead_visible());
-    let input = sent_input(&key(&mut state, KeyCode::Enter));
+    let input = sent_input(&chord(&mut state, KeyCode::Enter, KeyModifiers::CONTROL));
     assert_eq!(input, vec![PromptInput::text("/zzz")]);
 }
 
@@ -601,7 +601,7 @@ fn chips_are_rendered_with_the_chip_style() {
 #[test]
 fn attach_prompt_uploads_and_attachments_can_be_removed() {
     let mut state = setup();
-    chord(&mut state, KeyCode::Char('o'), KeyModifiers::CONTROL);
+    keys(&mut state, "C-c C-a");
     assert!(matches!(state.mode, Mode::AttachPrompt { .. }));
     for _ in 0..200 {
         key(&mut state, KeyCode::Backspace);
@@ -678,7 +678,7 @@ fn attach_command_and_pasted_paths_upload_files() {
     std::fs::write(&file, b"%PDF").unwrap();
     let mut state = setup();
     type_text(&mut state, &format!(":attach '{}'", file.display()));
-    let effects = key(&mut state, KeyCode::Enter);
+    let effects = chord(&mut state, KeyCode::Enter, KeyModifiers::CONTROL);
     assert!(matches!(
         effects.as_slice(),
         [Effect::Upload(UploadRequest { path, .. })] if *path == file
@@ -708,11 +708,11 @@ fn attach_command_and_pasted_paths_upload_files() {
 #[test]
 fn read_only_refuses_uploads() {
     let mut state = setup_with(true);
-    chord(&mut state, KeyCode::Char('o'), KeyModifiers::CONTROL);
+    keys(&mut state, "C-c C-a");
     assert_eq!(state.mode, Mode::Normal);
     assert!(screen(&state).contains("Read-only mode: cannot upload attachments"));
     type_text(&mut state, ":attach /tmp/x");
-    assert!(key(&mut state, KeyCode::Enter).is_empty());
+    assert!(chord(&mut state, KeyCode::Enter, KeyModifiers::CONTROL).is_empty());
 }
 
 #[test]
@@ -846,7 +846,7 @@ fn utf16_ranges_match_the_web_serialization() {
 #[test]
 fn new_thread_prompt_supports_mentions_and_attachments() {
     let mut state = loaded_state(sample_sidebar());
-    key(&mut state, KeyCode::Char('n'));
+    keys(&mut state, "SPC b N");
     assert_eq!(state.focus, Focus::NewThread);
     key(&mut state, KeyCode::Char('i'));
     let effects = type_text(&mut state, "@rea");
@@ -867,7 +867,7 @@ fn new_thread_prompt_supports_mentions_and_attachments() {
     let form = state.new_thread_form().expect("form");
     assert_eq!(form.composer.text(), "@README.md ");
     assert_eq!(form.composer.draft().mentions.len(), 1);
-    chord(&mut state, KeyCode::Char('o'), KeyModifiers::CONTROL);
+    keys(&mut state, "C-c C-a");
     assert!(matches!(
         state.mode,
         Mode::AttachPrompt {

@@ -78,7 +78,7 @@ impl SettingsSection {
         Self::ALL.into_iter().find(|section| section.id() == id)
     }
 
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         Self::ALL
             .iter()
             .position(|section| *section == self)
@@ -522,6 +522,13 @@ pub struct SettingsView {
 }
 
 impl SettingsView {
+    pub fn captures_keys(&self) -> bool {
+        self.edit.is_some()
+            || self.choice.is_some()
+            || self.confirm.is_some()
+            || self.filter_input.is_some()
+    }
+
     pub fn new(section: SettingsSection) -> Self {
         Self {
             section,
@@ -1181,13 +1188,7 @@ fn keyboard_rows(state: &AppState, view: &SettingsView) -> Vec<SettingsRow> {
     }
     let mut shown = 0;
     for command in Command::ALL.iter().copied() {
-        let keys = state
-            .keymap
-            .chords_for(command)
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("  ");
+        let keys = state.keymap.labels_for(command);
         let description = command.description();
         let id = command.app_command_id().unwrap_or("");
         if !matches_filter(filter, &[&description, &keys, id]) {
@@ -2746,7 +2747,7 @@ impl AppState {
         vec![Effect::Settings(SettingsRequest::Archived(query))]
     }
 
-    fn set_section(&mut self, section: SettingsSection) -> Vec<Effect> {
+    pub(crate) fn set_section(&mut self, section: SettingsSection) -> Vec<Effect> {
         if let Some(view) = self.settings.as_mut() {
             if view.section == section && view.detail.is_none() {
                 return Vec::new();
@@ -3087,42 +3088,42 @@ fn row_key(state: &mut AppState, target: RowTarget, key: KeyEvent) -> Vec<Effect
 
 pub fn settings_hints(view: &SettingsView) -> String {
     if view.confirm.is_some() {
-        return "y/Enter confirm · Esc cancel".into();
+        return "y/RET confirm · ESC cancel".into();
     }
     if view.choice.is_some() {
-        return "1-9/Enter choose · j/k move · Esc cancel".into();
+        return "1-9/RET choose · j/k move · ESC cancel".into();
     }
     if view.edit.is_some() {
-        return "Enter save · Esc cancel".into();
+        return "RET save · ESC cancel".into();
     }
     if view.filter_input.is_some() {
-        return "type to filter · Enter keep · Esc clear".into();
+        return "type to filter · RET keep · ESC clear".into();
     }
     if view.focus == SettingsFocus::Nav {
-        return "j/k section · Enter/l open · 1-7 jump · Esc/q close".into();
+        return "j/k section · RET/l open · gt/gT/{N}gt section · q close".into();
     }
-    let common = "C-r reload · Esc back · q close";
+    let common = "gr reload · ESC back · q close";
     match (&view.detail, view.section) {
         (Some(Detail::Project(_)), _) => {
-            format!("Enter edit · r rename · D delete · y copy · {common}")
+            format!("RET edit · R rename · dd delete · yy yank · {common}")
         }
-        (Some(Detail::Machine(_)), _) => format!("Enter edit · r rename · y copy · {common}"),
-        (Some(Detail::Plugin(_)), _) => format!("Enter/Space edit · y copy · {common}"),
-        (None, SettingsSection::General) => format!("Enter/Space change · y copy · {common}"),
+        (Some(Detail::Machine(_)), _) => format!("RET edit · R rename · yy yank · {common}"),
+        (Some(Detail::Plugin(_)), _) => format!("RET edit · ~ toggle · yy yank · {common}"),
+        (None, SettingsSection::General) => format!("RET change · ~ toggle · yy yank · {common}"),
         (None, SettingsSection::Providers) => {
-            format!("Enter models · Space enable · d default · c collapse turns · {common}")
+            format!("RET models · ~ enable · gd default · zc collapse turns · {common}")
         }
-        (None, SettingsSection::Keyboard) => format!("Enter run · / filter · {common}"),
+        (None, SettingsSection::Keyboard) => format!("RET run · g/ filter · {common}"),
         (None, SettingsSection::Projects) => {
-            format!("Enter open · r rename · D delete · / filter · {common}")
+            format!("RET open · R rename · dd delete · g/ filter · {common}")
         }
-        (None, SettingsSection::Machines) => format!("Enter open · r rename · {common}"),
+        (None, SettingsSection::Machines) => format!("RET open · R rename · {common}"),
         (None, SettingsSection::Plugins) => {
-            format!("Enter open · Space enable · / filter · {common}")
+            format!("RET open · ~ enable · g/ filter · {common}")
         }
         (None, SettingsSection::Archived) => {
             format!(
-                "Enter open · u unarchive · D delete · t kind · p project · / search · {common}"
+                "RET open · u unarchive · dd delete · t kind · p project · g/ search · {common}"
             )
         }
     }

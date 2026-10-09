@@ -97,12 +97,28 @@ impl Default for NotificationPrefs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvilPrefs {
+    pub which_key_delay_ms: u64,
+    pub clipboard: bool,
+}
+
+impl Default for EvilPrefs {
+    fn default() -> Self {
+        Self {
+            which_key_delay_ms: crate::evil::WHICH_KEY_DELAY.as_millis() as u64,
+            clipboard: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub submit_key: Option<SubmitKey>,
     pub theme: Option<String>,
     pub appearance: Appearance,
     pub mouse: bool,
     pub notifications: NotificationPrefs,
+    pub evil: EvilPrefs,
 }
 
 impl Default for Config {
@@ -113,6 +129,7 @@ impl Default for Config {
             appearance: Appearance::Auto,
             mouse: true,
             notifications: NotificationPrefs::default(),
+            evil: EvilPrefs::default(),
         }
     }
 }
@@ -225,6 +242,7 @@ pub fn parse(raw: &str) -> (Config, Vec<String>) {
         warnings: &mut warnings,
     };
     let mut notifications: Option<&dyn TableLike> = None;
+    let mut evil: Option<&dyn TableLike> = None;
     for (key, item) in document.as_table().iter() {
         match key {
             "submit_key" => match item.as_str().and_then(SubmitKey::parse) {
@@ -250,6 +268,10 @@ pub fn parse(raw: &str) -> (Config, Vec<String>) {
                 None => reader
                     .warnings
                     .push("`notifications` must be a table".into()),
+            },
+            "evil" => match item.as_table_like() {
+                Some(table) => evil = Some(table),
+                None => reader.warnings.push("`evil` must be a table".into()),
             },
             other => reader.unknown(other),
         }
@@ -281,6 +303,37 @@ pub fn parse(raw: &str) -> (Config, Vec<String>) {
                     "\"unfocused\", \"always\"",
                     &mut prefs.desktop_when,
                 ),
+                other => reader.unknown(other),
+            }
+        }
+    }
+    if let Some(table) = evil {
+        reader.section = "evil";
+        let prefs = &mut config.evil;
+        for (key, item) in table.iter() {
+            match key {
+                "which_key_delay_ms" => {
+                    match item.as_integer().and_then(|ms| u64::try_from(ms).ok()) {
+                        Some(ms) => prefs.which_key_delay_ms = ms,
+                        None => {
+                            let key = reader.key(key);
+                            reader.warnings.push(format!(
+                                "`{key}` must be a number of milliseconds; using {}",
+                                prefs.which_key_delay_ms
+                            ));
+                        }
+                    }
+                }
+                "clipboard" => match item.as_str() {
+                    Some("unnamedplus") => prefs.clipboard = true,
+                    Some("") => prefs.clipboard = false,
+                    _ => {
+                        let key = reader.key(key);
+                        reader
+                            .warnings
+                            .push(format!("`{key}` must be \"unnamedplus\" or \"\""));
+                    }
+                },
                 other => reader.unknown(other),
             }
         }
@@ -322,6 +375,21 @@ pub fn render(config: &Config) -> String {
     let _ = writeln!(out, "desktop_when = \"{}\"", prefs.desktop_when.as_str());
     let _ = writeln!(out, "plugin_signals = {}", prefs.plugin_signals);
     let _ = writeln!(out, "terminal_title = {}", prefs.terminal_title);
+    let _ = writeln!(out, "\n[evil]");
+    let _ = writeln!(
+        out,
+        "which_key_delay_ms = {}",
+        config.evil.which_key_delay_ms
+    );
+    let _ = writeln!(
+        out,
+        "clipboard = \"{}\"",
+        if config.evil.clipboard {
+            "unnamedplus"
+        } else {
+            ""
+        }
+    );
     out
 }
 
@@ -390,6 +458,10 @@ desktop = "osc777"
 desktop_when = "always"
 plugin_signals = false
 terminal_title = true
+
+[evil]
+which_key_delay_ms = 150
+clipboard = ""
 "#,
         );
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -397,6 +469,13 @@ terminal_title = true
         assert_eq!(config.theme.as_deref(), Some("Solarized (dark)"));
         assert_eq!(config.appearance, Appearance::Light);
         assert!(!config.mouse);
+        assert_eq!(
+            config.evil,
+            EvilPrefs {
+                which_key_delay_ms: 150,
+                clipboard: false,
+            }
+        );
         assert_eq!(
             config.notifications,
             NotificationPrefs {

@@ -223,9 +223,18 @@ fn state_with_hosts() -> AppState {
     state
 }
 
-async fn open(api: &MockApi, state: &mut AppState, key: char) -> Vec<Effect> {
-    let effects = press(state, KeyCode::Char(key));
+async fn open(api: &MockApi, state: &mut AppState, _key: char) -> Vec<Effect> {
+    let effects = support::keys(state, "SPC h ,");
     run_settings(api, state, effects).await
+}
+
+async fn seq(api: &MockApi, state: &mut AppState, text: &str) -> Vec<Effect> {
+    let mut rest = Vec::new();
+    for chord in bb_tui::keymap::seq(text) {
+        let effects = bb_tui::app::update(state, Action::Key(chord.event()));
+        rest.extend(run_settings(api, state, effects).await);
+    }
+    rest
 }
 
 async fn keys(api: &MockApi, state: &mut AppState, codes: &[KeyCode]) -> Vec<Effect> {
@@ -242,13 +251,7 @@ async fn select_section(api: &MockApi, state: &mut AppState, section: SettingsSe
         .iter()
         .position(|candidate| *candidate == section)
         .unwrap();
-    let digit = char::from(b'1' + index as u8);
-    keys(
-        api,
-        state,
-        &[KeyCode::Esc, KeyCode::Char(digit), KeyCode::Enter],
-    )
-    .await;
+    seq(api, state, &format!("{} g t", index + 1)).await;
     let view = state.settings.as_ref().unwrap();
     assert_eq!(view.section, section);
     assert_eq!(view.focus, SettingsFocus::Content);
@@ -259,7 +262,7 @@ fn screen(state: &AppState) -> String {
 }
 
 fn move_to(state: &mut AppState, label: &str) {
-    press(state, KeyCode::Char('g'));
+    support::keys(state, "g g");
     for _ in 0..80 {
         let rows = bb_tui::settings::settings_rows(state);
         let cursor =
@@ -279,7 +282,7 @@ fn move_to(state: &mut AppState, label: &str) {
 async fn comma_opens_settings_and_loads_server_data() {
     let api = api();
     let mut state = state_with_hosts();
-    let effects = press(&mut state, KeyCode::Char(','));
+    let effects = support::keys(&mut state, "SPC h ,");
     let requests: Vec<_> = effects
         .iter()
         .filter_map(|effect| match effect {
@@ -328,7 +331,7 @@ async fn general_toggle_sends_whole_settings_object_and_applies_reply() {
     let mut state = state_with_hosts();
     open(&api, &mut state, ',').await;
     move_to(&mut state, "Thread archive confirmation");
-    let effects = press(&mut state, KeyCode::Char(' '));
+    let effects = press(&mut state, KeyCode::Char('~'));
     let Some(Effect::Settings(SettingsRequest::Mutate(SettingsMutation::UpdateGeneral {
         key,
         settings,
@@ -441,7 +444,7 @@ async fn providers_enable_default_collapse_and_models() {
     assert!(text.contains("Allow faster service tiers"), "{text}");
 
     move_to(&mut state, "Codex");
-    keys(&api, &mut state, &[KeyCode::Char(' ')]).await;
+    seq(&api, &mut state, "~").await;
     assert!(matches!(
         api.settings.recorded().last(),
         Some(SettingsMutation::SetProviderEnabled { provider_id, enabled: true }) if provider_id == "codex"
@@ -450,7 +453,7 @@ async fn providers_enable_default_collapse_and_models() {
     assert!(catalog.iter().all(|entry| entry.enabled));
 
     move_to(&mut state, "Codex");
-    keys(&api, &mut state, &[KeyCode::Char('d')]).await;
+    seq(&api, &mut state, "g d").await;
     assert!(matches!(
         api.settings.recorded().last(),
         Some(SettingsMutation::UpdateGeneral { key: "defaultProviderId", settings })
@@ -458,7 +461,7 @@ async fn providers_enable_default_collapse_and_models() {
     ));
 
     move_to(&mut state, "Codex");
-    keys(&api, &mut state, &[KeyCode::Char('c')]).await;
+    seq(&api, &mut state, "z c").await;
     assert!(matches!(
         api.settings.recorded().last(),
         Some(SettingsMutation::UpdateGeneral { key: "providerCompletedTurnDisplay", settings })
@@ -486,7 +489,7 @@ async fn keyboard_lists_bindings_and_filters() {
     let text = screen(&state);
     assert!(text.contains("Command palette"), "{text}");
     assert!(text.contains("[palette.open]"), "{text}");
-    press(&mut state, KeyCode::Char('/'));
+    support::keys(&mut state, "g /");
     for ch in "terminal".chars() {
         press(&mut state, KeyCode::Char(ch));
     }
@@ -496,13 +499,14 @@ async fn keyboard_lists_bindings_and_filters() {
     assert!(!text.contains("Command palette"), "{text}");
     press(&mut state, KeyCode::Esc);
     assert!(screen(&state).contains("Command palette"));
-    press(&mut state, KeyCode::Char('/'));
+    support::keys(&mut state, "g /");
     for ch in "settings".chars() {
         press(&mut state, KeyCode::Char(ch));
     }
     let text = screen(&state);
     assert!(text.contains("[settings.open]"), "{text}");
-    assert!(text.contains("/settings"), "{text}");
+    assert!(text.contains("SPC h ,"), "{text}");
+    assert!(text.contains(":settings"), "{text}");
 }
 
 #[tokio::test]
@@ -538,7 +542,7 @@ async fn project_detail_shows_checkouts_defaults_and_renames_and_deletes() {
     }
 
     move_to(&mut state, "Name");
-    press(&mut state, KeyCode::Char('r'));
+    press(&mut state, KeyCode::Char('R'));
     for _ in 0..5 {
         press(&mut state, KeyCode::Backspace);
     }
@@ -557,7 +561,7 @@ async fn project_detail_shows_checkouts_defaults_and_renames_and_deletes() {
     assert!(screen(&state).contains("Checkouts stay on disk."));
     assert!(press(&mut state, KeyCode::Esc).is_empty());
     assert!(state.settings.as_ref().unwrap().confirm.is_none());
-    press(&mut state, KeyCode::Char('D'));
+    support::keys(&mut state, "d d");
     keys(&api, &mut state, &[KeyCode::Char('y')]).await;
     assert!(matches!(
         api.settings.recorded().last(),
@@ -597,7 +601,7 @@ async fn machines_list_detail_cli_versions_permission_and_rename() {
         Some(SettingsMutation::SetHostPermissionCeiling { host_id, mode: PermissionMode::Auto }) if host_id == "host_1"
     ));
 
-    press(&mut state, KeyCode::Char('r'));
+    press(&mut state, KeyCode::Char('R'));
     for ch in " 2".chars() {
         press(&mut state, KeyCode::Char(ch));
     }
@@ -666,7 +670,7 @@ async fn archived_threads_filter_unarchive_delete_and_paginate() {
     assert!(!screen(&state).contains("Old work 1"));
 
     move_to(&mut state, "Old work 0");
-    keys(&api, &mut state, &[KeyCode::Char('D')]).await;
+    seq(&api, &mut state, "x").await;
     let text = screen(&state);
     assert!(
         text.contains("Its 2 child thread(s) are deleted too."),
@@ -736,7 +740,7 @@ async fn plugins_toggle_and_generic_settings_form() {
     assert!(text.contains("[disabled]"), "{text}");
 
     move_to(&mut state, "Workflows");
-    keys(&api, &mut state, &[KeyCode::Char(' ')]).await;
+    seq(&api, &mut state, "~").await;
     assert!(matches!(
         api.settings.recorded().last(),
         Some(SettingsMutation::SetPluginEnabled { plugin_id, enabled: true }) if plugin_id == "workflows"
@@ -774,7 +778,7 @@ async fn plugins_toggle_and_generic_settings_form() {
     );
 
     move_to(&mut state, "Send pings");
-    keys(&api, &mut state, &[KeyCode::Char(' ')]).await;
+    seq(&api, &mut state, "~").await;
     assert!(matches!(
         api.settings.recorded().last(),
         Some(SettingsMutation::UpdatePluginSetting { key, value, secret: false, .. })
@@ -896,8 +900,8 @@ async fn palette_commands_open_sections_and_other_commands_close_settings() {
     let effects = bb_tui::app::update(
         &mut state,
         Action::Key(crossterm::event::KeyEvent::new(
-            KeyCode::Char('k'),
-            KeyModifiers::CONTROL,
+            KeyCode::Char('x'),
+            KeyModifiers::ALT,
         )),
     );
     run_settings(&api, &mut state, effects).await;
@@ -910,7 +914,7 @@ async fn palette_commands_open_sections_and_other_commands_close_settings() {
         state.settings.as_ref().map(|view| view.section),
         Some(SettingsSection::Archived)
     );
-    press_mod(&mut state, KeyCode::Char('k'), KeyModifiers::CONTROL);
+    press_mod(&mut state, KeyCode::Char('x'), KeyModifiers::ALT);
     assert!(state.palette.is_some());
     for ch in "new thread".chars() {
         press(&mut state, KeyCode::Char(ch));
@@ -960,7 +964,7 @@ fn form_validation_helpers() {
 }
 
 #[tokio::test]
-async fn digits_switch_sections_from_a_section_list() {
+async fn counted_gt_switches_sections_and_window_keys_move_between_lists() {
     let api = api();
     let mut state = state_with_hosts();
     open(&api, &mut state, ',').await;
@@ -968,14 +972,29 @@ async fn digits_switch_sections_from_a_section_list() {
         state.settings.as_ref().unwrap().focus,
         SettingsFocus::Content
     );
-    keys(&api, &mut state, &[KeyCode::Char('5')]).await;
+    seq(&api, &mut state, "5 g t").await;
     assert_eq!(
         state.settings.as_ref().unwrap().section,
         SettingsSection::ALL[4]
     );
-    keys(&api, &mut state, &[KeyCode::Char('1')]).await;
+    seq(&api, &mut state, "g T").await;
+    assert_eq!(
+        state.settings.as_ref().unwrap().section,
+        SettingsSection::ALL[3]
+    );
+    seq(&api, &mut state, "1 g t").await;
     assert_eq!(
         state.settings.as_ref().unwrap().section,
         SettingsSection::ALL[0]
     );
+    seq(&api, &mut state, "C-h").await;
+    assert_eq!(state.settings.as_ref().unwrap().focus, SettingsFocus::Nav);
+    seq(&api, &mut state, "C-l").await;
+    assert_eq!(
+        state.settings.as_ref().unwrap().focus,
+        SettingsFocus::Content
+    );
+    seq(&api, &mut state, ": q RET").await;
+    assert!(state.settings.is_none());
+    assert!(!state.quit);
 }

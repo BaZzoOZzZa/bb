@@ -253,6 +253,19 @@ impl Fixture {
         self.key(KeyEvent::from(code)).await
     }
 
+    async fn keys(&mut self, text: &str) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        for chord in bb_tui::keymap::seq(text) {
+            effects.extend(self.key(chord.event()).await);
+        }
+        effects
+    }
+
+    async fn submit(&mut self) -> Vec<Effect> {
+        self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+            .await
+    }
+
     async fn type_text(&mut self, text: &str) {
         for ch in text.chars() {
             self.press(KeyCode::Char(ch)).await;
@@ -299,7 +312,7 @@ impl Fixture {
 #[tokio::test]
 async fn n_opens_a_form_resolved_from_project_defaults_and_primary_checkout() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     assert_eq!(fx.state.focus, Focus::NewThread);
     let screen = fx.screen();
     assert!(screen.contains("New thread"), "{screen}");
@@ -343,7 +356,7 @@ async fn n_opens_a_form_resolved_from_project_defaults_and_primary_checkout() {
 #[tokio::test]
 async fn environment_picker_disables_invalid_choices_with_reasons() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.go_to(FormField::Environment).await;
     fx.press(KeyCode::Enter).await;
     let labels = fx.picker_labels();
@@ -394,7 +407,7 @@ async fn environment_picker_disables_invalid_choices_with_reasons() {
 #[tokio::test]
 async fn worktree_thread_is_created_with_the_picked_branch_and_opened() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.go_to(FormField::Environment).await;
     fx.press(KeyCode::Enter).await;
     fx.type_text("laptop · git").await;
@@ -405,7 +418,7 @@ async fn worktree_thread_is_created_with_the_picked_branch_and_opened() {
     assert_eq!(fx.field(), FormField::Provider);
     fx.press(KeyCode::Char('i')).await;
     fx.type_text("Fix the login bug").await;
-    let effects = fx.press(KeyCode::Enter).await;
+    let effects = fx.submit().await;
 
     let request = fx.created_json();
     assert_eq!(
@@ -445,7 +458,7 @@ async fn worktree_thread_is_created_with_the_picked_branch_and_opened() {
 #[tokio::test]
 async fn checkout_branch_changes_are_disabled_while_the_checkout_is_dirty() {
     let mut fx = fixture(|api| api.branches = branches(true));
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.go_to(FormField::Branch).await;
     fx.press(KeyCode::Enter).await;
     let labels = fx.picker_labels();
@@ -475,14 +488,14 @@ async fn checkout_branch_changes_are_disabled_while_the_checkout_is_dirty() {
 #[tokio::test]
 async fn clean_checkout_sends_a_new_branch_input() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.go_to(FormField::Branch).await;
     fx.press(KeyCode::Enter).await;
     fx.type_text("new branch from: main").await;
     fx.press(KeyCode::Enter).await;
     fx.press(KeyCode::Char('i')).await;
     fx.type_text("go").await;
-    fx.press(KeyCode::Enter).await;
+    fx.submit().await;
     assert_eq!(
         fx.created_json()["environment"],
         serde_json::json!({
@@ -497,7 +510,7 @@ async fn clean_checkout_sends_a_new_branch_input() {
 #[tokio::test]
 async fn machine_permission_limit_disables_modes_and_explicit_picks_are_marked() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.go_to(FormField::Environment).await;
     fx.press(KeyCode::Enter).await;
     fx.type_text("server · project").await;
@@ -526,7 +539,7 @@ async fn machine_permission_limit_disables_modes_and_explicit_picks_are_marked()
     assert!(screen.contains("Reasoning    Low"), "{screen}");
     fx.press(KeyCode::Char('i')).await;
     fx.type_text("x").await;
-    fx.press(KeyCode::Enter).await;
+    fx.submit().await;
     let request = fx.created_json();
     assert_eq!(request["model"], "gpt-5-mini");
     assert_eq!(request["reasoningLevel"], "low");
@@ -564,7 +577,7 @@ async fn new_thread_in_same_environment_reuses_it_with_the_thread_placement() {
     );
     update(&mut fx.state, Action::Snapshot(Arc::new(snapshot)));
     fx.state.open_thread = Some("thr_old".into());
-    fx.press(KeyCode::Char('N')).await;
+    fx.keys("SPC b c").await;
 
     let form = fx.state.new_thread_form().expect("form");
     assert!(form.prompt_active);
@@ -580,7 +593,7 @@ async fn new_thread_in_same_environment_reuses_it_with_the_thread_placement() {
     );
 
     fx.type_text("Follow up work").await;
-    fx.press(KeyCode::Enter).await;
+    fx.submit().await;
     let request = fx.created_json();
     assert_eq!(
         request["environment"],
@@ -593,7 +606,7 @@ async fn new_thread_in_same_environment_reuses_it_with_the_thread_placement() {
 #[tokio::test]
 async fn same_environment_shortcut_needs_a_ready_environment() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('N')).await;
+    fx.keys("SPC b c").await;
     assert!(fx.state.new_thread_form().is_none());
     assert!(
         fx.state
@@ -607,10 +620,10 @@ async fn same_environment_shortcut_needs_a_ready_environment() {
 async fn read_only_mode_never_creates_threads() {
     let mut fx = fixture(|_| {});
     fx.state.read_only = true;
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.press(KeyCode::Char('i')).await;
     fx.type_text("hello").await;
-    fx.press(KeyCode::Enter).await;
+    fx.submit().await;
     assert!(fx.api.created.lock().unwrap().is_empty());
     assert!(fx.state.new_thread_form().is_some());
     assert!(fx.state.toasts.iter().any(|toast| {
@@ -621,10 +634,10 @@ async fn read_only_mode_never_creates_threads() {
 #[tokio::test]
 async fn failed_creation_keeps_the_prompt_and_shows_the_error() {
     let mut fx = fixture(|api| api.fail = true);
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.press(KeyCode::Char('i')).await;
     fx.type_text("keep me").await;
-    fx.press(KeyCode::Enter).await;
+    fx.submit().await;
     let form = fx.state.new_thread_form().expect("form stays open");
     assert!(!form.submitting);
     assert_eq!(form.composer.text(), "keep me");
@@ -635,7 +648,7 @@ async fn failed_creation_keeps_the_prompt_and_shows_the_error() {
 #[tokio::test]
 async fn personal_project_uses_the_personal_workspace_on_the_primary_machine() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.press(KeyCode::Enter).await;
     fx.type_text("personal").await;
     fx.press(KeyCode::Enter).await;
@@ -648,7 +661,7 @@ async fn personal_project_uses_the_personal_workspace_on_the_primary_machine() {
     assert!(!screen.contains("Branch "), "{screen}");
     fx.press(KeyCode::Char('i')).await;
     fx.type_text("notes").await;
-    fx.press(KeyCode::Enter).await;
+    fx.submit().await;
     let request = fx.created_json();
     assert_eq!(request["projectId"], "proj_personal");
     assert_eq!(
@@ -665,14 +678,17 @@ async fn personal_project_uses_the_personal_workspace_on_the_primary_machine() {
 #[tokio::test]
 async fn closing_the_form_keeps_the_prompt_for_next_time() {
     let mut fx = fixture(|_| {});
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     fx.press(KeyCode::Char('i')).await;
     fx.type_text("draft text").await;
     fx.press(KeyCode::Esc).await;
+    assert!(fx.state.new_thread_form().unwrap().prompt_active);
     fx.press(KeyCode::Esc).await;
+    assert!(!fx.state.new_thread_form().unwrap().prompt_active);
+    fx.press(KeyCode::Char('q')).await;
     assert!(fx.state.new_thread_form().is_none());
     assert_eq!(fx.state.focus, Focus::Sidebar);
-    fx.press(KeyCode::Char('n')).await;
+    fx.keys("SPC b N").await;
     assert_eq!(
         fx.state.new_thread_form().unwrap().composer.text(),
         "draft text"

@@ -30,10 +30,7 @@ fn open_thread(state: &mut AppState) -> Vec<Effect> {
         .position(|row| row.thread().is_some_and(|thread| thread.id == THREAD))
         .expect("thread row");
     state.selected = index;
-    update(
-        state,
-        Action::Key(crossterm::event::KeyEvent::from(KeyCode::Enter)),
-    )
+    keys(state, "g o")
 }
 
 fn screen(state: &AppState) -> Vec<String> {
@@ -154,13 +151,13 @@ fn expanding_rows_shows_output_and_diff() {
     assert!(text.contains("  all passed"), "{text}");
 
     select_row(&mut state, "f1");
-    press(&mut state, KeyCode::Char('l'));
+    keys(&mut state, "z o");
     let text = main_text(&state);
     assert!(text.contains("@@ -10,3 +10,3 @@ fn parse()"), "{text}");
     assert!(text.contains("11 -let b = 2;"), "{text}");
     assert!(text.contains("11 +let b = 3;"), "{text}");
 
-    press(&mut state, KeyCode::Char('h'));
+    keys(&mut state, "z c");
     let text = main_text(&state);
     assert!(!text.contains("+let b = 3;"), "{text}");
     assert!(text.contains("▸ ✎ Edited parser.rs"), "{text}");
@@ -448,21 +445,28 @@ fn active_thinking_shows_spinner_and_text() {
 fn copy_and_open_selected_row() {
     let mut state = opened_rich();
     state.timelines.get_mut(THREAD).unwrap().selected = None;
-    assert!(press(&mut state, KeyCode::Char('y')).is_empty());
+    assert!(keys(&mut state, "g y").is_empty());
     select_row(&mut state, "a1");
-    let effects = press(&mut state, KeyCode::Char('y'));
+    let effects = keys(&mut state, "g y");
     assert!(
         matches!(&effects[..], [Effect::Copy(text)] if text.starts_with("Fixed it. See [the docs]")),
         "{effects:?}"
     );
-    let effects = press(&mut state, KeyCode::Char('o'));
+    assert_eq!(
+        state
+            .registers
+            .get(None)
+            .map(|value| value.text.starts_with("Fixed it.")),
+        Some(true)
+    );
+    let effects = keys(&mut state, "g x");
     assert_eq!(
         effects,
         vec![Effect::OpenExternal("https://example.com/parser".into())]
     );
 
     select_row(&mut state, "c1");
-    let effects = press(&mut state, KeyCode::Char('y'));
+    let effects = keys(&mut state, "g y");
     assert!(
         matches!(&effects[..], [Effect::Copy(text)] if text.contains("$ cargo test -p parser") && text.contains("all passed")),
         "{effects:?}"
@@ -480,7 +484,7 @@ fn open_picker_lists_multiple_targets() {
         false,
     );
     select_row(&mut state, "a1");
-    assert!(press(&mut state, KeyCode::Char('o')).is_empty());
+    assert!(keys(&mut state, "g x").is_empty());
     assert!(matches!(&state.mode, Mode::OpenPicker { targets, .. } if targets.len() == 2));
     let text = main_text(&state);
     assert!(text.contains("1 https://two.dev/page"), "{text}");
@@ -497,10 +501,10 @@ fn open_picker_lists_multiple_targets() {
 fn message_jumps_and_selection_scrolls_into_view() {
     let mut state = opened(long_rows(30), false);
     screen(&state);
-    press(&mut state, KeyCode::Char('g'));
+    keys(&mut state, "g g");
     let text = main_text(&state);
     assert!(text.contains("Question number 0"), "{text}");
-    press(&mut state, KeyCode::Char(']'));
+    keys(&mut state, "] m");
     let selected = state.timeline().unwrap().selected.clone();
     assert_eq!(selected.as_deref(), Some("u2"));
     for _ in 0..12 {
@@ -532,7 +536,7 @@ fn renders_every_row_kind_from_the_shared_fixture() {
         })
         .collect();
     let mut state = opened(rows, false);
-    let keys: Vec<String> = state
+    let rows: Vec<String> = state
         .timeline()
         .unwrap()
         .items
@@ -540,9 +544,9 @@ fn renders_every_row_kind_from_the_shared_fixture() {
         .filter(|item| matches!(item.kind, ItemKind::Row(_)))
         .map(|item| item.key.clone())
         .collect();
-    for key in keys {
+    for key in rows {
         select_row(&mut state, &key);
-        press(&mut state, KeyCode::Char('l'));
+        keys(&mut state, "z o");
     }
     for width in [40u16, 80, 140] {
         for line in render_lines(&state, width, 200) {

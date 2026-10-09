@@ -80,7 +80,7 @@ pub(crate) fn handle_mouse(state: &mut AppState, event: MouseEvent) -> Vec<Effec
     }
     if overlay_open(state) {
         return match delta {
-            Some(_) if state.mode == Mode::Help => Vec::new(),
+            Some(_) if matches!(state.mode, Mode::Ex(_)) => Vec::new(),
             Some(delta) => wheel_keys(state, delta.signum()),
             None => Vec::new(),
         };
@@ -166,6 +166,9 @@ fn pane_mouse(
         && state.composer_available()
     {
         state.focus = Focus::Composer;
+        if let Some(composer) = state.composers.get_mut(&pane.thread_id) {
+            composer.enter_insert();
+        }
         return effects;
     }
     if pane

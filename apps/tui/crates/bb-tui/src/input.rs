@@ -69,7 +69,16 @@ impl LineInput {
         match key.code {
             KeyCode::Enter => InputOutcome::Submit,
             KeyCode::Esc => InputOutcome::Cancel,
-            KeyCode::Char('c') if ctrl => InputOutcome::Cancel,
+            KeyCode::Char('c' | 'g') if ctrl => InputOutcome::Cancel,
+            KeyCode::Char('h') if ctrl => {
+                if self.cursor == 0 {
+                    return InputOutcome::Ignored;
+                }
+                let start = self.prev_boundary();
+                self.text.drain(start..self.cursor);
+                self.cursor = start;
+                InputOutcome::Edited
+            }
             KeyCode::Char('a') if ctrl => {
                 self.cursor = 0;
                 InputOutcome::Moved

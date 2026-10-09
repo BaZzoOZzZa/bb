@@ -20,6 +20,10 @@ fn ctrl(state: &mut AppState, ch: char) -> Vec<Effect> {
     press_mod(state, KeyCode::Char(ch), KeyModifiers::CONTROL)
 }
 
+fn open_palette(state: &mut AppState) -> Vec<Effect> {
+    press_mod(state, KeyCode::Char('x'), KeyModifiers::ALT)
+}
+
 fn type_text(state: &mut AppState, text: &str) -> Vec<Effect> {
     let mut effects = Vec::new();
     for ch in text.chars() {
@@ -100,7 +104,7 @@ fn with_environment(state: &mut AppState, thread_id: &str, environment_id: &str,
 #[test]
 fn command_palette_ranks_runs_and_remembers_commands() {
     let mut state = loaded_state(sample_sidebar());
-    let effects = ctrl(&mut state, 'k');
+    let effects = open_palette(&mut state);
     let palette = state.palette.as_ref().expect("palette open");
     assert_eq!(palette.kind, PaletteKind::Commands);
     assert!(matches!(
@@ -110,7 +114,7 @@ fn command_palette_ranks_runs_and_remembers_commands() {
     let screen = render_lines(&state, 110, 30).join("\n");
     assert!(screen.contains("Commands"), "{screen}");
     assert!(screen.contains("Search threads"), "{screen}");
-    assert!(screen.contains("C-b"), "{screen}");
+    assert!(screen.contains("SPC o p"), "{screen}");
 
     type_text(&mut state, "tog side");
     assert_eq!(titles(&state)[0], "Toggle sidebar");
@@ -121,7 +125,7 @@ fn command_palette_ranks_runs_and_remembers_commands() {
         "app:sidebar.toggle".into()
     ])));
 
-    ctrl(&mut state, 'k');
+    open_palette(&mut state);
     let palette = state.palette.as_ref().unwrap();
     assert_eq!(palette.items[0].title, "Toggle sidebar");
     assert_eq!(palette.items[0].group, "Recent");
@@ -133,10 +137,9 @@ fn command_palette_ranks_runs_and_remembers_commands() {
 fn palette_opens_from_composer_and_switches_modes() {
     let mut state = loaded_state(sample_sidebar());
     press(&mut state, KeyCode::Char('j'));
-    press(&mut state, KeyCode::Enter);
-    press(&mut state, KeyCode::Char('c'));
+    keys(&mut state, "g o i");
     assert_eq!(state.focus, Focus::Composer);
-    ctrl(&mut state, 'k');
+    open_palette(&mut state);
     assert_eq!(state.palette.as_ref().unwrap().kind, PaletteKind::Commands);
     type_text(&mut state, "search thr");
     press(&mut state, KeyCode::Enter);
@@ -153,7 +156,7 @@ fn palette_opens_from_composer_and_switches_modes() {
 #[test]
 fn thread_search_merges_local_and_server_results_and_opens_thread() {
     let mut state = loaded_state(sample_sidebar());
-    press(&mut state, KeyCode::Char('f'));
+    keys(&mut state, "SPC /");
     assert_eq!(
         titles(&state)[..2],
         ["Needs approval".to_owned(), "Refactor parser".to_owned()]
@@ -235,11 +238,11 @@ fn thread_search_merges_local_and_server_results_and_opens_thread() {
 #[test]
 fn stale_generation_results_are_ignored() {
     let mut state = loaded_state(sample_sidebar());
-    press(&mut state, KeyCode::Char('f'));
+    keys(&mut state, "SPC /");
     let effects = type_text(&mut state, "docs");
     let (generation, _) = palette_requests(&effects).pop().unwrap();
     press(&mut state, KeyCode::Esc);
-    press(&mut state, KeyCode::Char('f'));
+    keys(&mut state, "SPC /");
     type_text(&mut state, "docs");
     update(
         &mut state,
@@ -258,7 +261,7 @@ fn stale_generation_results_are_ignored() {
 fn project_switcher_reveals_project_in_sidebar() {
     let mut state = loaded_state(sample_sidebar());
     state.collapsed.insert("proj_b".into());
-    press(&mut state, KeyCode::Char('P'));
+    keys(&mut state, "SPC p p");
     type_text(&mut state, "bet");
     assert_eq!(titles(&state), ["beta"]);
     press(&mut state, KeyCode::Enter);
@@ -276,7 +279,7 @@ fn quick_open_searches_environment_files_and_previews_them() {
     let mut state = loaded_state(sample_sidebar());
     press(&mut state, KeyCode::Enter);
     with_environment(&mut state, "thr_wait", "env_1", "/work/repo");
-    ctrl(&mut state, 'p');
+    keys(&mut state, "SPC SPC");
     let palette = state.palette.as_ref().expect("files palette");
     assert_eq!(palette.kind, PaletteKind::Files);
     let source = FileSource::Environment {
@@ -357,11 +360,11 @@ fn quick_open_searches_environment_files_and_previews_them() {
     assert!(screen.contains("println!(\"hi\");"), "{screen}");
     assert!(screen.contains("1-3/3"), "{screen}");
     assert_eq!(
-        press(&mut state, KeyCode::Char('o')),
+        keys(&mut state, "g x"),
         vec![Effect::OpenExternal("/work/repo/src/main.rs".into())]
     );
     assert_eq!(
-        press(&mut state, KeyCode::Char('y')),
+        keys(&mut state, "y y"),
         vec![Effect::Copy("src/main.rs".into())]
     );
     press(&mut state, KeyCode::Esc);
@@ -374,7 +377,7 @@ fn quick_open_without_workspace_explains_why() {
     personal.projects.clear();
     let mut state = loaded_state(personal);
     state.selected = 0;
-    ctrl(&mut state, 'p');
+    keys(&mut state, "SPC SPC");
     let screen = render_lines(&state, 110, 20).join("\n");
     assert!(
         screen.contains("Open a thread or select a project to search its files"),
@@ -399,7 +402,7 @@ fn load_contributions(state: &mut AppState, effects: &[Effect]) {
 fn plugin_cli_commands_run_with_arguments_and_show_output() {
     let mut state = loaded_state(sample_sidebar());
     press(&mut state, KeyCode::Enter);
-    let effects = ctrl(&mut state, 'k');
+    let effects = open_palette(&mut state);
     load_contributions(&mut state, &effects);
     type_text(&mut state, "account status");
     assert_eq!(titles(&state)[0], "bb account status");
@@ -441,7 +444,7 @@ fn plugin_cli_commands_run_with_arguments_and_show_output() {
     assert!(screen.contains("warning: token expires soon"), "{screen}");
     assert!(screen.contains("exit 2"), "{screen}");
     assert_eq!(
-        press(&mut state, KeyCode::Char('y')),
+        keys(&mut state, "y y"),
         vec![Effect::Copy("signed in as \u{1b}[1mada\u{1b}[0m\n".into())]
     );
 }
@@ -449,7 +452,7 @@ fn plugin_cli_commands_run_with_arguments_and_show_output() {
 #[test]
 fn plugin_arguments_backspace_returns_to_commands_and_bad_quotes_toast() {
     let mut state = loaded_state(sample_sidebar());
-    let effects = ctrl(&mut state, 'k');
+    let effects = open_palette(&mut state);
     load_contributions(&mut state, &effects);
     type_text(&mut state, "account login");
     press(&mut state, KeyCode::Enter);
@@ -472,7 +475,7 @@ fn plugin_arguments_backspace_returns_to_commands_and_bad_quotes_toast() {
 fn read_only_refuses_plugin_commands() {
     let mut state = loaded_state(sample_sidebar());
     state.read_only = true;
-    let effects = ctrl(&mut state, 'k');
+    let effects = open_palette(&mut state);
     load_contributions(&mut state, &effects);
     type_text(&mut state, "account status");
     press(&mut state, KeyCode::Enter);
@@ -485,6 +488,28 @@ fn read_only_refuses_plugin_commands() {
             .iter()
             .any(|toast| toast.message == "Read-only mode: cannot run plugin commands")
     );
+}
+
+#[test]
+fn minibuffer_uses_vertico_keys_and_resumes() {
+    let mut state = loaded_state(sample_sidebar());
+    open_palette(&mut state);
+    type_text(&mut state, "toggle");
+    let first = state.palette.as_ref().unwrap().selected;
+    ctrl(&mut state, 'j');
+    assert_eq!(state.palette.as_ref().unwrap().selected, first + 1);
+    ctrl(&mut state, 'k');
+    assert_eq!(state.palette.as_ref().unwrap().selected, first);
+    ctrl(&mut state, 'n');
+    ctrl(&mut state, 'g');
+    assert!(state.palette.is_none());
+    keys(&mut state, "SPC '");
+    let palette = state.palette.as_ref().expect("resumed");
+    assert_eq!(palette.kind, PaletteKind::Commands);
+    assert_eq!(palette.query(), "toggle");
+    assert_eq!(palette.selected, first + 1);
+    ctrl(&mut state, 'h');
+    assert_eq!(state.palette.as_ref().unwrap().query(), "toggl");
 }
 
 #[test]

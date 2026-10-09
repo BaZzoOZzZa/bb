@@ -128,6 +128,10 @@ fn type_key(state: &mut AppState, code: KeyCode) -> Vec<TerminalRequest> {
     key(state, code, KeyModifiers::NONE)
 }
 
+fn seq_keys(state: &mut AppState, text: &str) -> Vec<TerminalRequest> {
+    terminal_effects(&keys(state, text))
+}
+
 fn inputs(requests: &[TerminalRequest]) -> Vec<Vec<u8>> {
     requests
         .iter()
@@ -150,7 +154,7 @@ fn tick(state: &mut AppState) -> Vec<TerminalRequest> {
 
 fn connected_state(read_only: bool) -> AppState {
     let mut state = opened_state(read_only);
-    type_key(&mut state, KeyCode::Char('T'));
+    seq_keys(&mut state, "SPC o t");
     load_sessions(
         &mut state,
         vec![session("term_1", TerminalSessionStatus::Running)],
@@ -162,7 +166,7 @@ fn connected_state(read_only: bool) -> AppState {
 #[test]
 fn opening_the_terminal_tab_lists_thread_and_environment_terminals_and_attaches() {
     let mut state = opened_state(false);
-    let requests = type_key(&mut state, KeyCode::Char('T'));
+    let requests = seq_keys(&mut state, "SPC o t");
     assert_eq!(requests, vec![TerminalRequest::List { scope: scope() }]);
     assert_eq!(state.panel.tab, PanelTab::Terminal);
     assert_eq!(state.focus, Focus::Panel);
@@ -290,7 +294,7 @@ fn typing_is_encoded_for_the_remote_terminal_until_the_escape_chord() {
     assert!(!state.terminal_input_active());
     assert!(inputs(&type_key(&mut state, KeyCode::Char('j'))).is_empty());
     let text = render_lines(&state, 120, 30).join("\n");
-    assert!(text.contains("Enter type"), "{text}");
+    assert!(text.contains("i type"), "{text}");
     type_key(&mut state, KeyCode::Enter);
     assert!(state.terminal_input_active());
     assert!(key(&mut state, KeyCode::Char('4'), KeyModifiers::CONTROL).is_empty());
@@ -363,7 +367,7 @@ fn read_only_mode_watches_terminals_but_never_types_resizes_creates_or_closes() 
             .any(|toast| toast.message == "Read-only mode: cannot type into a terminal")
     );
     key(&mut state, KeyCode::Char('\\'), KeyModifiers::CONTROL);
-    assert!(type_key(&mut state, KeyCode::Char('n')).is_empty());
+    assert!(type_key(&mut state, KeyCode::Char('o')).is_empty());
     assert!(!state.terminals.creating);
     type_key(&mut state, KeyCode::Char('x'));
     assert!(type_key(&mut state, KeyCode::Char('y')).is_empty());
@@ -469,7 +473,7 @@ fn scrollback_pages_through_history_and_typing_returns_to_the_live_screen() {
     type_key(&mut state, KeyCode::Char('x'));
     assert_eq!(state.terminals.active_view().unwrap().scrollback(), 0);
     key(&mut state, KeyCode::Char('\\'), KeyModifiers::CONTROL);
-    type_key(&mut state, KeyCode::Char('g'));
+    seq_keys(&mut state, "g g");
     let top = state.terminals.active_view().unwrap().scrollback();
     assert!(top >= 37, "{top}");
     type_key(&mut state, KeyCode::Char('G'));
@@ -481,7 +485,7 @@ fn new_close_and_switch_terminals_reconnect_with_replay_offsets() {
     let mut state = connected_state(false);
     render_lines(&state, 120, 30);
     key(&mut state, KeyCode::Char('\\'), KeyModifiers::CONTROL);
-    let create = type_key(&mut state, KeyCode::Char('n'));
+    let create = type_key(&mut state, KeyCode::Char('o'));
     let viewport = state.terminals.viewport.get().unwrap();
     let [TerminalRequest::Create { request, .. }] = create.as_slice() else {
         panic!("{create:?}");
@@ -494,7 +498,7 @@ fn new_close_and_switch_terminals_reconnect_with_replay_offsets() {
         }
     );
     assert!(
-        type_key(&mut state, KeyCode::Char('n')).is_empty(),
+        type_key(&mut state, KeyCode::Char('o')).is_empty(),
         "one creation at a time"
     );
     out(&mut state, "term_1", 1, 0, b"one");
@@ -524,7 +528,7 @@ fn new_close_and_switch_terminals_reconnect_with_replay_offsets() {
     );
     assert!(state.terminals.input);
     key(&mut state, KeyCode::Char('\\'), KeyModifiers::CONTROL);
-    let back = type_key(&mut state, KeyCode::Char('['));
+    let back = seq_keys(&mut state, "[ t");
     assert_eq!(
         back[1],
         TerminalRequest::Connect {
@@ -586,7 +590,7 @@ fn new_close_and_switch_terminals_reconnect_with_replay_offsets() {
 fn leaving_the_tab_hides_the_terminal_and_another_thread_disconnects_it() {
     let mut state = connected_state(false);
     key(&mut state, KeyCode::Char('\\'), KeyModifiers::CONTROL);
-    let hidden = type_key(&mut state, KeyCode::Char('1'));
+    let hidden = seq_keys(&mut state, "1 g t");
     assert_eq!(
         hidden,
         vec![TerminalRequest::Visible {
@@ -595,7 +599,7 @@ fn leaving_the_tab_hides_the_terminal_and_another_thread_disconnects_it() {
             visible: false
         }]
     );
-    let shown = type_key(&mut state, KeyCode::Char('4'));
+    let shown = seq_keys(&mut state, "4 g t");
     assert!(shown.contains(&TerminalRequest::Visible {
         terminal_id: "term_1".into(),
         link: 1,
@@ -684,7 +688,9 @@ async fn runtime_streams_a_real_terminal_socket_with_acks_input_reconnect_and_fu
     wait_until(move || *sidebar_api.backend.sidebar_fetches.lock().unwrap() > 0).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     send_key(&tx, KeyCode::Enter, KeyModifiers::NONE);
-    send_key(&tx, KeyCode::Char('T'), KeyModifiers::SHIFT);
+    for ch in [' ', 'o', 't'] {
+        send_key(&tx, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
 
     let resize = server.frame_where(|frame| frame.kind() == "resize").await;
     let (cols, rows) = (
@@ -730,7 +736,9 @@ async fn runtime_streams_a_real_terminal_socket_with_acks_input_reconnect_and_fu
     );
 
     send_key(&tx, KeyCode::Char('\\'), KeyModifiers::CONTROL);
-    send_key(&tx, KeyCode::Char('A'), KeyModifiers::SHIFT);
+    for ch in [' ', 'o', 'f'] {
+        send_key(&tx, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
     let resize = server.frame_where(|frame| frame.kind() == "resize").await;
     assert_eq!(
         (resize.json["cols"].as_u64(), resize.json["rows"].as_u64()),
@@ -773,7 +781,9 @@ async fn runtime_streams_a_real_terminal_socket_with_acks_input_reconnect_and_fu
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     send_key(&tx, KeyCode::Char('\\'), KeyModifiers::CONTROL);
-    send_key(&tx, KeyCode::Char('q'), KeyModifiers::NONE);
+    for ch in [' ', 'q', 'q'] {
+        send_key(&tx, KeyCode::Char(ch), KeyModifiers::NONE);
+    }
     let (terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
         .expect("loop exits")

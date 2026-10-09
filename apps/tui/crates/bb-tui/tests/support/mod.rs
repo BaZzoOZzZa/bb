@@ -1454,6 +1454,34 @@ pub fn press_mod(
     )
 }
 
+pub fn keys(state: &mut AppState, text: &str) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    for chord in bb_tui::keymap::seq(text) {
+        effects.extend(update(state, Action::Key(chord.event())));
+    }
+    effects
+}
+
+pub fn chords(text: &str) -> Vec<crossterm::event::KeyEvent> {
+    bb_tui::keymap::seq(text)
+        .into_iter()
+        .map(|chord| chord.event())
+        .collect()
+}
+
+pub fn type_chars(state: &mut AppState, text: &str) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    for ch in text.chars() {
+        effects.extend(update(
+            state,
+            Action::Key(crossterm::event::KeyEvent::from(
+                crossterm::event::KeyCode::Char(ch),
+            )),
+        ));
+    }
+    effects
+}
+
 pub async fn run_settings(
     api: &MockApi,
     state: &mut AppState,

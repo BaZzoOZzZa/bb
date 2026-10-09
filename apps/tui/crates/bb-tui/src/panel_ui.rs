@@ -108,10 +108,10 @@ fn action_hint(state: &AppState) -> Option<String> {
         actions
             .iter()
             .map(|action| match action {
-                GitAction::Commit => "C commit",
-                GitAction::Merge => "M merge PR",
-                GitAction::MarkReady => "R ready PR",
-                GitAction::ConvertToDraft => "W draft PR",
+                GitAction::Commit => "SPC g c c commit",
+                GitAction::Merge => "SPC g p m merge PR",
+                GitAction::MarkReady => "SPC g p r ready PR",
+                GitAction::ConvertToDraft => "SPC g p d draft PR",
             })
             .collect::<Vec<_>>()
             .join(" · "),
@@ -412,7 +412,7 @@ fn render_file(state: &AppState, frame: &mut Frame, area: Rect) {
         ))),
         title_area,
     );
-    let mut hint = "j/k scroll · h/l pan · e edit · y copy path · Esc back".to_owned();
+    let mut hint = "j/k scroll · zh/zl pan · e edit · gy yank path · q back".to_owned();
     if let Some(note) = &preview.note {
         hint = format!("{note} · {hint}");
     }
@@ -522,14 +522,14 @@ pub fn render_confirm(confirm: &GitConfirm, frame: &mut Frame, area: Rect) {
 pub fn hints(state: &AppState) -> String {
     match state.panel.tab {
         PanelTab::Info => {
-            "j/k move · Enter open diff/link · p preview · e edit · y copy · 1-4 tab · Z maximize · Esc leave".into()
+            "j/k move · RET open diff/link · gf preview · e edit · yy yank · gt/gT tab · C-w o maximize · q leave".into()
         }
         PanelTab::Diff => {
-            "s/S scope · n/N hunk · [/] file · Enter fold/load · h/l pan · p preview · e edit · r refresh · Esc leave".into()
+            "s/S scope · ]c/[c hunk · ]f/[f file · RET fold/load · zR/zM all · zh/zl pan · gf preview · e edit · gr reload · q leave".into()
         }
-        PanelTab::File => "j/k scroll · h/l pan · e edit in $EDITOR · y copy path · Esc back".into(),
+        PanelTab::File => "j/k scroll · zh/zl pan · e edit in $EDITOR · gy yank path · q back".into(),
         PanelTab::Terminal => {
-            "Enter type · n new · x close · [/] switch · A fullscreen · j/k/PgUp scroll · y copy · Esc leave".into()
+            "i type · o new · dd close · ]t/[t switch · SPC o f fullscreen · j/k/PgUp scroll · yy yank · q leave".into()
         }
     }
 }

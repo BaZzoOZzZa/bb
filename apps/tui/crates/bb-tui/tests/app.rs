@@ -20,9 +20,7 @@ fn press_mod(state: &mut AppState, code: KeyCode, modifiers: KeyModifiers) -> Ve
 }
 
 fn type_text(state: &mut AppState, text: &str) {
-    for ch in text.chars() {
-        press(state, KeyCode::Char(ch));
-    }
+    type_chars(state, text);
 }
 
 fn selected_key(state: &AppState) -> Option<RowKey> {
@@ -53,12 +51,15 @@ fn sidebar_renders_tree_glyphs_times_and_status_bar() {
     assert!(lines[5].contains("▾ beta"), "{text}");
     assert!(lines[6].contains("Refactor parser"), "{text}");
     assert!(!text.contains("Personal"), "{text}");
-    let status = lines.last().unwrap();
+    let status = &lines[lines.len() - 2];
     assert!(status.contains("http://127.0.0.1:4000/"), "{status}");
     assert!(status.contains("● connected"), "{status}");
     assert!(status.contains("⚑ 2"), "{status}");
-    assert!(status.contains("? help"), "{status}");
-    assert!(text.contains("Select a thread and press Enter"), "{text}");
+    assert!(status.contains("*threads*"), "{status}");
+    assert!(status.trim_end().ends_with("<N>"), "{status}");
+    let echo = lines.last().unwrap();
+    assert!(echo.contains("SPC leader"), "{echo}");
+    assert!(text.contains("Select a thread and press RET"), "{text}");
 }
 
 #[test]
@@ -74,8 +75,17 @@ fn first_load_selects_first_thread_and_vim_keys_move() {
     assert_eq!(selected_key(&state), Some(RowKey::Group("proj_a".into())));
     press_mod(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
     assert_eq!(selected_key(&state), thread_key("thr_other"));
-    press(&mut state, KeyCode::Char('g'));
+    keys(&mut state, "g g");
     assert_eq!(state.selected, 0);
+    keys(&mut state, "3 j");
+    assert_eq!(selected_key(&state), thread_key("thr_old"));
+    keys(&mut state, "2 G");
+    assert_eq!(selected_key(&state), thread_key("thr_wait"));
+    press(&mut state, KeyCode::Char('g'));
+    assert_eq!(state.keys.showcmd(), "g");
+    press(&mut state, KeyCode::Esc);
+    assert!(!state.keys.is_pending());
+    assert_eq!(selected_key(&state), thread_key("thr_wait"));
 }
 
 #[test]
@@ -92,6 +102,8 @@ fn enter_opens_thread_marks_unread_read_and_focuses_main() {
             }),
         ]
     );
+    assert_eq!(state.focus, Focus::Sidebar);
+    keys(&mut state, "g o");
     assert_eq!(state.focus, Focus::Main);
     assert_eq!(state.open_thread.as_deref(), Some("thr_unread"));
     let text = screen(&state);
@@ -104,6 +116,8 @@ fn enter_opens_thread_marks_unread_read_and_focuses_main() {
     press(&mut state, KeyCode::Char('j'));
     assert_eq!(selected_key(&state), thread_key("thr_unread"));
     press(&mut state, KeyCode::Esc);
+    assert_eq!(state.focus, Focus::Main);
+    press_mod(&mut state, KeyCode::Char('h'), KeyModifiers::CONTROL);
     assert_eq!(state.focus, Focus::Sidebar);
     press(&mut state, KeyCode::Char('k'));
     let effects = without_composer_loads(press(&mut state, KeyCode::Enter));
@@ -123,10 +137,16 @@ fn enter_on_group_and_h_l_collapse_and_expand() {
     assert!(lines[2].contains("▾ beta"), "{lines:?}");
     press(&mut state, KeyCode::Enter);
     assert!(!state.collapsed.contains("proj_a"));
-    press(&mut state, KeyCode::Char(' '));
+    press(&mut state, KeyCode::Tab);
     assert!(state.collapsed.contains("proj_a"));
     press(&mut state, KeyCode::Char('l'));
     assert!(!state.collapsed.contains("proj_a"));
+    keys(&mut state, "z a");
+    assert!(state.collapsed.contains("proj_a"));
+    keys(&mut state, "z R");
+    assert!(state.collapsed.is_empty());
+    keys(&mut state, "z M");
+    assert!(state.collapsed.contains("proj_a") && state.collapsed.contains("proj_b"));
 }
 
 #[test]
@@ -154,7 +174,7 @@ fn child_threads_expand_under_parent() {
 #[test]
 fn slash_filters_threads_and_esc_clears() {
     let mut state = loaded_state(sample_sidebar());
-    press(&mut state, KeyCode::Char('/'));
+    keys(&mut state, "g /");
     assert!(matches!(state.mode, Mode::Filter(_)));
     type_text(&mut state, "parser");
     assert_eq!(state.filter, "parser");
@@ -168,16 +188,26 @@ fn slash_filters_threads_and_esc_clears() {
     assert_eq!(state.mode, Mode::Normal);
     assert_eq!(state.filter, "parser");
     press(&mut state, KeyCode::Char('q'));
+    assert!(!state.quit);
+    assert_eq!(
+        state.keys.echo.as_ref().map(|echo| echo.text.as_str()),
+        Some("Quit with SPC q q or :q")
+    );
+    keys(&mut state, "SPC q q");
     assert!(state.quit);
 
     let mut state = loaded_state(sample_sidebar());
-    press(&mut state, KeyCode::Char('/'));
+    keys(&mut state, "g /");
     type_text(&mut state, "zzzz");
     assert!(screen(&state).contains("No matching threads"));
     press(&mut state, KeyCode::Esc);
     assert_eq!(state.filter, "");
     assert_eq!(state.rows.len(), 6);
-    press(&mut state, KeyCode::Char('/'));
+    keys(&mut state, ": f i l t e r SPC d o c s RET");
+    assert_eq!(state.filter, "docs");
+    press(&mut state, KeyCode::Esc);
+    assert_eq!(state.filter, "");
+    keys(&mut state, "g /");
     type_text(&mut state, "docs");
     press(&mut state, KeyCode::Enter);
     press(&mut state, KeyCode::Esc);
@@ -188,7 +218,7 @@ fn slash_filters_threads_and_esc_clears() {
 #[test]
 fn rename_inline_submits_mutation_and_cancel_does_not() {
     let mut state = loaded_state(sample_sidebar());
-    press(&mut state, KeyCode::Char('r'));
+    press(&mut state, KeyCode::Char('R'));
     let Mode::Rename { thread_id, input } = &state.mode else {
         panic!("rename mode");
     };
@@ -209,17 +239,25 @@ fn rename_inline_submits_mutation_and_cancel_does_not() {
     );
     assert_eq!(state.mode, Mode::Normal);
 
-    press(&mut state, KeyCode::Char('r'));
+    keys(&mut state, "SPC b R");
     type_text(&mut state, "!!");
     assert!(press(&mut state, KeyCode::Esc).is_empty());
-    press(&mut state, KeyCode::Char('r'));
+    press(&mut state, KeyCode::Char('R'));
     assert!(press(&mut state, KeyCode::Enter).is_empty());
+    assert_eq!(
+        keys(&mut state, ": r e n SPC N e w SPC n a m e RET"),
+        vec![Effect::Mutate(Mutation::Rename {
+            thread_id: "thr_wait".into(),
+            title: "New name".into()
+        })]
+    );
 }
 
 #[test]
 fn archive_undo_pin_and_read_toggles() {
     let mut state = loaded_state(sample_sidebar());
-    let archive = press(&mut state, KeyCode::Char('a'));
+    assert!(press(&mut state, KeyCode::Char('d')).is_empty());
+    let archive = press(&mut state, KeyCode::Char('d'));
     assert_eq!(
         archive,
         vec![Effect::Mutate(Mutation::Archive {
@@ -235,22 +273,34 @@ fn archive_undo_pin_and_read_toggles() {
     );
     assert!(press(&mut state, KeyCode::Char('u')).is_empty());
     assert!(state.toasts.iter().any(|t| t.message == "Nothing to undo"));
+    assert_eq!(
+        press(&mut state, KeyCode::Char('x')),
+        vec![Effect::Mutate(Mutation::Archive {
+            thread_id: "thr_wait".into()
+        })]
+    );
+    assert_eq!(
+        keys(&mut state, "SPC b u"),
+        vec![Effect::Mutate(Mutation::Unarchive {
+            thread_id: "thr_wait".into()
+        })]
+    );
 
     assert_eq!(
-        press(&mut state, KeyCode::Char('p')),
+        press(&mut state, KeyCode::Char('+')),
         vec![Effect::Mutate(Mutation::Pin {
             thread_id: "thr_wait".into()
         })]
     );
     assert_eq!(
-        press(&mut state, KeyCode::Char('m')),
+        press(&mut state, KeyCode::Char('!')),
         vec![Effect::Mutate(Mutation::MarkUnread {
             thread_id: "thr_wait".into()
         })]
     );
     press(&mut state, KeyCode::Char('j'));
     assert_eq!(
-        press(&mut state, KeyCode::Char('m')),
+        keys(&mut state, "SPC b !"),
         vec![Effect::Mutate(Mutation::MarkRead {
             thread_id: "thr_unread".into()
         })]
@@ -262,7 +312,7 @@ fn archive_undo_pin_and_read_toggles() {
     assert_eq!(selected_key(&state), thread_key("thr_other"));
     assert!(screen(&state).contains("▾ Pinned"));
     assert_eq!(
-        press(&mut state, KeyCode::Char('p')),
+        keys(&mut state, "SPC b m"),
         vec![Effect::Mutate(Mutation::Unpin {
             thread_id: "thr_other".into()
         })]
@@ -283,7 +333,7 @@ fn mutation_results_show_toasts_that_expire() {
         },
     );
     assert_eq!(effects, vec![Effect::RefreshSidebar]);
-    press(&mut state, KeyCode::Char('a'));
+    press(&mut state, KeyCode::Char('x'));
     update(
         &mut state,
         Action::MutationFinished {
@@ -343,14 +393,14 @@ fn disconnect_shows_banner_and_status() {
         lines[0],
         " Disconnected from server: connection refused · retrying in 4s"
     );
-    assert!(lines.last().unwrap().contains("✗ disconnected"));
+    assert!(lines[lines.len() - 2].contains("✗ disconnected"));
 
     let mut snapshot = StoreSnapshot::clone(&state.snapshot);
     snapshot.connection = ConnectionState::Connecting { reconnect: true };
     update(&mut state, Action::Snapshot(Arc::new(snapshot)));
     let lines = render_lines(&state, 100, 12);
     assert!(lines[0].starts_with("┏"), "{lines:?}");
-    assert!(lines.last().unwrap().contains("◌ reconnecting"));
+    assert!(lines[lines.len() - 2].contains("◌ reconnecting"));
 }
 
 #[test]
@@ -373,23 +423,27 @@ fn sidebar_load_error_and_loading_states() {
 #[test]
 fn focus_cycles_through_visible_panes() {
     let mut state = loaded_state(sample_sidebar());
-    press(&mut state, KeyCode::Tab);
+    keys(&mut state, "C-w w");
     assert_eq!(state.focus, Focus::Main);
-    press(&mut state, KeyCode::Tab);
+    keys(&mut state, "C-w C-w");
     assert_eq!(state.focus, Focus::Sidebar);
-    press(&mut state, KeyCode::Char('i'));
-    press_mod(&mut state, KeyCode::BackTab, KeyModifiers::SHIFT);
+    keys(&mut state, "SPC o i");
+    keys(&mut state, "C-w W");
     assert_eq!(state.focus, Focus::Panel);
     let text = screen(&state);
     assert!(text.contains("┏ 1 Info │ 2 Diff │ 3 File │"), "{text}");
-    press(&mut state, KeyCode::Char('i'));
+    keys(&mut state, "C-w p");
+    assert_eq!(state.focus, Focus::Sidebar);
+    keys(&mut state, "SPC o i");
+    assert!(!state.panel_visible);
+    keys(&mut state, "C-l");
     assert_eq!(state.focus, Focus::Main);
-    press_mod(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    keys(&mut state, "SPC o p");
     assert!(!state.sidebar_visible);
-    press(&mut state, KeyCode::Tab);
+    keys(&mut state, "C-w w");
     assert_eq!(state.focus, Focus::Main);
     assert!(!screen(&state).contains("alpha"));
-    press(&mut state, KeyCode::Char('/'));
+    keys(&mut state, "SPC s f");
     assert!(state.sidebar_visible);
     assert_eq!(state.focus, Focus::Sidebar);
 }
@@ -397,40 +451,51 @@ fn focus_cycles_through_visible_panes() {
 #[test]
 fn thread_next_previous_and_jump_open_threads() {
     let mut state = loaded_state(sample_sidebar());
-    let effects = press_mod(&mut state, KeyCode::Char('J'), KeyModifiers::SHIFT);
+    let effects = keys(&mut state, "] b");
     assert_eq!(effects[0], Effect::WatchThread(Some("thr_unread".into())));
-    press_mod(&mut state, KeyCode::Char('J'), KeyModifiers::SHIFT);
-    press_mod(&mut state, KeyCode::Char('J'), KeyModifiers::SHIFT);
+    keys(&mut state, "2 ] b");
     assert_eq!(state.open_thread.as_deref(), Some("thr_other"));
-    press_mod(&mut state, KeyCode::Char('J'), KeyModifiers::SHIFT);
+    keys(&mut state, "SPC b n");
     assert_eq!(state.open_thread.as_deref(), Some("thr_wait"));
-    press_mod(&mut state, KeyCode::Char('K'), KeyModifiers::SHIFT);
+    keys(&mut state, "[ b");
+    assert_eq!(state.open_thread.as_deref(), Some("thr_other"));
+    keys(&mut state, "SPC `");
+    assert_eq!(state.open_thread.as_deref(), Some("thr_wait"));
+    keys(&mut state, ": b n RET");
+    assert_eq!(state.open_thread.as_deref(), Some("thr_unread"));
+    keys(&mut state, ": b SPC p a r s e r RET");
     assert_eq!(state.open_thread.as_deref(), Some("thr_other"));
     press_mod(&mut state, KeyCode::Char('3'), KeyModifiers::ALT);
     assert_eq!(state.open_thread.as_deref(), Some("thr_old"));
     assert_eq!(selected_key(&state), thread_key("thr_old"));
     assert!(press_mod(&mut state, KeyCode::Char('9'), KeyModifiers::ALT).is_empty());
+    keys(&mut state, "SPC TAB 1");
+    assert_eq!(state.open_thread.as_deref(), Some("thr_wait"));
 }
 
 #[test]
-fn help_overlay_lists_keys_and_closes_on_any_key() {
+fn help_lists_bindings_of_the_focused_buffer_and_closes() {
     let mut state = loaded_state(sample_sidebar());
-    press(&mut state, KeyCode::Char('?'));
-    let text = render_lines(&state, 100, 44).join("\n");
-    assert!(text.contains("Keys"), "{text}");
+    keys(&mut state, "SPC h b b");
+    let pane = state.result_pane.as_ref().expect("bindings pane");
+    assert_eq!(pane.title, "Bindings: sidebar");
+    let text = pane.copy_text.clone().unwrap_or_default();
     let has_row = |key: &str, desc: &str| {
         text.lines()
-            .any(|line| line.contains(&format!(" {key} ")) && line.contains(desc))
+            .any(|line| line.starts_with(key) && line.contains(desc))
     };
-    assert!(has_row("r", "Rename thread"), "{text}");
-    assert!(has_row("y", "Copy selected row"), "{text}");
+    assert!(has_row("R ", "Rename thread"), "{text}");
+    assert!(has_row("d d", "Archive / unarchive thread"), "{text}");
+    assert!(has_row("SPC b k", "Archive / unarchive thread"), "{text}");
     assert!(has_row("M-m", "Pick model"), "{text}");
-    assert!(has_row("Esc Esc", "Composer: stop"), "{text}");
-    assert!(text.contains("M-1…M-9"), "{text}");
-    assert!(text.contains("j/↓"), "{text}");
+    assert!(has_row("C-w v", "Open the thread in a new split"), "{text}");
     press(&mut state, KeyCode::Char('q'));
     assert!(!state.quit);
-    assert_eq!(state.mode, Mode::Normal);
+    assert!(state.result_pane.is_none());
+    press(&mut state, KeyCode::F(1));
+    assert!(state.result_pane.is_some());
+    press(&mut state, KeyCode::Esc);
+    assert!(state.result_pane.is_none());
 }
 
 #[test]
@@ -450,6 +515,9 @@ fn keybinding_overrides_rebind_commands() {
     assert!(press(&mut state, KeyCode::Char('r')).is_empty());
     assert_eq!(state.mode, Mode::Normal);
     press(&mut state, KeyCode::F(2));
+    assert!(matches!(state.mode, Mode::Rename { .. }));
+    press(&mut state, KeyCode::Esc);
+    keys(&mut state, "SPC b R");
     assert!(matches!(state.mode, Mode::Rename { .. }));
     assert!(
         state
@@ -494,13 +562,26 @@ fn sidebar_scrolls_to_keep_selection_visible() {
     }
     let mut state = loaded_state(sidebar);
     press_mod(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
-    let lines = render_lines(&state, 80, 12);
+    let lines = render_lines(&state, 80, 13);
     assert!(lines[9].contains("Task 29"), "{lines:?}");
     press(&mut state, KeyCode::Char('k'));
-    let lines = render_lines(&state, 80, 12);
+    let lines = render_lines(&state, 80, 13);
     assert!(lines[8].contains("Task 28"), "{lines:?}");
-    press(&mut state, KeyCode::Char('g'));
-    let lines = render_lines(&state, 80, 12);
+    keys(&mut state, "1 0 G");
+    assert_eq!(state.selected, 9);
+    keys(&mut state, "z t");
+    render_lines(&state, 80, 13);
+    assert_eq!(state.sidebar_offset.get(), 9);
+    keys(&mut state, "L");
+    assert_eq!(state.selected, 17);
+    keys(&mut state, "z b");
+    render_lines(&state, 80, 13);
+    assert_eq!(state.sidebar_offset.get(), 9);
+    keys(&mut state, "C-e");
+    assert_eq!(state.sidebar_offset.get(), 10);
+    assert_eq!(state.selected, 17);
+    keys(&mut state, "g g");
+    let lines = render_lines(&state, 80, 13);
     assert!(lines[1].contains("alpha"), "{lines:?}");
 }
 
@@ -515,7 +596,7 @@ fn read_only_mode_drops_mutations() {
         vec![Effect::WatchThread(Some("thr_unread".into()))]
     );
     assert!(state.toasts.is_empty());
-    assert!(press(&mut state, KeyCode::Char('a')).is_empty());
+    assert!(keys(&mut state, "d d").is_empty());
     assert_eq!(state.toasts.len(), 1);
     assert!(
         state.toasts[0]

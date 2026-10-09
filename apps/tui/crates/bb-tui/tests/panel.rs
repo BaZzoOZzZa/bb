@@ -228,7 +228,7 @@ fn all_main() -> WorkspaceDiffTarget {
 }
 
 fn open_diff(state: &mut AppState) {
-    let effects = press(state, KeyCode::Char('D'));
+    let effects = keys(state, "SPC g g");
     assert_eq!(state.focus, Focus::Panel);
     assert_eq!(state.panel.tab, PanelTab::Diff);
     assert!(panel_requests(&effects).contains(&PanelRequest::DiffFiles {
@@ -241,7 +241,7 @@ fn open_diff(state: &mut AppState) {
 #[test]
 fn info_tab_shows_thread_git_and_pull_request_metadata() {
     let mut state = open_with_environment(Some("main"));
-    let effects = press(&mut state, KeyCode::Char('i'));
+    let effects = keys(&mut state, "SPC o i");
     assert!(state.panel_visible);
     assert_eq!(
         panel_requests(&effects),
@@ -277,8 +277,8 @@ fn info_tab_shows_thread_git_and_pull_request_metadata() {
         "A docs/guide.md +12",
         "Uncommitted files (1)",
         "M src/lib.rs +4 -1",
-        "C commit",
-        "R ready PR",
+        "SPC g c c commit",
+        "SPC g p r ready PR",
     ] {
         assert!(screen.contains(expected), "missing {expected:?}\n{screen}");
     }
@@ -287,7 +287,7 @@ fn info_tab_shows_thread_git_and_pull_request_metadata() {
 #[test]
 fn status_without_a_merge_base_is_refetched_against_the_default_branch() {
     let mut state = open_with_environment(None);
-    let effects = press(&mut state, KeyCode::Char('i'));
+    let effects = keys(&mut state, "SPC o i");
     assert!(panel_requests(&effects).contains(&PanelRequest::Status {
         environment_id: ENV.into(),
         merge_base_branch: None,
@@ -319,7 +319,7 @@ fn large_diff_loads_the_file_list_first_and_patches_only_near_the_viewport() {
     let document = state.panel.document().expect("document");
     assert_eq!(document.row_count(), 300);
 
-    let effects = press(&mut state, KeyCode::Char('a'));
+    let effects = keys(&mut state, "z R");
     let requests = panel_requests(&effects);
     let [PanelRequest::DiffPatches { paths, target, .. }] = &requests[..] else {
         panic!("{requests:?}");
@@ -347,11 +347,10 @@ fn large_diff_loads_the_file_list_first_and_patches_only_near_the_viewport() {
     assert!(screen.contains("11    - let b = 2;"), "{screen}");
     assert!(screen.contains("   11 + let b = 3;"), "{screen}");
 
-    press(&mut state, KeyCode::Char('n'));
-    press(&mut state, KeyCode::Char('n'));
+    keys(&mut state, "2 ] c");
     let document = state.panel.document().unwrap();
     assert_eq!(document.row(document.cursor), Some(DiffRow::Line(0, 5)));
-    press(&mut state, KeyCode::Char(']'));
+    keys(&mut state, "] f");
     let document = state.panel.document().unwrap();
     assert_eq!(document.row(document.cursor), Some(DiffRow::Header(1)));
 
@@ -394,7 +393,7 @@ fn on_demand_files_load_on_enter_and_too_large_files_never_load() {
             paths: vec!["big.rs".into()],
         }]
     );
-    press(&mut state, KeyCode::Char(']'));
+    keys(&mut state, "] f");
     press(&mut state, KeyCode::Char('j'));
     let effects = press(&mut state, KeyCode::Enter);
     assert!(panel_requests(&effects).is_empty());
@@ -420,7 +419,7 @@ fn scopes_cycle_and_commits_from_info_open_their_diff() {
         target: WorkspaceDiffTarget::Uncommitted,
     }));
 
-    press(&mut state, KeyCode::Char('1'));
+    keys(&mut state, "1 g t");
     assert_eq!(state.panel.tab, PanelTab::Info);
     let entries = state.info_entries();
     let commit_row = entries
@@ -450,7 +449,7 @@ fn scopes_cycle_and_commits_from_info_open_their_diff() {
 #[test]
 fn changed_file_in_info_reveals_it_in_the_uncommitted_diff() {
     let mut state = open_with_environment(Some("main"));
-    press(&mut state, KeyCode::Char('i'));
+    keys(&mut state, "SPC o i");
     state.focus = Focus::Panel;
     status_loaded(&mut state, Some("main"), workspace(true));
     let entries = state.info_entries();
@@ -510,10 +509,7 @@ fn preview_and_editor_follow_the_selected_diff_line() {
         vec![file_entry("src/main.rs", 2, DiffFileLoadMode::Auto)],
         vec![patch("src/main.rs")],
     );
-    press(&mut state, KeyCode::Char('n'));
-    press(&mut state, KeyCode::Char('j'));
-    press(&mut state, KeyCode::Char('j'));
-    press(&mut state, KeyCode::Char('j'));
+    keys(&mut state, "] c 3 j");
     let effects = press(&mut state, KeyCode::Char('e'));
     assert_eq!(
         effects,
@@ -522,7 +518,7 @@ fn preview_and_editor_follow_the_selected_diff_line() {
             line: Some(11),
         }]
     );
-    let effects = press(&mut state, KeyCode::Char('p'));
+    let effects = keys(&mut state, "g f");
     assert_eq!(state.panel.tab, PanelTab::File);
     assert_eq!(
         panel_requests(&effects),
@@ -565,7 +561,7 @@ fn commit_and_merge_require_confirmation_and_refresh_status() {
     let mut state = open_with_environment(Some("main"));
     open_diff(&mut state);
     pr_loaded(&mut state, pull_request(PullRequestState::Open));
-    let effects = press(&mut state, KeyCode::Char('C'));
+    let effects = keys(&mut state, "SPC g c c");
     assert!(effects.is_empty());
     let screen = render_lines(&state, 160, 30).join("\n");
     assert!(screen.contains("Commit changes"), "{screen}");
@@ -576,7 +572,7 @@ fn commit_and_merge_require_confirmation_and_refresh_status() {
     assert!(press(&mut state, KeyCode::Esc).is_empty());
     assert!(state.panel.confirm.is_none());
 
-    press(&mut state, KeyCode::Char('C'));
+    keys(&mut state, ": c o m m i t RET");
     let effects = press(&mut state, KeyCode::Char('y'));
     let mutation = Mutation::EnvironmentAction {
         thread_id: OPEN.into(),
@@ -613,7 +609,7 @@ fn commit_and_merge_require_confirmation_and_refresh_status() {
     }));
 
     pr_loaded(&mut state, pull_request(PullRequestState::Open));
-    press(&mut state, KeyCode::Char('M'));
+    keys(&mut state, "SPC g p m");
     let screen = render_lines(&state, 160, 30).join("\n");
     assert!(screen.contains("#7 Panel"), "{screen}");
     assert!(screen.contains("1 squash"), "{screen}");
@@ -632,7 +628,7 @@ fn commit_and_merge_require_confirmation_and_refresh_status() {
         })]
     );
 
-    let effects = press(&mut state, KeyCode::Char('R'));
+    let effects = keys(&mut state, "SPC g p r");
     assert!(effects.is_empty());
     assert!(state.panel.confirm.is_none());
     assert!(
@@ -648,7 +644,7 @@ fn read_only_mode_refuses_git_actions() {
     let mut state = open_with_environment(Some("main"));
     state.read_only = true;
     open_diff(&mut state);
-    press(&mut state, KeyCode::Char('C'));
+    keys(&mut state, "SPC g c c");
     let effects = press(&mut state, KeyCode::Enter);
     assert!(effects.is_empty());
     assert!(
@@ -720,19 +716,24 @@ fn environment_changes_refetch_and_stale_responses_are_ignored() {
 #[test]
 fn panel_tabs_maximize_and_command_ids_rebind() {
     let mut state = open_with_environment(Some("main"));
-    press(&mut state, KeyCode::Char('>'));
+    keys(&mut state, "g t");
     assert!(state.panel_visible);
     assert_eq!(state.panel.tab, PanelTab::Diff);
-    press(&mut state, KeyCode::Char('<'));
+    keys(&mut state, "g T");
     assert_eq!(state.panel.tab, PanelTab::Info);
-    press(&mut state, KeyCode::Char('Z'));
+    keys(&mut state, "SPC w m m");
+    assert!(!state.panel.maximized);
+    keys(&mut state, "SPC w m m");
+    keys(&mut state, "C-l C-l");
+    assert_eq!(state.focus, Focus::Panel);
+    keys(&mut state, "C-w o");
     assert!(state.panel.maximized);
     assert_eq!(state.focus, Focus::Panel);
     let screen = render_lines(&state, 120, 20).join("\n");
     assert!(screen.contains("· max"), "{screen}");
     press(&mut state, KeyCode::Esc);
     assert!(!state.panel.maximized);
-    press(&mut state, KeyCode::Esc);
+    press(&mut state, KeyCode::Char('q'));
     assert_eq!(state.focus, Focus::Main);
     assert_eq!(
         bb_tui::keymap::Command::from_app_command_id("diff.toggle"),
@@ -816,10 +817,10 @@ async fn panel_requests_reach_the_api_with_their_targets() {
 #[test]
 fn diff_keys_do_not_fall_through_to_thread_commands_while_loading() {
     let mut state = open_with_environment(Some("main"));
-    press(&mut state, KeyCode::Char('D'));
+    keys(&mut state, "SPC g g");
     assert!(state.panel.document().is_none());
-    for key in ['a', 'p', 'n', 'y'] {
-        let effects = press(&mut state, KeyCode::Char(key));
+    for key in ["z R", "g f", "] c", "y y", "x", "d d", "r"] {
+        let effects = keys(&mut state, key);
         assert!(
             effects
                 .iter()
@@ -834,7 +835,7 @@ fn diff_keys_do_not_fall_through_to_thread_commands_while_loading() {
 #[test]
 fn a_wide_panel_hides_the_sidebar_instead_of_crushing_the_timeline() {
     let mut state = open_with_environment(Some("main"));
-    press(&mut state, KeyCode::Char('>'));
+    keys(&mut state, "g t");
     assert_eq!(state.panel.tab, PanelTab::Diff);
     state.focus = Focus::Main;
     let narrow = render_lines(&state, 100, 30);

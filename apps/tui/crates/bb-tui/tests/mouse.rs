@@ -148,14 +148,22 @@ fn clicking_the_composer_focuses_it() {
 fn overlays_take_the_wheel_and_ignore_clicks() {
     let mut state = loaded_state(sample_sidebar());
     render_lines(&state, WIDTH, HEIGHT);
-    press(&mut state, KeyCode::Char('?'));
-    assert_eq!(state.mode, Mode::Help);
+    press(&mut state, KeyCode::F(1));
+    render_lines(&state, WIDTH, HEIGHT);
+    assert!(state.result_pane.is_some());
     mouse(&mut state, MouseEventKind::ScrollDown, 5, 5);
-    assert_eq!(state.mode, Mode::Help);
+    assert!(
+        state
+            .result_pane
+            .as_ref()
+            .is_some_and(|pane| pane.scroll > 0)
+    );
     press(&mut state, KeyCode::Esc);
+    assert!(state.result_pane.is_none());
+    assert_eq!(state.mode, Mode::Normal);
 
     let selected = state.selected;
-    press_mod(&mut state, KeyCode::Char('k'), KeyModifiers::CONTROL);
+    press_mod(&mut state, KeyCode::Char('x'), KeyModifiers::ALT);
     assert!(state.palette.is_some());
     let (column, row) = (5, 3);
     click(&mut state, column, row);
@@ -173,7 +181,7 @@ fn clicking_another_split_pane_focuses_it() {
         .iter()
         .position(|row| row.thread().is_some_and(|thread| thread.id == "thr_other"))
         .expect("thread row");
-    press(&mut state, KeyCode::Char('V'));
+    keys(&mut state, "C-w v");
     assert_eq!(state.open_thread.as_deref(), Some("thr_other"));
     let (column, row) = locate(&state, "1 · Write docs");
     click(&mut state, column, row + 3);

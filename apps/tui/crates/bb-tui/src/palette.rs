@@ -1347,8 +1347,36 @@ impl AppState {
     }
 
     pub fn close_palette(&mut self) {
-        self.palette = None;
+        if let Some(palette) = self.palette.take()
+            && palette.kind != PaletteKind::PluginArgs
+        {
+            self.last_palette = Some((palette.kind, palette.query().to_owned(), palette.selected));
+        }
         self.palette_generation += 1;
+    }
+
+    pub(crate) fn open_palette_with(&mut self, kind: PaletteKind, query: &str) -> Vec<Effect> {
+        let mut effects = self.open_palette(kind);
+        if query.is_empty() {
+            return effects;
+        }
+        if let Some(palette) = self.palette.as_mut() {
+            palette.input = LineInput::new(query);
+        }
+        effects.extend(self.palette_query_changed());
+        effects
+    }
+
+    pub(crate) fn resume_palette(&mut self) -> Vec<Effect> {
+        let Some((kind, query, selected)) = self.last_palette.clone() else {
+            self.keys.error("No minibuffer to resume");
+            return Vec::new();
+        };
+        let effects = self.open_palette_with(kind, &query);
+        if let Some(palette) = self.palette.as_mut() {
+            palette.selected = selected.min(palette.items.len().saturating_sub(1));
+        }
+        effects
     }
 
     fn command_items(&self) -> Vec<PaletteItem> {
@@ -1735,6 +1763,25 @@ impl AppState {
         generation
     }
 
+    pub(crate) fn open_text_pane(&mut self, title: String, lines: Vec<Vec<Span<'static>>>) {
+        let copy = lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let generation = self.open_pane(title);
+        if let Some(pane) = self.result_pane.as_mut()
+            && pane.generation == generation
+        {
+            pane.body = PaneBody::Lines(lines);
+            pane.copy_text = Some(copy);
+        }
+    }
+
     pub fn close_pane(&mut self, generation: u64) {
         if self
             .result_pane
@@ -1863,12 +1910,13 @@ pub(crate) fn handle_palette_key(state: &mut AppState, key: KeyEvent) -> Vec<Eff
         return Vec::new();
     };
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     match key.code {
         KeyCode::Esc => {
             state.close_palette();
             return Vec::new();
         }
-        KeyCode::Char('c') if ctrl => {
+        KeyCode::Char('c' | 'g') if ctrl => {
             state.close_palette();
             return Vec::new();
         }
@@ -1876,7 +1924,7 @@ pub(crate) fn handle_palette_key(state: &mut AppState, key: KeyEvent) -> Vec<Eff
             palette.move_selection(-1);
             return Vec::new();
         }
-        KeyCode::Char('p') if ctrl => {
+        KeyCode::Char('p' | 'k') if ctrl => {
             palette.move_selection(-1);
             return Vec::new();
         }
@@ -1884,8 +1932,20 @@ pub(crate) fn handle_palette_key(state: &mut AppState, key: KeyEvent) -> Vec<Eff
             palette.move_selection(1);
             return Vec::new();
         }
-        KeyCode::Char('n') if ctrl => {
+        KeyCode::Char('n' | 'j') if ctrl => {
             palette.move_selection(1);
+            return Vec::new();
+        }
+        KeyCode::Char('d') if ctrl => {
+            palette.move_selection(PAGE);
+            return Vec::new();
+        }
+        KeyCode::Char('<') if alt => {
+            palette.move_selection(-(palette.items.len() as isize));
+            return Vec::new();
+        }
+        KeyCode::Char('>') if alt => {
+            palette.move_selection(palette.items.len() as isize);
             return Vec::new();
         }
         KeyCode::PageDown => {
@@ -1902,7 +1962,7 @@ pub(crate) fn handle_palette_key(state: &mut AppState, key: KeyEvent) -> Vec<Eff
         }
         _ => {}
     }
-    if ctrl
+    if (ctrl || alt)
         && let Some(command) = state.keymap.lookup(&key)
         && let Some(kind) = palette_kind_for(command)
     {

@@ -1,0 +1,670 @@
+use std::time::Duration;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::api::Mutation;
+use crate::app::{AppState, Effect, Focus, Mode};
+use crate::evil::run_counted;
+use crate::input::{InputOutcome, LineInput};
+use crate::keymap::Command;
+use crate::palette::PaletteKind;
+use crate::panel::PanelTab;
+use crate::sidebar::SidebarRow;
+
+const MAX_HISTORY: usize = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExLine {
+    pub input: LineInput,
+    pub history: Option<usize>,
+}
+
+const NAMES: &[(&str, usize)] = &[
+    ("quit", 1),
+    ("qall", 2),
+    ("cquit", 2),
+    ("write", 1),
+    ("wq", 2),
+    ("xit", 1),
+    ("wall", 2),
+    ("edit", 1),
+    ("bnext", 2),
+    ("bprevious", 2),
+    ("bNext", 2),
+    ("bdelete", 2),
+    ("bundo", 2),
+    ("buffer", 1),
+    ("buffers", 7),
+    ("ls", 2),
+    ("files", 5),
+    ("unarchive", 5),
+    ("split", 2),
+    ("vsplit", 2),
+    ("new", 3),
+    ("vnew", 4),
+    ("enew", 3),
+    ("close", 3),
+    ("only", 2),
+    ("rename", 3),
+    ("pin", 3),
+    ("unpin", 5),
+    ("read", 4),
+    ("unread", 6),
+    ("nohlsearch", 3),
+    ("help", 1),
+    ("set", 2),
+    ("messages", 3),
+    ("registers", 3),
+    ("display", 2),
+    ("palette", 3),
+    ("find", 2),
+    ("search", 3),
+    ("threads", 7),
+    ("project", 4),
+    ("filter", 4),
+    ("diff", 4),
+    ("panel", 5),
+    ("sidebar", 4),
+    ("terminal", 4),
+    ("settings", 4),
+    ("automations", 4),
+    ("notifications", 5),
+    ("attachments", 7),
+    ("attach", 6),
+    ("model", 5),
+    ("reasoning", 3),
+    ("permission", 4),
+    ("stop", 4),
+    ("steer", 5),
+    ("queue", 5),
+    ("answer", 3),
+    ("pending", 4),
+    ("commit", 4),
+    ("merge", 5),
+    ("ready", 5),
+    ("draft", 5),
+    ("reload", 6),
+];
+
+pub fn ex_for(command: Command) -> Option<&'static str> {
+    Some(match command {
+        Command::Quit => "qa",
+        Command::CloseWindowOrQuit => "q",
+        Command::SendAndClose => "x",
+        Command::Send => "w",
+        Command::Steer => "w!",
+        Command::Rename => "rename",
+        Command::Archive => "bd",
+        Command::UndoArchive => "bundo",
+        Command::ThreadNext => "bnext",
+        Command::ThreadPrevious => "bprevious",
+        Command::AlternateThread => "b#",
+        Command::PaletteOpen => "palette",
+        Command::QuickOpen => "find",
+        Command::SearchThreads => "search",
+        Command::SwitchProject => "project",
+        Command::Filter => "filter",
+        Command::DiffToggle => "diff",
+        Command::PanelToggle => "panel",
+        Command::SidebarToggle => "sidebar",
+        Command::TerminalOpen => "terminal",
+        Command::TerminalNew => "terminal new",
+        Command::TerminalAttach => "terminal attach",
+        Command::Settings => "settings",
+        Command::Automations => "automations",
+        Command::NewAutomation => "automations new",
+        Command::Notifications => "notifications",
+        Command::ClearNotifications => "notifications clear",
+        Command::AttachFile => "attach",
+        Command::Attachments => "attachments",
+        Command::ModelPicker => "model",
+        Command::ReasoningPicker => "reasoning",
+        Command::PermissionPicker => "permission",
+        Command::StopTurn => "stop",
+        Command::QueueList => "queue",
+        Command::NextPending => "answer",
+        Command::GitCommit => "commit",
+        Command::PullRequestMerge => "merge",
+        Command::PullRequestReady => "ready",
+        Command::PullRequestDraft => "draft",
+        Command::Reload => "reload",
+        Command::SplitOpen => "vsplit",
+        Command::SplitNew => "vnew",
+        Command::NewThread => "enew",
+        Command::NewThreadInEnvironment => "enew!",
+        Command::PaneClose => "close",
+        Command::WindowOnly => "only",
+        Command::TogglePin => "pin",
+        Command::Help => "help",
+        Command::Messages => "messages",
+        _ => return None,
+    })
+}
+
+pub fn resolve_name(name: &str) -> Option<&'static str> {
+    NAMES
+        .iter()
+        .find(|(full, min)| name.len() >= *min && full.starts_with(name))
+        .map(|(full, _)| *full)
+}
+
+impl AppState {
+    pub(crate) fn open_ex(&mut self) {
+        self.mode = Mode::Ex(ExLine::default());
+    }
+
+    fn thread_by_query(&self, query: &str) -> Option<String> {
+        let query = query.trim();
+        if query.is_empty() {
+            return None;
+        }
+        if let Ok(number) = query.strip_prefix('#').unwrap_or(query).parse::<usize>() {
+            return self
+                .rows
+                .iter()
+                .filter_map(SidebarRow::thread)
+                .nth(number.checked_sub(1)?)
+                .map(|row| row.id.clone());
+        }
+        let lower = query.to_lowercase();
+        let threads: Vec<(String, String)> = self
+            .snapshot
+            .sidebar_threads()
+            .map(|entry| (entry.thread.id.clone(), crate::sidebar::thread_title(entry)))
+            .collect();
+        threads
+            .iter()
+            .find(|(id, _)| id == query)
+            .or_else(|| {
+                threads
+                    .iter()
+                    .find(|(_, title)| title.to_lowercase() == lower)
+            })
+            .or_else(|| {
+                threads
+                    .iter()
+                    .find(|(_, title)| title.to_lowercase().contains(&lower))
+            })
+            .map(|(id, _)| id.clone())
+    }
+
+    fn ex_thread(&mut self, args: &str) -> Option<String> {
+        if args.trim().is_empty() {
+            return self.target_thread();
+        }
+        let found = self.thread_by_query(args);
+        if found.is_none() {
+            self.keys
+                .error(format!("E94: No matching thread for {}", args.trim()));
+        }
+        found
+    }
+
+    fn run_on_thread(&mut self, args: &str, command: Command) -> Vec<Effect> {
+        if args.trim().is_empty() {
+            return run_counted(self, command, None);
+        }
+        let Some(thread_id) = self.ex_thread(args) else {
+            return Vec::new();
+        };
+        self.select_thread_row(&thread_id);
+        let focus = self.focus;
+        self.focus = Focus::Sidebar;
+        let visible = self.sidebar_visible;
+        self.sidebar_visible = true;
+        let effects = run_counted(self, command, None);
+        if self.focus == Focus::Sidebar {
+            self.focus = focus;
+        }
+        self.sidebar_visible = visible;
+        effects
+    }
+
+    fn set_option(&mut self, args: &str) -> Vec<Effect> {
+        let args = args.trim();
+        if args.is_empty() || args == "all" {
+            let lines = vec![
+                format!("whichkeydelay={}", self.keys.which_key_delay.as_millis()),
+                format!(
+                    "clipboard={}",
+                    if self.registers.clipboard {
+                        "unnamedplus"
+                    } else {
+                        ""
+                    }
+                ),
+                format!(
+                    "submitkey={}",
+                    match self.submit_key {
+                        crate::composer::SubmitKey::Enter => "enter",
+                        crate::composer::SubmitKey::ModifierEnter => "ctrl-enter",
+                    }
+                ),
+                format!("{}sidebar", if self.sidebar_visible { "" } else { "no" }),
+                format!("{}panel", if self.panel_visible { "" } else { "no" }),
+            ];
+            self.show_text_pane("Options", lines);
+            return Vec::new();
+        }
+        let (name, value) = match args.split_once('=') {
+            Some((name, value)) => (name.trim(), Some(value.trim())),
+            None => (args, None),
+        };
+        let (name, flag) = if let Some(name) = name.strip_suffix('!') {
+            (name, None)
+        } else if let Some(name) = name.strip_prefix("no") {
+            (name, Some(false))
+        } else {
+            (name, Some(true))
+        };
+        match (name, value) {
+            ("whichkeydelay", Some(value)) => match value.parse::<u64>() {
+                Ok(ms) => self.keys.which_key_delay = Duration::from_millis(ms),
+                Err(_) => self.keys.error(format!("E521: Number required: {value}")),
+            },
+            ("clipboard", Some(value)) => self.registers.clipboard = !value.is_empty(),
+            ("submitkey", Some(value)) => match crate::composer::SubmitKey::parse(value) {
+                Some(key) => self.submit_key = key,
+                None => self.keys.error(format!("E474: Invalid argument: {value}")),
+            },
+            ("sidebar", None) => {
+                self.sidebar_visible = flag.unwrap_or(!self.sidebar_visible);
+                if !self.sidebar_visible && self.focus == Focus::Sidebar {
+                    self.focus = Focus::Main;
+                }
+            }
+            ("panel", None) => {
+                let visible = flag.unwrap_or(!self.panel_visible);
+                if visible != self.panel_visible {
+                    return run_counted(self, Command::PanelToggle, None);
+                }
+            }
+            ("follow", None) => {
+                let follow = flag.unwrap_or(true);
+                let following = self
+                    .timeline()
+                    .is_some_and(|timeline| timeline.scroll == crate::timeline::Scroll::Bottom);
+                if follow != following {
+                    return run_counted(self, Command::ToggleFollow, None);
+                }
+            }
+            _ => self.keys.error(format!("E518: Unknown option: {args}")),
+        }
+        Vec::new()
+    }
+
+    pub(crate) fn show_text_pane(&mut self, title: &str, lines: Vec<String>) {
+        let lines = lines
+            .into_iter()
+            .map(|line| vec![ratatui::text::Span::raw(line)])
+            .collect();
+        self.open_text_pane(title.to_owned(), lines);
+    }
+
+    fn panel_tab(&mut self, args: &str) -> Vec<Effect> {
+        let tab = match args.trim() {
+            "" => return run_counted(self, Command::PanelToggle, None),
+            "info" => PanelTab::Info,
+            "diff" => PanelTab::Diff,
+            "file" => PanelTab::File,
+            "terminal" | "term" => PanelTab::Terminal,
+            other => {
+                self.keys.error(format!("E475: Invalid argument: {other}"));
+                return Vec::new();
+            }
+        };
+        self.focus = Focus::Panel;
+        self.set_panel_tab(tab)
+    }
+
+    fn send_all(&mut self) -> Vec<Effect> {
+        let threads = self.pane_threads();
+        let original = self.open_thread.clone();
+        let focus = self.focus;
+        let mut effects = Vec::new();
+        for thread_id in threads {
+            let has_draft = self
+                .composers
+                .get(&thread_id)
+                .is_some_and(|composer| composer.has_input());
+            if !has_draft {
+                continue;
+            }
+            if self.open_thread.as_deref() != Some(thread_id.as_str()) {
+                effects.extend(self.open(thread_id));
+            }
+            effects.extend(self.submit(false));
+        }
+        if let Some(original) = original
+            && self.open_thread.as_ref() != Some(&original)
+        {
+            effects.extend(self.open(original));
+        }
+        self.focus = focus;
+        effects
+    }
+
+    fn new_thread_with(&mut self, prompt: &str, environment: bool, split: bool) -> Vec<Effect> {
+        let command = if environment {
+            Command::NewThreadInEnvironment
+        } else {
+            Command::NewThread
+        };
+        let mut effects = run_counted(self, command, None);
+        self.split_new_thread = split;
+        let now = self.clock;
+        if !prompt.trim().is_empty()
+            && let Some(form) = self.new_thread.as_mut()
+        {
+            form.activate_prompt();
+            form.composer.insert_text(prompt.trim(), now);
+        }
+        effects.extend(self.sync_new_thread());
+        effects
+    }
+
+    fn rename_with(&mut self, title: &str) -> Vec<Effect> {
+        let Some(thread_id) = self.target_thread() else {
+            return Vec::new();
+        };
+        let title = title.trim();
+        if title.is_empty() {
+            return run_counted(self, Command::Rename, None);
+        }
+        vec![Effect::Mutate(Mutation::Rename {
+            thread_id,
+            title: title.to_owned(),
+        })]
+    }
+
+    fn flag_mutation(&mut self, args: &str, build: fn(String) -> Mutation) -> Vec<Effect> {
+        match self.ex_thread(args) {
+            Some(thread_id) => vec![Effect::Mutate(build(thread_id))],
+            None => Vec::new(),
+        }
+    }
+
+    pub(crate) fn run_ex(&mut self, line: &str) -> Vec<Effect> {
+        let line = line.trim().trim_start_matches(':').trim();
+        if line.is_empty() {
+            return Vec::new();
+        }
+        if !self.ex_history.last().is_some_and(|last| last == line) {
+            self.ex_history.push(line.to_owned());
+            if self.ex_history.len() > MAX_HISTORY {
+                self.ex_history.remove(0);
+            }
+        }
+        self.registers.set(
+            ':',
+            crate::evil::RegisterValue {
+                text: line.to_owned(),
+                linewise: false,
+            },
+        );
+        if let Ok(number) = line.parse::<usize>() {
+            return run_counted(self, Command::MoveBottom, Some(number.max(1)));
+        }
+        if line == "$" {
+            return run_counted(self, Command::MoveBottom, None);
+        }
+        if matches!(line, "b#" | "e#") {
+            return run_counted(self, Command::AlternateThread, None);
+        }
+        let split = line
+            .char_indices()
+            .find(|(_, ch)| !ch.is_ascii_alphabetic())
+            .map_or(line.len(), |(index, _)| index);
+        let (name, rest) = line.split_at(split);
+        let (bang, args) = match rest.strip_prefix('!') {
+            Some(args) => (true, args),
+            None => (false, rest),
+        };
+        let args = args.trim();
+        let Some(full) = resolve_name(name) else {
+            self.keys
+                .error(format!("E492: Not an editor command: {line}"));
+            return Vec::new();
+        };
+        let run = |state: &mut AppState, command| run_counted(state, command, None);
+        match full {
+            "quit" => run(self, Command::CloseWindowOrQuit),
+            "qall" | "cquit" => run(self, Command::Quit),
+            "write" if bang => run(self, Command::Steer),
+            "write" => run(self, Command::Send),
+            "wq" | "xit" => run(self, Command::SendAndClose),
+            "wall" => self.send_all(),
+            "edit" if args.is_empty() => run(self, Command::Reload),
+            "edit" => {
+                if self.panel.environment_id.is_none() {
+                    self.panel_visible = true;
+                    let mut effects = self.sync_panel();
+                    effects.extend(self.preview_path(args));
+                    return effects;
+                }
+                self.preview_path(args)
+            }
+            "bnext" => run(self, Command::ThreadNext),
+            "bprevious" | "bNext" => run(self, Command::ThreadPrevious),
+            "bdelete" => self.run_on_thread(args, Command::Archive),
+            "bundo" => run(self, Command::UndoArchive),
+            "buffer" if args.is_empty() => run(self, Command::SearchThreads),
+            "buffer" => match self.thread_by_query(args) {
+                Some(thread_id) => {
+                    let effects = self.open(thread_id);
+                    self.focus = Focus::Main;
+                    effects
+                }
+                None => {
+                    self.keys
+                        .error(format!("E94: No matching thread for {args}"));
+                    Vec::new()
+                }
+            },
+            "buffers" | "ls" | "files" => run(self, Command::SearchThreads),
+            "unarchive" => self.flag_mutation(args, |thread_id| Mutation::Unarchive { thread_id }),
+            "split" | "vsplit" => {
+                if !args.is_empty() {
+                    match self.thread_by_query(args) {
+                        Some(thread_id) => self.select_thread_row(&thread_id),
+                        None => {
+                            self.keys
+                                .error(format!("E94: No matching thread for {args}"));
+                            return Vec::new();
+                        }
+                    }
+                }
+                run(self, Command::SplitOpen)
+            }
+            "new" | "vnew" => self.new_thread_with(args, bang, true),
+            "enew" => self.new_thread_with(args, bang, false),
+            "close" => run(self, Command::PaneClose),
+            "only" => run(self, Command::WindowOnly),
+            "rename" => self.rename_with(args),
+            "pin" => self.flag_mutation(args, |thread_id| Mutation::Pin { thread_id }),
+            "unpin" => self.flag_mutation(args, |thread_id| Mutation::Unpin { thread_id }),
+            "read" => self.flag_mutation(args, |thread_id| Mutation::MarkRead { thread_id }),
+            "unread" => self.flag_mutation(args, |thread_id| Mutation::MarkUnread { thread_id }),
+            "nohlsearch" => Vec::new(),
+            "help" => run(self, Command::Help),
+            "set" => self.set_option(args),
+            "messages" => run(self, Command::Messages),
+            "registers" | "display" => {
+                let lines = self
+                    .registers
+                    .listing()
+                    .into_iter()
+                    .map(|(name, text)| {
+                        let preview: String = text.replace('\n', "^J").chars().take(200).collect();
+                        format!("\"{name}   {preview}")
+                    })
+                    .collect();
+                self.show_text_pane("Registers", lines);
+                Vec::new()
+            }
+            "palette" => self.open_palette_with(PaletteKind::Commands, args),
+            "find" => self.open_palette_with(PaletteKind::Files, args),
+            "search" | "threads" => self.open_palette_with(PaletteKind::Threads, args),
+            "project" => self.open_palette_with(PaletteKind::Projects, args),
+            "filter" => {
+                self.sidebar_visible = true;
+                self.apply_filter(args);
+                Vec::new()
+            }
+            "diff" => run(self, Command::DiffToggle),
+            "panel" => self.panel_tab(args),
+            "sidebar" => run(self, Command::SidebarToggle),
+            "terminal" => match args {
+                "" => run(self, Command::TerminalOpen),
+                "new" => run(self, Command::TerminalNew),
+                "attach" => run(self, Command::TerminalAttach),
+                "close" => {
+                    let mut effects = run(self, Command::TerminalOpen);
+                    effects.extend(crate::app::legacy_key(
+                        self,
+                        KeyEvent::from(KeyCode::Char('x')),
+                    ));
+                    effects
+                }
+                other => {
+                    self.keys.error(format!("E475: Invalid argument: {other}"));
+                    Vec::new()
+                }
+            },
+            "settings" => match args {
+                "" => run(self, Command::Settings),
+                section => match crate::settings::SettingsSection::ALL
+                    .iter()
+                    .find(|candidate| {
+                        candidate
+                            .label()
+                            .to_lowercase()
+                            .starts_with(&section.to_lowercase())
+                    }) {
+                    Some(section) => run(self, Command::SettingsSection(*section)),
+                    None => {
+                        self.keys
+                            .error(format!("E475: Invalid argument: {section}"));
+                        Vec::new()
+                    }
+                },
+            },
+            "automations" if args == "new" => run(self, Command::NewAutomation),
+            "automations" => run(self, Command::Automations),
+            "notifications" if args == "clear" => run(self, Command::ClearNotifications),
+            "notifications" => run(self, Command::Notifications),
+            "attachments" => run(self, Command::Attachments),
+            "attach" => {
+                let effects = run(self, Command::AttachFile);
+                if !args.is_empty()
+                    && let Mode::AttachPrompt { input, .. } = &mut self.mode
+                {
+                    *input = LineInput::new(args);
+                }
+                effects
+            }
+            "model" => run(self, Command::ModelPicker),
+            "reasoning" => run(self, Command::ReasoningPicker),
+            "permission" => run(self, Command::PermissionPicker),
+            "stop" => run(self, Command::StopTurn),
+            "steer" => {
+                if !args.is_empty()
+                    && let Some(thread_id) = self.open_thread.clone()
+                    && let Some(composer) = self.composers.get_mut(&thread_id)
+                {
+                    let now = self.clock;
+                    composer.set_draft(crate::prompt::PromptDraft::from_text(args), now);
+                }
+                run(self, Command::Steer)
+            }
+            "queue" => run(self, Command::QueueList),
+            "answer" | "pending" => run(self, Command::NextPending),
+            "commit" => run(self, Command::GitCommit),
+            "merge" => run(self, Command::PullRequestMerge),
+            "ready" => run(self, Command::PullRequestReady),
+            "draft" => run(self, Command::PullRequestDraft),
+            "reload" => run(self, Command::Reload),
+            _ => {
+                self.keys
+                    .error(format!("E492: Not an editor command: {line}"));
+                Vec::new()
+            }
+        }
+    }
+}
+
+fn complete(text: &str) -> Option<String> {
+    if text.contains(' ') || text.is_empty() {
+        return None;
+    }
+    NAMES
+        .iter()
+        .find(|(full, _)| full.starts_with(text) && *full != text)
+        .map(|(full, _)| (*full).to_owned())
+}
+
+pub(crate) fn handle_ex_key(state: &mut AppState, mut line: ExLine, key: KeyEvent) -> Vec<Effect> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char('g' | 'c') if ctrl => return Vec::new(),
+        KeyCode::Backspace if line.input.text().is_empty() => return Vec::new(),
+        KeyCode::Up | KeyCode::Down => {
+            step_history(state, &mut line, key.code == KeyCode::Up);
+        }
+        KeyCode::Char('p' | 'n') if ctrl => {
+            step_history(state, &mut line, key.code == KeyCode::Char('p'));
+        }
+        KeyCode::Tab => {
+            if let Some(full) = complete(line.input.text()) {
+                line.input = LineInput::new(full);
+            }
+        }
+        _ => match line.input.handle_key(key) {
+            InputOutcome::Submit => {
+                let text = line.input.text().to_owned();
+                return state.run_ex(&text);
+            }
+            InputOutcome::Cancel => return Vec::new(),
+            _ => line.history = None,
+        },
+    }
+    state.mode = Mode::Ex(line);
+    Vec::new()
+}
+
+fn step_history(state: &AppState, line: &mut ExLine, older: bool) {
+    let len = state.ex_history.len();
+    if len == 0 {
+        return;
+    }
+    let next = match (line.history, older) {
+        (None, true) => Some(len - 1),
+        (None, false) => None,
+        (Some(0), true) => Some(0),
+        (Some(index), true) => Some(index - 1),
+        (Some(index), false) if index + 1 < len => Some(index + 1),
+        (Some(_), false) => None,
+    };
+    line.history = next;
+    line.input = LineInput::new(next.map_or("", |index| state.ex_history[index].as_str()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_resolve_by_shortest_abbreviation() {
+        assert_eq!(resolve_name("q"), Some("quit"));
+        assert_eq!(resolve_name("qa"), Some("qall"));
+        assert_eq!(resolve_name("w"), Some("write"));
+        assert_eq!(resolve_name("bn"), Some("bnext"));
+        assert_eq!(resolve_name("vs"), Some("vsplit"));
+        assert_eq!(resolve_name("se"), Some("set"));
+        assert_eq!(resolve_name("sea"), Some("search"));
+        assert_eq!(resolve_name("ren"), Some("rename"));
+        assert_eq!(resolve_name("re"), None);
+        assert_eq!(resolve_name("zzz"), None);
+        assert_eq!(complete("sett"), Some("settings".to_owned()));
+    }
+}

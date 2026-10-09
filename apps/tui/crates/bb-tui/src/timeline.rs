@@ -1541,6 +1541,112 @@ impl TimelineView {
         }
     }
 
+    pub fn select_index(&mut self, index: usize) -> Vec<LoadRequest> {
+        if self.items.is_empty() {
+            return Vec::new();
+        }
+        let index = index.min(self.items.len() - 1);
+        self.selected = Some(self.items[index].key.clone());
+        self.ensure_visible(index);
+        self.auto_load_older()
+    }
+
+    pub fn stop_following(&mut self) {
+        let (width, height) = self.viewport_size();
+        if self.items.is_empty() {
+            return;
+        }
+        let (index, skip) = self.top_position(width, height);
+        self.scroll = Scroll::Anchor {
+            key: self.items[index].key.clone(),
+            offset: skip,
+        };
+    }
+
+    pub fn align_selected(&mut self, position: crate::keymap::ScreenPos) -> Vec<LoadRequest> {
+        let Some(index) = self.selected_index() else {
+            return Vec::new();
+        };
+        let (width, height) = self.viewport_size();
+        let item_height = self.item_height(index, width);
+        let above = match position {
+            crate::keymap::ScreenPos::Top => 0,
+            crate::keymap::ScreenPos::Middle => height.saturating_sub(item_height) / 2,
+            crate::keymap::ScreenPos::Bottom => height.saturating_sub(item_height),
+        };
+        let mut remaining = above;
+        let mut top = index;
+        let mut skip = 0;
+        while remaining > 0 && top > 0 {
+            let previous = self.item_height(top - 1, width);
+            if previous > remaining {
+                top -= 1;
+                skip = previous - remaining;
+                remaining = 0;
+            } else {
+                remaining -= previous;
+                top -= 1;
+            }
+        }
+        self.set_position(top, skip);
+        self.auto_load_older()
+    }
+
+    pub fn select_in_view(&mut self, position: crate::keymap::ScreenPos) -> Vec<LoadRequest> {
+        let (width, height) = self.viewport_size();
+        let placements = self.layout(width, height);
+        let chosen = match position {
+            crate::keymap::ScreenPos::Top => placements.first(),
+            crate::keymap::ScreenPos::Middle => placements.get(placements.len() / 2),
+            crate::keymap::ScreenPos::Bottom => placements.last(),
+        };
+        if let Some(placement) = chosen {
+            self.selected = Some(self.items[placement.index].key.clone());
+        }
+        Vec::new()
+    }
+
+    pub fn set_all_expanded(&mut self, expand: bool) -> Vec<LoadRequest> {
+        let keys: Vec<String> = self
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Row(row) if row.expandable && row.expanded != expand => {
+                    Some(item.key.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        for key in keys {
+            self.expanded.insert(key, expand);
+        }
+        let mut loads = self.rebuild(false);
+        if let Some(index) = self.selected_index() {
+            self.ensure_visible(index);
+        }
+        loads.extend(self.auto_load_older());
+        loads
+    }
+
+    pub fn all_text(&self) -> String {
+        let rows: Vec<ViewRow> = self
+            .items
+            .iter()
+            .filter(|item| item.depth == 0)
+            .filter_map(|item| item.row().map(|row| (*row.row).clone()))
+            .collect();
+        format_view_rows_text(
+            &rows,
+            TimelineTextOptions {
+                verbose: false,
+                color: false,
+            },
+        )
+    }
+
     pub fn copy_text(&self) -> Option<String> {
         let item = self.selected_item()?;
         let row = item.row()?;
