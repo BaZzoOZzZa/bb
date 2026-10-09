@@ -98,3 +98,6 @@ provider-recordings/raw/
 /plugins/*/.bundled-runtime/
 
 .ci-health/
+
+# Rust TUI build output
+/apps/tui/target/

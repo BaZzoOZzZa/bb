@@ -1,0 +1,16 @@
+[package]
+name = "bb-view"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bb-wire.workspace = true
+chrono.workspace = true
+unicode-width.workspace = true
+unicode-segmentation.workspace = true
+
+[lints]
+workspace = true

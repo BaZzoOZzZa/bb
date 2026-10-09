@@ -1,0 +1,24 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "dependsOn": [],
+      "cache": false,
+      "passThroughEnv": ["CARGO_*", "RUSTUP_*", "RUSTFLAGS", "HOME"]
+    },
+    "test": {
+      "dependsOn": [],
+      "cache": false,
+      "passThroughEnv": ["CARGO_*", "RUSTUP_*", "RUSTFLAGS", "HOME"]
+    },
+    "typecheck": {
+      "dependsOn": [],
+      "cache": false,
+      "passThroughEnv": ["CARGO_*", "RUSTUP_*", "RUSTFLAGS", "HOME"]
+    },
+    "lint": {
+      "cache": false,
+      "passThroughEnv": ["CARGO_*", "RUSTUP_*", "RUSTFLAGS", "HOME"]
+    }
+  }
+}

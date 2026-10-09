@@ -1,0 +1,43 @@
+[package]
+name = "bb-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bb-tui"
+path = "src/main.rs"
+
+[features]
+default = []
+keyring = ["dep:keyring"]
+notifications = ["dep:notify-rust"]
+
+[dependencies]
+bb-wire.workspace = true
+bb-client.workspace = true
+bb-store.workspace = true
+bb-view.workspace = true
+tokio.workspace = true
+futures.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+pulldown-cmark.workspace = true
+syntect.workspace = true
+ratatui-textarea.workspace = true
+nucleo-matcher.workspace = true
+unicode-width.workspace = true
+dirs.workspace = true
+vt100.workspace = true
+clap.workspace = true
+keyring = { workspace = true, optional = true }
+notify-rust = { workspace = true, optional = true }
+
+[lints]
+workspace = true
