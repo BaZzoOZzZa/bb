@@ -195,12 +195,47 @@ pub struct PluginInteractionPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "RawExtensionInteractionPayload")]
 pub struct ExtensionInteractionPayload {
     pub kind: String,
     pub title: String,
     #[serde(default)]
     pub data: JsonValue,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawExtensionInteractionPayload {
+    kind: String,
+    title: String,
+    #[serde(default)]
+    data: JsonValue,
+}
+
+impl TryFrom<RawExtensionInteractionPayload> for ExtensionInteractionPayload {
+    type Error = String;
+
+    fn try_from(raw: RawExtensionInteractionPayload) -> Result<Self, Self::Error> {
+        if !is_extension_kind(&raw.kind) {
+            return Err(format!("{} is not an extension kind", raw.kind));
+        }
+        Ok(Self {
+            kind: raw.kind,
+            title: raw.title,
+            data: raw.data,
+        })
+    }
+}
+
+pub fn is_extension_kind(kind: &str) -> bool {
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    };
+    kind.split_once('/')
+        .is_some_and(|(plugin, name)| valid(plugin) && valid(name))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -436,4 +471,27 @@ pub struct SecretRequestPayload {
 #[serde(rename_all = "camelCase", default)]
 pub struct SecretRequestResponse {
     pub values: BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_namespaced_kinds_parse_as_extension_payloads() {
+        let extension: InteractionPayload =
+            serde_json::from_value(json!({"kind": "acme/pick-1", "title": "Pick", "data": 1}))
+                .unwrap();
+        assert!(matches!(extension, InteractionPayload::Extension(_)));
+
+        for kind in ["future_kind", "Acme/pick", "acme/", "/pick", "a/b/c"] {
+            let payload: InteractionPayload =
+                serde_json::from_value(json!({"kind": kind, "title": "Pick"})).unwrap();
+            assert!(
+                matches!(payload, InteractionPayload::Unknown(_)),
+                "{kind} should not be an extension payload"
+            );
+        }
+    }
 }

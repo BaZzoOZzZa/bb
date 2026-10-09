@@ -17,7 +17,7 @@ wire_enum! {
 
 wire_enum! {
     pub enum PermissionMode {
-        AcceptEdits => "accept-edits",
+        AcceptEdits => "accept-edits" | "workspace-write",
         Auto => "auto",
         Full => "full",
     }

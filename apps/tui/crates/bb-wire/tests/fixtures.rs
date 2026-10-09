@@ -543,7 +543,7 @@ fn queued_messages_and_send_responses() {
     ));
     assert!(matches!(queued[1].content[0], PromptInput::LocalImage(_)));
     assert!(matches!(queued[1].content[1], PromptInput::Unknown(_)));
-    assert_eq!(queued[1].permission_mode, PermissionMode::Unknown);
+    assert_eq!(queued[1].permission_mode, PermissionMode::AcceptEdits);
 
     let sent: SendMessageResponse = parse_roundtrip(response("send_sent"));
     assert_eq!(sent, SendMessageResponse::Sent { ok: true });

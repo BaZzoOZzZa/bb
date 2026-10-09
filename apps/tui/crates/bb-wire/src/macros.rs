@@ -2,7 +2,7 @@ macro_rules! wire_enum {
     (
         $(#[$meta:meta])*
         $vis:vis enum $name:ident {
-            $($variant:ident => $value:literal),+ $(,)?
+            $($variant:ident => $value:literal $(| $alias:literal)*),+ $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -21,7 +21,7 @@ macro_rules! wire_enum {
         )]
         $vis enum $name {
             $(
-                #[serde(rename = $value)]
+                #[serde(rename = $value $(, alias = $alias)*)]
                 $variant,
             )+
             #[default]
