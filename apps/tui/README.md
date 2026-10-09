@@ -460,6 +460,76 @@ through `GET /threads/search`; installing and updating plugins; rebinding keys.
 Projects have no archive state on the server, so the project view offers
 delete (as the web app does) rather than archive.
 
+## Automations
+
+`A` (or "Open automations" in the palette) opens the automations plugin
+natively, over the main area. Everything goes through the plugin's RPC
+contract (`plugins/automations/src/rpc.ts`) with `POST
+/plugins/automations/rpc/:method`:
+
+| View | Shows | Keys |
+|---|---|---|
+| List | `automations_overview`: every automation sorted by name with a status glyph (`●` active, `○` paused or finished, `◐` running, `✗` last run failed, `!` broken), project, cadence (`9AM Mon-Fri`, `Every 5 min`, a port of the web formatter; unusual expressions show the raw cron), next run or one-shot state, and `[paused]`, `[script]`, `[needs prompt]`, `[invalid]` badges | `j`/`k`, `g`/`G`, `PgUp`/`PgDn` move, `Enter` opens, `/` filters by name, project or cadence, `R`/`C-r` reloads, `Esc`/`q`/`A` close |
+| Detail | `automations_get`: status, project, schedule, cron and timezone or one-shot time, last run, run count, last run thread, mode; for agents the provider, model, reasoning, service tier, permission mode, environment (project default, reuse, new worktree, workspace path, existing thread), target thread, origin and the prompt; for scripts the interpreter, timeout, working directory, env var names, script file and script; the last error. Below, `automations_runs` run history (time, status, duration, manual trigger, skip reason, error, exit code, last output line) | `Enter` on a run (or the last/target thread row) opens its thread; `m` or "Load more runs" fetches the next page; `Esc`/`h` back |
+
+In both views `Space` pauses or resumes (`automations_pause` / `resume`; a
+finished or expired one-shot cannot be toggled), `r` runs it now
+(`automations_run`), `e` edits, `d`/`Del` deletes after confirmation
+(`automations_delete`), and `n` opens the create form ("New automation" in the
+palette does too).
+
+The form (`automations_create` / `automations_update`) has name, project,
+schedule (recurring cron with timezone, or one time), prompt, provider, model,
+reasoning, permission mode, environment and "start paused". The cron
+expression is checked field by field (five fields, ranges, steps, month and
+day names) and its cadence is shown next to it; the timezone defaults to the
+local one (`TZ` or `/etc/localtime`); a one-time run accepts `YYYY-MM-DD
+HH:MM` local time, an ISO time or a delay like `30m`, `2h`, `1d`, and must be
+in the future. Provider, model, reasoning and permission are prefilled from
+the project's thread defaults and offered from `GET
+/system/providers/catalog` and `GET /system/execution-options?providerId=`.
+Environments: project default, a new worktree each run (on a connected
+machine), or reusing an environment of one of the project's threads. New
+automations are sent with `origin: "human"`. Editing sends only the changed
+fields (`name`, `trigger`, and `agent` with the changed prompt, provider,
+model, reasoning, permission or environment target); script automations can
+change their name and schedule. `j`/`k` move, `Enter`/`Space` edit or choose
+(`1`-`9` pick), `C-s` saves, `Esc` discards. The prompt is edited on one line
+with `\n` for a line break.
+
+The view refreshes on the plugin's realtime signals (`plugin-signal` on
+channel `automations`): `automations-changed` refetches the list and the open
+automation of that project, `automation-runs-changed` also its run history.
+Refetches are coalesced while one is in flight. `--read-only` refuses every
+change with a toast; reading still works.
+
+Not built yet: creating script automations, editing a script's body,
+interpreter, timeout or working directory, picking a target thread or an
+explicit workspace path, service tiers, status/project filters and sort
+modes, run output beyond its last line, and the web's "create via chat"
+shortcut.
+
+## Split panes
+
+Several threads can sit side by side in the main area (vertical split, up to
+4 panes). Each pane shows its thread's title (numbered), timeline and
+composer; only the focused pane takes input, and the others keep following
+their threads live (the TUI keeps watching every pane's thread).
+
+| Keys | Action |
+|---|---|
+| `V` | Open the thread selected in the sidebar in a new pane right of the focused one (focuses it if it is already in a pane) |
+| `M-h`/`M-l`, `M-←`/`M-→` | Focus the pane to the left / right (wraps); `pane.focus.left` / `pane.focus.right` |
+| `Tab`/`S-Tab` | Cycle sidebar, each pane and its composer (or request panel), right panel |
+| `X` | Close the focused pane (`pane.close`); one pane left ends the split |
+| `M-z` | Show only the focused pane / restore the split (`pane.maximize.toggle`) |
+
+Opening a thread from the sidebar, search or a notification replaces the
+focused pane's thread, or focuses the pane that already shows it. The right
+panel, palette and keys act on the focused pane's thread. `pane.focus.1`-`4`
+have no default key but follow server keybinding overrides. A background pane
+waiting for an answer shows a one-line notice; focus it to answer.
+
 ## Settings file
 
 Settings live in `~/.config/bb-tui/config.toml` (`$XDG_CONFIG_HOME/bb-tui/`).

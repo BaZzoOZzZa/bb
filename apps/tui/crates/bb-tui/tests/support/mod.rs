@@ -315,9 +315,190 @@ impl SettingsFake {
     }
 }
 
+#[derive(Default)]
+pub struct AutomationsFake {
+    pub automations: Mutex<Vec<serde_json::Value>>,
+    pub runs: Mutex<HashMap<String, Vec<serde_json::Value>>>,
+    pub calls: Mutex<Vec<(String, serde_json::Value)>>,
+    pub reject: Mutex<Option<String>>,
+}
+
+pub const RUNS_PAGE: usize = 2;
+const READ_METHODS: &[&str] = &[
+    "automations_overview",
+    "automations_get",
+    "automations_runs",
+];
+
+impl AutomationsFake {
+    pub fn calls(&self) -> Vec<(String, serde_json::Value)> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    pub fn mutations(&self) -> Vec<(String, serde_json::Value)> {
+        self.calls()
+            .into_iter()
+            .filter(|(method, _)| !READ_METHODS.contains(&method.as_str()))
+            .collect()
+    }
+
+    fn handle(
+        &self,
+        sidebar: &SidebarBootstrapResponse,
+        method: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        use serde_json::json;
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), input.clone()));
+        if !READ_METHODS.contains(&method)
+            && let Some(error) = self.reject.lock().unwrap().clone()
+        {
+            return Err(error);
+        }
+        let id = input
+            .get("automationId")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mut automations = self.automations.lock().unwrap();
+        let position = automations
+            .iter()
+            .position(|automation| automation["id"] == json!(id));
+        let missing = || "Automation not found".to_owned();
+        match method {
+            "automations_overview" => {
+                let entries: Vec<serde_json::Value> = automations
+                    .iter()
+                    .map(|automation| {
+                        let project_id = automation["projectId"].as_str().unwrap_or_default();
+                        let name = sidebar
+                            .projects
+                            .iter()
+                            .chain(std::iter::once(&sidebar.personal_project))
+                            .find(|project| project.project.id == project_id)
+                            .map_or(project_id.to_owned(), |project| project.project.name.clone());
+                        json!({"automation": automation, "project": {"id": project_id, "name": name}})
+                    })
+                    .collect();
+                Ok(json!({"automations": entries}))
+            }
+            "automations_get" => position
+                .map(|index| automations[index].clone())
+                .ok_or_else(missing),
+            "automations_runs" => {
+                let runs = self
+                    .runs
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                let start: usize = input
+                    .get("cursor")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|cursor| cursor.parse().ok())
+                    .unwrap_or(0);
+                let end = (start + RUNS_PAGE).min(runs.len());
+                let next = (end < runs.len()).then(|| end.to_string());
+                Ok(json!({"runs": runs[start.min(end)..end], "nextCursor": next}))
+            }
+            "automations_create" => {
+                let enabled = input["enabled"].as_bool().unwrap_or(true);
+                let created = json!({
+                    "id": "auto_new",
+                    "projectId": input["projectId"],
+                    "name": input["name"],
+                    "enabled": enabled,
+                    "trigger": input["trigger"],
+                    "execution": input["execution"],
+                    "origin": input["origin"],
+                    "createdByThreadId": null,
+                    "nextRunAt": if enabled { json!(NOW_MS + 60 * MINUTE) } else { json!(null) },
+                    "lastRunAt": null,
+                    "runCount": 0,
+                    "lastRunStatus": null,
+                    "lastRunThreadId": null,
+                    "lastError": null,
+                    "createdAt": NOW_MS,
+                    "updatedAt": NOW_MS,
+                });
+                automations.push(created.clone());
+                Ok(created)
+            }
+            "automations_update" => {
+                let index = position.ok_or_else(missing)?;
+                let automation = &mut automations[index];
+                for key in ["name", "trigger"] {
+                    if let Some(value) = input.get(key) {
+                        automation[key] = value.clone();
+                    }
+                }
+                if let Some(agent) = input.get("agent").and_then(serde_json::Value::as_object) {
+                    for (key, value) in agent {
+                        if key == "target" {
+                            automation["execution"]["environment"] = value["environment"].clone();
+                        } else {
+                            automation["execution"][key] = value.clone();
+                        }
+                    }
+                }
+                Ok(automation.clone())
+            }
+            "automations_pause" | "automations_resume" => {
+                let index = position.ok_or_else(missing)?;
+                let enabled = method == "automations_resume";
+                automations[index]["enabled"] = json!(enabled);
+                automations[index]["nextRunAt"] = if enabled {
+                    json!(NOW_MS + 60 * MINUTE)
+                } else {
+                    json!(null)
+                };
+                Ok(automations[index].clone())
+            }
+            "automations_delete" => {
+                let index = position.ok_or_else(missing)?;
+                automations.remove(index);
+                Ok(json!({"ok": true}))
+            }
+            "automations_run" => {
+                position.ok_or_else(missing)?;
+                let run = json!({
+                    "id": "run_new",
+                    "automationId": id,
+                    "runMode": "agent",
+                    "threadId": "thr_run_new",
+                    "status": "running",
+                    "trigger": "manual",
+                    "skipReason": null,
+                    "error": null,
+                    "output": null,
+                    "exitCode": null,
+                    "scheduledFor": NOW_MS,
+                    "startedAt": NOW_MS,
+                    "finishedAt": null,
+                });
+                self.runs
+                    .lock()
+                    .unwrap()
+                    .entry(id)
+                    .or_default()
+                    .insert(0, run.clone());
+                Ok(json!({"run": run}))
+            }
+            other => Err(format!(
+                "plugin \"automations\" has no rpc method \"{other}\""
+            )),
+        }
+    }
+}
+
 pub struct MockApi {
     pub backend: Arc<FakeBackend>,
     pub settings: SettingsFake,
+    pub automations: AutomationsFake,
     pub mutations: Mutex<Vec<Mutation>>,
     pub overrides: Vec<AppKeybindingOverride>,
     pub fail: bool,
@@ -365,6 +546,7 @@ impl MockApi {
         Arc::new(Self {
             backend,
             settings: SettingsFake::default(),
+            automations: AutomationsFake::default(),
             mutations: Mutex::new(Vec::new()),
             overrides: Vec::new(),
             fail: false,
@@ -417,6 +599,21 @@ impl MockApi {
 }
 
 impl Api for MockApi {
+    fn plugin_rpc(
+        &self,
+        plugin_id: String,
+        method: String,
+        input: serde_json::Value,
+    ) -> ApiFuture<serde_json::Value> {
+        let result = if plugin_id == "automations" {
+            let sidebar = self.backend.sidebar.lock().unwrap().clone();
+            self.automations.handle(&sidebar, &method, input)
+        } else {
+            Err(format!("unknown plugin \"{plugin_id}\""))
+        };
+        Box::pin(async move { result })
+    }
+
     fn system_config(&self) -> ApiFuture<bb_wire::system::SystemConfigResponse> {
         let config = self.settings.config.lock().unwrap().clone();
         Box::pin(async move { Ok(config) })
@@ -1271,6 +1468,32 @@ pub async fn run_settings(
                 Effect::Settings(request) => {
                     let loaded = bb_tui::runtime::run_settings_request(api, request).await;
                     next.extend(update(state, Action::SettingsLoaded(loaded)));
+                }
+                other => rest.push(other),
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        pending = next;
+    }
+    rest
+}
+
+pub async fn run_automations(
+    api: &MockApi,
+    state: &mut AppState,
+    effects: Vec<Effect>,
+) -> Vec<Effect> {
+    let mut pending = effects;
+    let mut rest = Vec::new();
+    for _ in 0..8 {
+        let mut next = Vec::new();
+        for effect in pending {
+            match effect {
+                Effect::Automations(request) => {
+                    let loaded = bb_tui::runtime::run_automation_request(api, request).await;
+                    next.extend(update(state, Action::AutomationsLoaded(loaded)));
                 }
                 other => rest.push(other),
             }

@@ -443,7 +443,7 @@ fn editor_title(state: &AppState, thread_id: &str) -> String {
     if let Some((index, total)) = composer.and_then(|composer| composer.history_position()) {
         return format!(" History {index}/{total} ");
     }
-    if state.focus == Focus::Composer {
+    if state.focus == Focus::Composer && state.open_thread.as_deref() == Some(thread_id) {
         " Message ".into()
     } else {
         format!(
@@ -483,7 +483,7 @@ pub fn render_composer(state: &AppState, frame: &mut Frame, area: Rect, thread_i
     .areas(area);
     frame.render_widget(Paragraph::new(banners), banner_area);
     frame.render_widget(Paragraph::new(queue), queue_area);
-    let focused = state.focus == Focus::Composer;
+    let focused = state.focus == Focus::Composer && state.open_thread.as_deref() == Some(thread_id);
     let border_style = if focused {
         Style::new().fg(Color::Cyan)
     } else {

@@ -122,6 +122,9 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     if let Some(view) = &state.settings {
         crate::settings_ui::render_settings(state, view, frame, body);
     }
+    if let Some(view) = &state.automations {
+        crate::automations_ui::render_automations(state, view, frame, body);
+    }
     render_status(state, frame, status);
     render_toasts(state, frame, body);
     if state.mode == Mode::Help {
@@ -408,6 +411,14 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
         return;
     }
     let focused = state.focus == Focus::Main;
+    if state.is_split() && !state.split_maximized {
+        let constraints = vec![Constraint::Fill(1); state.splits.len()];
+        let columns = Layout::horizontal(constraints).split(area);
+        for (index, (thread_id, column)) in state.splits.iter().zip(columns.iter()).enumerate() {
+            render_thread_pane(state, frame, *column, thread_id, Some(index + 1));
+        }
+        return;
+    }
     let Some(thread_id) = state.open_thread.as_deref() else {
         let block = pane_block("bb", focused);
         let hint = format!(
@@ -423,8 +434,32 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
         );
         return;
     };
-    let title = state.thread_title(thread_id);
+    let number = state.is_split().then(|| state.focused_pane() + 1);
+    render_thread_pane(state, frame, area, thread_id, number);
+}
+
+fn render_thread_pane(
+    state: &AppState,
+    frame: &mut Frame,
+    area: Rect,
+    thread_id: &str,
+    number: Option<usize>,
+) {
+    let is_open = state.open_thread.as_deref() == Some(thread_id);
+    let focused = is_open && state.focus == Focus::Main;
+    let mut title = state.thread_title(thread_id);
+    if let Some(number) = number {
+        title = format!("{number} · {title}");
+        if state.split_maximized {
+            title = format!("{title} · {} of {}", number, state.splits.len());
+        }
+    }
     let block = pane_block(&title, focused);
+    let block = if is_open && state.is_split() && !focused {
+        block.border_style(Style::new().fg(Color::Blue))
+    } else {
+        block
+    };
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width < 4 {
@@ -434,24 +469,54 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     let meta = meta_line(state, thread_id, usize::from(meta_area.width));
     frame.render_widget(Paragraph::new(meta), meta_area);
+    if !is_open {
+        if state.interaction_panel_visible(thread_id) && body.height >= 3 {
+            let [timeline_area, notice] =
+                Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(body);
+            render_timeline(state, frame, timeline_area, thread_id, false);
+            frame.render_widget(
+                Paragraph::new(truncate(
+                    "? Waiting for your answer · focus this pane to respond",
+                    usize::from(notice.width),
+                ))
+                .style(Style::new().fg(Color::Yellow)),
+                notice,
+            );
+            return;
+        }
+        if state.thread_archived(thread_id)
+            || !state.composers.contains_key(thread_id)
+            || body.height < 6
+        {
+            render_timeline(state, frame, body, thread_id, false);
+            return;
+        }
+        let wanted = composer_ui::composer_height(state, thread_id, usize::from(body.width));
+        let height = wanted.min(body.height.saturating_sub(3).max(body.height / 2));
+        let [timeline_area, composer_area] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
+        render_timeline(state, frame, timeline_area, thread_id, false);
+        composer_ui::render_composer(state, frame, composer_area, thread_id);
+        return;
+    }
     if state.interaction_panel_visible(thread_id) && body.height >= 6 {
         let wanted = crate::interaction_ui::panel_height(state, thread_id, usize::from(body.width));
         let height = wanted.max(3).min((body.height * 2 / 3).max(5));
         let [timeline_area, panel_area] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
-        render_timeline(state, frame, timeline_area, focused);
+        render_timeline(state, frame, timeline_area, thread_id, focused);
         crate::interaction_ui::render_panel(state, frame, panel_area, thread_id);
         return;
     }
     if !state.composer_available() || body.height < 6 {
-        render_timeline(state, frame, body, focused);
+        render_timeline(state, frame, body, thread_id, focused);
         return;
     }
     let wanted = composer_ui::composer_height(state, thread_id, usize::from(body.width));
     let height = wanted.min(body.height.saturating_sub(3).max(body.height / 2));
     let [timeline_area, composer_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
-    render_timeline(state, frame, timeline_area, focused);
+    render_timeline(state, frame, timeline_area, thread_id, focused);
     composer_ui::render_composer(state, frame, composer_area, thread_id);
 }
 
@@ -535,7 +600,7 @@ fn meta_line(state: &AppState, thread_id: &str, width: usize) -> Line<'static> {
             compact_relative_time(thread.updated_at, state.now_ms)
         ));
     }
-    if let Some(timeline) = state.timeline()
+    if let Some(timeline) = state.timelines.get(thread_id)
         && timeline.scroll != Scroll::Bottom
     {
         parts.push("scrolled".into());
@@ -547,9 +612,15 @@ fn meta_line(state: &AppState, thread_id: &str, width: usize) -> Line<'static> {
     Line::from(crate::wrap::truncate_spans(spans, width))
 }
 
-fn render_timeline(state: &AppState, frame: &mut Frame, area: Rect, focused: bool) {
+fn render_timeline(
+    state: &AppState,
+    frame: &mut Frame,
+    area: Rect,
+    thread_id: &str,
+    focused: bool,
+) {
     let muted = Style::new().fg(Color::DarkGray);
-    let Some(timeline) = state.timeline() else {
+    let Some(timeline) = state.timelines.get(thread_id) else {
         return;
     };
     if area.height == 0 || area.width < 2 {
@@ -666,6 +737,9 @@ fn hints(state: &AppState) -> String {
     if let Some(hint) = crate::palette_ui::hints(state.palette.as_ref(), state.result_pane.as_ref())
     {
         return hint;
+    }
+    if let Some(view) = &state.automations {
+        return crate::automations::automations_hints(view);
     }
     if let Some(view) = &state.settings {
         return crate::settings::settings_hints(view);

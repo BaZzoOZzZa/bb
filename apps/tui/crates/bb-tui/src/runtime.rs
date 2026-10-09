@@ -18,6 +18,7 @@ use bb_wire::thread::ThreadSearchQuery;
 use crate::api::{Api, AttachmentUpload, TerminalHandle};
 use crate::app::{Action, AppState, Effect, ToastLevel, update};
 use crate::attach::{ATTACHMENT_MAX_BYTES, UploadRequest, file_name, mime_type_for};
+use crate::automations::{AutomationLoaded, AutomationRequest};
 use crate::git_diff::diff_query;
 use crate::new_thread::{NewThreadLoaded, NewThreadRequest};
 use crate::palette::{
@@ -43,6 +44,7 @@ pub struct EffectRunner<A: Api, P: Platform> {
     tx: mpsc::UnboundedSender<Action>,
     _sidebar: Interest,
     thread: Option<(String, Interest)>,
+    splits: HashMap<String, Interest>,
     palette_tasks: HashMap<&'static str, tokio::task::JoinHandle<()>>,
     terminal_links: HashMap<String, (u64, Arc<dyn TerminalHandle>)>,
     fullscreen: Option<String>,
@@ -64,6 +66,7 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
             tx,
             _sidebar: sidebar,
             thread: None,
+            splits: HashMap::new(),
             palette_tasks: HashMap::new(),
             terminal_links: HashMap::new(),
             fullscreen: None,
@@ -95,6 +98,15 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                 if self.thread.as_ref().map(|(id, _)| id) != Some(&thread_id) {
                     let interest = self.store.watch_thread(&thread_id);
                     self.thread = Some((thread_id, interest));
+                }
+            }
+            Effect::WatchSplits(thread_ids) => {
+                self.splits.retain(|id, _| thread_ids.contains(id));
+                for thread_id in thread_ids {
+                    if !self.splits.contains_key(&thread_id) {
+                        let interest = self.store.watch_thread(&thread_id);
+                        self.splits.insert(thread_id, interest);
+                    }
                 }
             }
             Effect::RefreshSidebar => self.store.refresh(ResourceKey::Sidebar),
@@ -280,6 +292,14 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                     let _ = tx.send(Action::SettingsLoaded(loaded));
                 });
             }
+            Effect::Automations(request) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let loaded = run_automation_request(api.as_ref(), request).await;
+                    let _ = tx.send(Action::AutomationsLoaded(loaded));
+                });
+            }
             Effect::Quit => {
                 for (_, (_, handle)) in self.terminal_links.drain() {
                     handle.close();
@@ -445,6 +465,12 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
     pub fn watched_thread(&self) -> Option<&str> {
         self.thread.as_ref().map(|(id, _)| id.as_str())
     }
+
+    pub fn watched_splits(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.splits.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
 }
 
 pub async fn list_terminals<A: Api>(
@@ -593,6 +619,93 @@ pub async fn run_settings_request<A: Api>(api: &A, request: SettingsRequest) -> 
         SettingsRequest::Mutate(mutation) => {
             let result = api.settings_mutation(mutation.clone()).await;
             SettingsLoaded::Mutated { mutation, result }
+        }
+    }
+}
+
+async fn automations_rpc<A: Api, T: serde::de::DeserializeOwned>(
+    api: &A,
+    method: &str,
+    input: bb_wire::common::JsonValue,
+) -> Result<T, String> {
+    let value = api
+        .plugin_rpc(
+            crate::automation_data::PLUGIN_ID.to_owned(),
+            method.to_owned(),
+            input,
+        )
+        .await?;
+    serde_json::from_value(value).map_err(|error| format!("unexpected {method} response: {error}"))
+}
+
+pub async fn run_automation_request<A: Api>(
+    api: &A,
+    request: AutomationRequest,
+) -> AutomationLoaded {
+    use crate::automation_data::{Automation, OverviewResponse, RunPage};
+    match request {
+        AutomationRequest::Overview => AutomationLoaded::Overview(
+            automations_rpc::<A, OverviewResponse>(
+                api,
+                "automations_overview",
+                bb_wire::common::JsonValue::Null,
+            )
+            .await
+            .map(|response| response.automations),
+        ),
+        AutomationRequest::Detail(route) => {
+            let input = serde_json::json!({
+                "projectId": route.project_id,
+                "automationId": route.automation_id,
+            });
+            let result = automations_rpc::<A, Automation>(api, "automations_get", input)
+                .await
+                .map(Box::new);
+            AutomationLoaded::Detail { route, result }
+        }
+        AutomationRequest::Runs { route, cursor } => {
+            let mut input = serde_json::json!({
+                "projectId": route.project_id,
+                "automationId": route.automation_id,
+            });
+            if let (Some(cursor), Some(object)) = (cursor.as_ref(), input.as_object_mut()) {
+                object.insert("cursor".into(), serde_json::json!(cursor));
+            }
+            let result = automations_rpc::<A, RunPage>(api, "automations_runs", input).await;
+            AutomationLoaded::Runs {
+                route,
+                cursor,
+                result,
+            }
+        }
+        AutomationRequest::Providers => AutomationLoaded::Providers(api.provider_catalog().await),
+        AutomationRequest::Models { provider_id } => {
+            let result = api
+                .execution_options(bb_wire::system::SystemExecutionOptionsQuery {
+                    provider_id: Some(provider_id.clone()),
+                    ..bb_wire::system::SystemExecutionOptionsQuery::default()
+                })
+                .await;
+            AutomationLoaded::Models {
+                provider_id,
+                result,
+            }
+        }
+        AutomationRequest::ProjectDefaults { project_id } => {
+            let result = api
+                .project_default_execution_options(project_id.clone())
+                .await;
+            AutomationLoaded::ProjectDefaults { project_id, result }
+        }
+        AutomationRequest::Mutate(mutation) => {
+            let result = api
+                .plugin_rpc(
+                    crate::automation_data::PLUGIN_ID.to_owned(),
+                    mutation.method().to_owned(),
+                    mutation.input(),
+                )
+                .await;
+            AutomationLoaded::Mutated { mutation, result }
         }
     }
 }

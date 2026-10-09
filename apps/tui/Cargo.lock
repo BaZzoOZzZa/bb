@@ -367,6 +367,7 @@ dependencies = [
  "ratatui",
  "ratatui-textarea",
  "rustix",
+ "serde",
  "serde_json",
  "syntect",
  "tempfile",

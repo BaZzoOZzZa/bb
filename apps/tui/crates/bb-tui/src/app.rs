@@ -16,6 +16,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::api::{Mutation, MutationReply};
 use crate::attach::UploadRequest;
+use crate::automations::{AutomationLoaded, AutomationRequest, AutomationsView};
 use crate::compose::{
     Inflight, Picker, composer_command, composer_mutation_finished, composer_snapshot,
     composer_tick, handle_composer_key, handle_picker_key, handle_queue_key, history_loaded, paste,
@@ -182,6 +183,7 @@ pub enum Action {
         result: Result<Vec<bb_wire::interaction::PendingInteraction>, String>,
     },
     SettingsLoaded(SettingsLoaded),
+    AutomationsLoaded(AutomationLoaded),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,6 +234,8 @@ pub enum Effect {
     FetchNotificationInteractions(String),
     Terminal(TerminalRequest),
     Settings(SettingsRequest),
+    Automations(AutomationRequest),
+    WatchSplits(Vec<String>),
     Quit,
 }
 
@@ -281,6 +285,9 @@ pub struct AppState {
     pub waiting: usize,
     pub notifications: crate::notifications::Notifications,
     pub settings: Option<SettingsView>,
+    pub automations: Option<AutomationsView>,
+    pub splits: Vec<String>,
+    pub split_maximized: bool,
     pub clock: Instant,
     pub now_ms: i64,
     pub frame: u64,
@@ -334,6 +341,9 @@ impl AppState {
             waiting: 0,
             notifications: crate::notifications::Notifications::default(),
             settings: None,
+            automations: None,
+            splits: Vec::new(),
+            split_maximized: false,
             clock: now,
             now_ms,
             frame: 0,
@@ -360,9 +370,14 @@ impl AppState {
     }
 
     fn load_effects(&self, loads: Vec<LoadRequest>) -> Vec<Effect> {
-        let Some(thread_id) = self.open_thread.clone() else {
-            return Vec::new();
-        };
+        match self.open_thread.clone() {
+            Some(thread_id) => self.load_effects_for(&thread_id, loads),
+            None => Vec::new(),
+        }
+    }
+
+    pub(crate) fn load_effects_for(&self, thread_id: &str, loads: Vec<LoadRequest>) -> Vec<Effect> {
+        let thread_id = thread_id.to_owned();
         loads
             .into_iter()
             .map(|load| match load {
@@ -481,47 +496,69 @@ impl AppState {
         }
     }
 
-    fn panes(&self) -> Vec<Focus> {
+    fn panes(&self) -> Vec<(Focus, Option<String>)> {
         let mut panes = Vec::new();
         if self.sidebar_visible {
-            panes.push(Focus::Sidebar);
+            panes.push((Focus::Sidebar, None));
         }
         if self.new_thread.is_some() {
-            panes.push(Focus::NewThread);
+            panes.push((Focus::NewThread, None));
             if self.panel_visible {
-                panes.push(Focus::Panel);
+                panes.push((Focus::Panel, None));
             }
             return panes;
         }
-        panes.push(Focus::Main);
-        if self.open_interaction_panel() {
-            panes.push(Focus::Interaction);
-        } else if self.composer_available() {
-            panes.push(Focus::Composer);
+        let threads = if self.is_split() && !self.split_maximized {
+            self.splits.clone()
+        } else {
+            self.open_thread.iter().cloned().collect()
+        };
+        if threads.is_empty() {
+            panes.push((Focus::Main, None));
+        }
+        for thread_id in threads {
+            panes.push((Focus::Main, Some(thread_id.clone())));
+            if self.interaction_panel_visible(&thread_id) {
+                panes.push((Focus::Interaction, Some(thread_id)));
+            } else if !self.thread_archived(&thread_id) {
+                panes.push((Focus::Composer, Some(thread_id)));
+            }
         }
         if self.panel_visible {
-            panes.push(Focus::Panel);
+            panes.push((Focus::Panel, None));
         }
         panes
     }
 
-    fn cycle_focus(&mut self, forward: bool) {
+    fn cycle_focus(&mut self, forward: bool) -> Vec<Effect> {
         let panes = self.panes();
-        let index = panes
-            .iter()
-            .position(|pane| *pane == self.focus)
-            .unwrap_or(0);
+        let current = match self.focus {
+            Focus::Main | Focus::Composer | Focus::Interaction => {
+                (self.focus, self.open_thread.clone())
+            }
+            other => (other, None),
+        };
+        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
         let next = if forward {
             (index + 1) % panes.len()
         } else {
             (index + panes.len() - 1) % panes.len()
         };
-        self.focus = panes[next];
+        let (focus, thread) = panes[next].clone();
+        let mut effects = Vec::new();
+        if let Some(thread_id) = thread
+            && self.open_thread.as_deref() != Some(thread_id.as_str())
+        {
+            effects = self.open(thread_id);
+        }
+        self.focus = focus;
+        effects
     }
 
     pub fn open(&mut self, thread_id: String) -> Vec<Effect> {
         let mut effects = Vec::new();
         self.close_new_thread();
+        self.place_in_split(&thread_id);
         if self.open_thread.as_deref() != Some(thread_id.as_str()) {
             effects.push(Effect::WatchThread(Some(thread_id.clone())));
             if let Some(previous) = self.open_thread.clone() {
@@ -548,6 +585,9 @@ impl AppState {
         effects.extend(self.sync_timeline());
         self.sync_interactions();
         effects.extend(self.sync_panel());
+        if !self.splits.is_empty() {
+            effects.push(self.split_watch());
+        }
         effects
     }
 
@@ -705,6 +745,10 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
                 state.settings_refused(mutation);
                 false
             }
+            Effect::Automations(AutomationRequest::Mutate(mutation)) => {
+                state.automations_refused(mutation);
+                false
+            }
             Effect::Mutate(mutation) => {
                 if !mutation.is_silent() {
                     state.toast(
@@ -749,6 +793,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             }
             let mut effects = composer_snapshot(state);
             effects.extend(state.sync_timeline());
+            effects.extend(state.sync_split_timelines());
             state.sync_interactions();
             effects.extend(state.sync_new_thread());
             effects.extend(state.sync_panel());
@@ -865,6 +910,15 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             plugin_id,
             channel,
             payload,
+        } if plugin_id == crate::automation_data::PLUGIN_ID
+            && channel == crate::automation_data::SIGNAL_CHANNEL =>
+        {
+            state.automations_signal(&payload)
+        }
+        Action::PluginSignal {
+            plugin_id,
+            channel,
+            payload,
         } => state.plugin_signal(&plugin_id, &channel, payload),
         Action::TerminalFocus(focused) => {
             state.notifications.terminal_focused = Some(focused);
@@ -883,6 +937,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::FullscreenResize { cols, rows } => state.fullscreen_resize(cols, rows),
         Action::FullscreenEnded(message) => state.fullscreen_ended(message),
         Action::SettingsLoaded(loaded) => state.settings_loaded(loaded),
+        Action::AutomationsLoaded(loaded) => state.automations_loaded(loaded),
     }
 }
 
@@ -922,6 +977,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
     if state.palette.is_some() {
         return handle_palette_key(state, key);
+    }
+    if state.automations.is_some() && state.mode == Mode::Normal {
+        return crate::automations::handle_automations_key(state, key);
     }
     if state.settings.is_some() {
         return crate::settings::handle_settings_key(state, key);
@@ -1137,6 +1195,19 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
     {
         state.close_settings();
     }
+    if state.automations.is_some()
+        && !matches!(
+            command,
+            Command::Automations
+                | Command::NewAutomation
+                | Command::PaletteOpen
+                | Command::Help
+                | Command::Quit
+                | Command::Reload
+        )
+    {
+        state.close_automations();
+    }
     let in_sidebar = state.focus == Focus::Sidebar && state.sidebar_visible;
     if let Some(effects) = composer_command(state, command) {
         return effects;
@@ -1159,8 +1230,8 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
                 state.toasts.clear();
             }
         }
-        Command::FocusNext => state.cycle_focus(true),
-        Command::FocusPrevious => state.cycle_focus(false),
+        Command::FocusNext => return state.cycle_focus(true),
+        Command::FocusPrevious => return state.cycle_focus(false),
         Command::MoveDown if in_sidebar => state.move_selection(1),
         Command::MoveUp if in_sidebar => state.move_selection(-1),
         Command::MoveTop if in_sidebar => state.selected = 0,
@@ -1240,6 +1311,18 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         }
         Command::NextPending => return state.jump_to_pending(),
         Command::Settings => return state.open_settings(None),
+        Command::Automations => return state.open_automations(),
+        Command::NewAutomation => return state.new_automation(),
+        Command::SplitOpen => return state.open_in_split(),
+        Command::PaneLeft => return state.step_pane(-1),
+        Command::PaneRight => return state.step_pane(1),
+        Command::PaneFocus(n) => {
+            if state.is_split() {
+                return state.focus_pane(usize::from(n.saturating_sub(1)));
+            }
+        }
+        Command::PaneClose => return state.close_split_pane(),
+        Command::PaneMaximize => state.toggle_pane_maximized(),
         Command::SettingsSection(section) => return state.open_settings(Some(section)),
         Command::Notifications => state.open_notifications(),
         Command::PaletteOpen => return state.open_palette(PaletteKind::Commands),

@@ -512,6 +512,15 @@ pub trait Api: Send + Sync + 'static {
     fn settings_mutation(&self, _mutation: SettingsMutation) -> ApiFuture<SettingsReply> {
         unsupported("settings changes")
     }
+
+    fn plugin_rpc(
+        &self,
+        _plugin_id: String,
+        _method: String,
+        _input: JsonValue,
+    ) -> ApiFuture<JsonValue> {
+        unsupported("plugin RPC")
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1247,6 +1256,21 @@ impl Api for BbClient {
     fn settings_mutation(&self, mutation: SettingsMutation) -> ApiFuture<SettingsReply> {
         let client = self.clone();
         Box::pin(async move { run_settings_mutation(&client, &mutation).await })
+    }
+
+    fn plugin_rpc(
+        &self,
+        plugin_id: String,
+        method: String,
+        input: JsonValue,
+    ) -> ApiFuture<JsonValue> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .plugin_rpc(&plugin_id, &method, &input)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 
     fn connect_terminal(&self, terminal_id: &str, since_seq: u64) -> Result<TerminalLink, String> {

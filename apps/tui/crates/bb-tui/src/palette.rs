@@ -396,6 +396,7 @@ const WORKSPACE: &str = "Workspace";
 const COMPOSER: &str = "Composer and models";
 const TIMELINE: &str = "Timeline";
 const SETTINGS: &str = "Settings";
+const AUTOMATIONS: &str = "Automations";
 
 const COMMAND_ENTRIES: &[CommandEntry] = &[
     entry(Command::NewThread, THREADS, "New thread", false),
@@ -500,6 +501,23 @@ const COMMAND_ENTRIES: &[CommandEntry] = &[
         "Toggle Enter while running: queue / steer",
         false,
     ),
+    entry(
+        Command::SplitOpen,
+        LAYOUT,
+        "Open thread in split pane",
+        false,
+    ),
+    entry(Command::PaneLeft, LAYOUT, "Focus chat pane left", false),
+    entry(Command::PaneRight, LAYOUT, "Focus chat pane right", false),
+    entry(Command::PaneClose, LAYOUT, "Close focused chat pane", false),
+    entry(
+        Command::PaneMaximize,
+        LAYOUT,
+        "Toggle focused chat pane size",
+        false,
+    ),
+    entry(Command::Automations, AUTOMATIONS, "Open automations", false),
+    entry(Command::NewAutomation, AUTOMATIONS, "New automation", false),
     entry(Command::Settings, SETTINGS, "Open settings", false),
     entry(
         Command::SettingsSection(SettingsSection::Providers),

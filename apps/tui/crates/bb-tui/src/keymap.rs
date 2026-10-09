@@ -72,6 +72,14 @@ pub enum Command {
     TerminalAttach,
     Settings,
     SettingsSection(crate::settings::SettingsSection),
+    Automations,
+    NewAutomation,
+    SplitOpen,
+    PaneLeft,
+    PaneRight,
+    PaneFocus(u8),
+    PaneClose,
+    PaneMaximize,
 }
 
 impl Command {
@@ -146,6 +154,17 @@ impl Command {
         Command::TerminalNew,
         Command::TerminalAttach,
         Command::Settings,
+        Command::Automations,
+        Command::NewAutomation,
+        Command::SplitOpen,
+        Command::PaneLeft,
+        Command::PaneRight,
+        Command::PaneFocus(1),
+        Command::PaneFocus(2),
+        Command::PaneFocus(3),
+        Command::PaneFocus(4),
+        Command::PaneClose,
+        Command::PaneMaximize,
         Command::Reload,
         Command::Back,
         Command::Help,
@@ -158,6 +177,14 @@ impl Command {
             Self::NewThread => "thread.new",
             Self::FocusNext => "pane.focus.next",
             Self::FocusPrevious => "pane.focus.previous",
+            Self::PaneLeft => "pane.focus.left",
+            Self::PaneRight => "pane.focus.right",
+            Self::PaneFocus(1) => "pane.focus.1",
+            Self::PaneFocus(2) => "pane.focus.2",
+            Self::PaneFocus(3) => "pane.focus.3",
+            Self::PaneFocus(4) => "pane.focus.4",
+            Self::PaneClose => "pane.close",
+            Self::PaneMaximize => "pane.maximize.toggle",
             Self::PaletteOpen => "palette.open",
             Self::QuickOpen => "file.quickOpen",
             Self::SearchThreads => "thread.search",
@@ -269,6 +296,14 @@ impl Command {
             Self::TerminalAttach => "Attach the terminal fullscreen (C-\\ detaches)".into(),
             Self::Settings => "Settings".into(),
             Self::SettingsSection(section) => format!("Settings: {}", section.label()),
+            Self::Automations => "Automations (scheduled agent runs)".into(),
+            Self::NewAutomation => "New automation".into(),
+            Self::SplitOpen => "Open the selected thread in a split pane".into(),
+            Self::PaneLeft => "Focus the split pane to the left".into(),
+            Self::PaneRight => "Focus the split pane to the right".into(),
+            Self::PaneFocus(n) => format!("Focus split pane {n}"),
+            Self::PaneClose => "Close the focused split pane".into(),
+            Self::PaneMaximize => "Maximize / restore the focused split pane".into(),
         }
     }
 }
@@ -444,6 +479,20 @@ impl Default for Keymap {
             (KeyChord::ch('Z'), Command::PanelFullScreen),
             (KeyChord::ch('T'), Command::TerminalOpen),
             (KeyChord::ch(','), Command::Settings),
+            (KeyChord::ch('A'), Command::Automations),
+            (KeyChord::ch('V'), Command::SplitOpen),
+            (KeyChord::alt('h'), Command::PaneLeft),
+            (
+                KeyChord::new(KeyCode::Left, KeyModifiers::ALT),
+                Command::PaneLeft,
+            ),
+            (KeyChord::alt('l'), Command::PaneRight),
+            (
+                KeyChord::new(KeyCode::Right, KeyModifiers::ALT),
+                Command::PaneRight,
+            ),
+            (KeyChord::ch('X'), Command::PaneClose),
+            (KeyChord::alt('z'), Command::PaneMaximize),
             (KeyChord::ctrl('r'), Command::Reload),
             (KeyChord::plain(PageDown), Command::PageDown),
             (KeyChord::plain(PageUp), Command::PageUp),
@@ -495,6 +544,9 @@ impl Keymap {
             command,
             Command::FocusNext
                 | Command::FocusPrevious
+                | Command::PaneLeft
+                | Command::PaneRight
+                | Command::PaneMaximize
                 | Command::Jump(_)
                 | Command::QueueList
                 | Command::AttachFile
