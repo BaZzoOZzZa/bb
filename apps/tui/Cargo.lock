@@ -383,6 +383,7 @@ version = "0.0.1"
 dependencies = [
  "bb-wire",
  "chrono",
+ "serde_json",
  "unicode-segmentation",
  "unicode-width",
 ]

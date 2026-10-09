@@ -12,5 +12,8 @@ chrono.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
