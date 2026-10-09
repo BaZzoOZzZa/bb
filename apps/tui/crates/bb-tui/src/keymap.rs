@@ -56,6 +56,8 @@ pub enum Command {
     QuickOpen,
     SearchThreads,
     SwitchProject,
+    AttachFile,
+    Attachments,
 }
 
 impl Command {
@@ -78,6 +80,8 @@ impl Command {
         Command::Copy,
         Command::OpenExternal,
         Command::FocusComposer,
+        Command::AttachFile,
+        Command::Attachments,
         Command::StopTurn,
         Command::QueueList,
         Command::ToggleSubmitMode,
@@ -216,6 +220,8 @@ impl Command {
             Self::QuickOpen => "Quick open a file of this thread's workspace".into(),
             Self::SearchThreads => "Search threads (titles and messages)".into(),
             Self::SwitchProject => "Switch project".into(),
+            Self::AttachFile => "Attach a file to the message (path prompt)".into(),
+            Self::Attachments => "Message attachments (remove)".into(),
         }
     }
 }
@@ -408,6 +414,8 @@ impl Default for Keymap {
             (KeyChord::ctrl('p'), Command::QuickOpen),
             (KeyChord::ch('f'), Command::SearchThreads),
             (KeyChord::ch('P'), Command::SwitchProject),
+            (KeyChord::ctrl('o'), Command::AttachFile),
+            (KeyChord::alt('a'), Command::Attachments),
             (KeyChord::alt('m'), Command::ModelPicker),
             (KeyChord::alt('e'), Command::ReasoningPicker),
             (KeyChord::alt('p'), Command::PermissionPicker),
@@ -435,6 +443,8 @@ impl Keymap {
                 | Command::FocusPrevious
                 | Command::Jump(_)
                 | Command::QueueList
+                | Command::AttachFile
+                | Command::Attachments
                 | Command::ToggleSubmitMode
                 | Command::NextPending
                 | Command::ModelPicker

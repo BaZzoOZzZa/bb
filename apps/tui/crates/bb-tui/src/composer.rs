@@ -4,7 +4,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 
-use crate::prompt::PromptDraft;
+use crate::chips::{
+    self, CharRange, char_len, char_to_row_col, mention_char_ranges, row_col_to_char,
+};
+use crate::mentions::{ActiveTrigger, TypeaheadTrigger, find_active_trigger};
+use crate::prompt::{DraftAttachment, PromptDraft};
+use bb_wire::prompt::{PromptMentionResource, PromptTextMention};
 
 pub const DRAFT_SAVE_DELAY: Duration = Duration::from_millis(400);
 pub const ESC_STOP_WINDOW: Duration = Duration::from_millis(1500);
@@ -77,6 +82,13 @@ impl PromptDraftSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DismissedTrigger {
+    pub start: usize,
+    pub end: usize,
+    pub has_left: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Composer {
     pub thread_id: String,
@@ -90,6 +102,8 @@ pub struct Composer {
     pub editing: Option<QueuedEdit>,
     pub esc_armed_at: Option<Instant>,
     pub pending_restore: Option<PromptDraft>,
+    pub dismissed_trigger: Option<DismissedTrigger>,
+    pub uploads: Vec<String>,
 }
 
 fn configure(textarea: &mut TextArea<'static>) {
@@ -106,6 +120,36 @@ fn textarea_with(text: &str) -> TextArea<'static> {
     textarea.move_cursor(CursorMove::Bottom);
     textarea.move_cursor(CursorMove::End);
     textarea
+}
+
+fn valid_mentions(text: &str, mentions: &[PromptTextMention]) -> Vec<PromptTextMention> {
+    let mut ranged: Vec<(CharRange, &PromptTextMention)> = mentions
+        .iter()
+        .filter_map(|mention| {
+            chips::mention_char_range(text, mention).map(|range| (range, mention))
+        })
+        .collect();
+    ranged.sort_by_key(|(range, _)| (range.start, range.end));
+    let mut kept: Vec<PromptTextMention> = Vec::new();
+    let mut last_end = 0;
+    for (range, mention) in ranged {
+        if range.start < last_end {
+            continue;
+        }
+        last_end = range.end;
+        kept.push(mention.clone());
+    }
+    kept
+}
+
+fn is_backward_motion(key: &KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    matches!(
+        key.code,
+        KeyCode::Left | KeyCode::Home | KeyCode::Up | KeyCode::PageUp
+    ) || (ctrl && matches!(key.code, KeyCode::Char('b' | 'a' | 'p')))
+        || (alt && matches!(key.code, KeyCode::Char('b' | '<')))
 }
 
 fn has(key: &KeyEvent, modifier: KeyModifiers) -> bool {
@@ -126,6 +170,8 @@ impl Composer {
             editing: None,
             esc_armed_at: None,
             pending_restore: None,
+            dismissed_trigger: None,
+            uploads: Vec::new(),
         }
     }
 
@@ -168,11 +214,151 @@ impl Composer {
             .map(|index| (index + 1, self.history.len()))
     }
 
-    fn replace(&mut self, draft: PromptDraft) {
+    fn replace(&mut self, mut draft: PromptDraft) {
         let placeholder = self.textarea.placeholder_text().to_owned();
         self.textarea = textarea_with(&draft.text);
         self.textarea.set_placeholder_text(placeholder);
+        draft.mentions = valid_mentions(&draft.text, &draft.mentions);
         self.draft = draft;
+        self.dismissed_trigger = None;
+    }
+
+    fn reset_text(&mut self, text: &str, cursor: usize) {
+        let placeholder = self.textarea.placeholder_text().to_owned();
+        self.textarea = textarea_with(text);
+        self.textarea.set_placeholder_text(placeholder);
+        self.set_cursor_char(cursor);
+    }
+
+    pub fn cursor_char(&self) -> usize {
+        let ratatui_textarea::DataCursor(row, col) = self.textarea.cursor();
+        row_col_to_char(self.textarea.lines(), row, col)
+    }
+
+    pub fn set_cursor_char(&mut self, offset: usize) {
+        let (row, col) = char_to_row_col(&self.text(), offset);
+        self.textarea.move_cursor(CursorMove::Jump(
+            u16::try_from(row).unwrap_or(u16::MAX),
+            u16::try_from(col).unwrap_or(u16::MAX),
+        ));
+    }
+
+    pub fn mention_ranges(&self) -> Vec<CharRange> {
+        mention_char_ranges(&self.draft.text, &self.draft.mentions)
+    }
+
+    pub fn scan_text(&self) -> Vec<char> {
+        let mut chars: Vec<char> = self.draft.text.chars().collect();
+        for range in self.mention_ranges() {
+            for ch in chars.iter_mut().take(range.end).skip(range.start) {
+                *ch = '\n';
+            }
+        }
+        chars
+    }
+
+    pub fn sync_trigger(&mut self, triggers: &[TypeaheadTrigger]) -> Option<ActiveTrigger> {
+        let caret = self.cursor_char();
+        let detected = if self.textarea.is_selecting() {
+            None
+        } else {
+            find_active_trigger(&self.scan_text(), caret, triggers)
+        };
+        if let Some(mut dismissed) = self.dismissed_trigger {
+            if !dismissed.has_left
+                && detected.as_ref().map(|trigger| trigger.from) == Some(dismissed.start)
+            {
+                dismissed.end = dismissed.end.max(caret);
+            }
+            let within = caret >= dismissed.start && caret <= dismissed.end;
+            if !within {
+                dismissed.has_left = true;
+                self.dismissed_trigger = Some(dismissed);
+            } else if dismissed.has_left {
+                self.dismissed_trigger = None;
+            } else {
+                self.dismissed_trigger = Some(dismissed);
+            }
+        }
+        let suppressed = self.dismissed_trigger.is_some_and(|dismissed| {
+            !dismissed.has_left && caret >= dismissed.start && caret <= dismissed.end
+        });
+        if suppressed { None } else { detected }
+    }
+
+    pub fn dismiss_trigger(&mut self, trigger: &ActiveTrigger) {
+        self.dismissed_trigger = Some(DismissedTrigger {
+            start: trigger.from,
+            end: trigger.to,
+            has_left: false,
+        });
+    }
+
+    pub fn apply_mention(
+        &mut self,
+        trigger: &ActiveTrigger,
+        serialized: &str,
+        resource: PromptMentionResource,
+        dismissed_end: impl FnOnce(&str) -> usize,
+        now: Instant,
+    ) {
+        let trailing = chips::trailing_text_after(&self.draft.text, trigger.to);
+        let inserted = chips::insert_mention(
+            &self.draft.text,
+            &self.draft.mentions,
+            CharRange {
+                start: trigger.from,
+                end: trigger.to,
+            },
+            serialized,
+            resource,
+            trailing,
+        );
+        self.reset_text(&inserted.text, inserted.cursor);
+        self.draft = PromptDraft {
+            text: inserted.text,
+            mentions: inserted.mentions,
+            attachments: self.draft.attachments.clone(),
+        };
+        self.dismissed_trigger = Some(DismissedTrigger {
+            start: trigger.from,
+            end: dismissed_end(trailing),
+            has_left: false,
+        });
+        self.history_index = None;
+        self.history_stash = None;
+        self.mark_dirty(now);
+    }
+
+    pub fn add_attachment(&mut self, attachment: DraftAttachment, now: Instant) -> bool {
+        if self
+            .draft
+            .attachments
+            .iter()
+            .any(|existing| existing.path == attachment.path)
+        {
+            return false;
+        }
+        self.draft.attachments.push(attachment);
+        self.mark_dirty(now);
+        true
+    }
+
+    pub fn remove_attachment(&mut self, index: usize, now: Instant) -> Option<DraftAttachment> {
+        if index >= self.draft.attachments.len() {
+            return None;
+        }
+        let removed = self.draft.attachments.remove(index);
+        self.mark_dirty(now);
+        Some(removed)
+    }
+
+    fn snap_cursor(&mut self, backward: bool) {
+        let cursor = self.cursor_char();
+        let snapped = chips::snap_cursor(&self.draft.text, &self.draft.mentions, cursor, backward);
+        if snapped != cursor {
+            self.set_cursor_char(snapped);
+        }
     }
 
     pub fn set_draft(&mut self, draft: PromptDraft, now: Instant) {
@@ -240,12 +426,24 @@ impl Composer {
 
     fn sync(&mut self, now: Instant) {
         let text = self.text();
-        if text != self.draft.text {
-            self.draft = self.draft.with_text(text);
-            self.history_index = None;
-            self.history_stash = None;
-            self.mark_dirty(now);
+        if text == self.draft.text {
+            return;
         }
+        let cursor = self.cursor_char();
+        let reconciled =
+            chips::reconcile(&self.draft.text, &text, &self.draft.mentions, Some(cursor));
+        if reconciled.removed_leftovers {
+            let cursor = reconciled.cursor.unwrap_or(char_len(&reconciled.text));
+            self.reset_text(&reconciled.text, cursor);
+        }
+        self.draft = PromptDraft {
+            text: reconciled.text,
+            mentions: reconciled.mentions,
+            attachments: std::mem::take(&mut self.draft.attachments),
+        };
+        self.history_index = None;
+        self.history_stash = None;
+        self.mark_dirty(now);
     }
 
     pub fn begin_queued_edit(
@@ -358,6 +556,7 @@ impl Composer {
                 ComposerKey::Edited
             }
             KeyCode::Char('s') if ctrl && !alt => ComposerKey::Steer,
+            KeyCode::Char('o') if ctrl && !alt => ComposerKey::Unhandled,
             KeyCode::Char('c') if ctrl && !alt => ComposerKey::Interrupt,
             KeyCode::Esc => ComposerKey::Escape,
             KeyCode::Up if !ctrl && !alt && !shift => {
@@ -369,6 +568,7 @@ impl Composer {
                     return ComposerKey::Handled;
                 }
                 self.textarea.input(key);
+                self.snap_cursor(true);
                 ComposerKey::Handled
             }
             KeyCode::Down if !ctrl && !alt && !shift => {
@@ -377,17 +577,23 @@ impl Composer {
                     return ComposerKey::Handled;
                 }
                 self.textarea.input(key);
+                self.snap_cursor(false);
                 ComposerKey::Handled
             }
             KeyCode::Tab | KeyCode::BackTab => ComposerKey::Unhandled,
             KeyCode::Char(_) if alt && !ctrl => ComposerKey::Unhandled,
             KeyCode::F(_) => ComposerKey::Unhandled,
             _ => {
+                let before = self.cursor_char();
                 let modified = self.textarea.input(key);
                 if modified {
                     self.sync(now);
                     ComposerKey::Edited
                 } else {
+                    let after = self.cursor_char();
+                    self.snap_cursor(
+                        after < before || (after == before && is_backward_motion(&key)),
+                    );
                     ComposerKey::Handled
                 }
             }

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bb_store::{ConnectionState, ResourceKey, StoreSnapshot, TurnDetailsKey};
-use bb_wire::plugin::PluginCliContribution;
+use bb_wire::plugin::{PluginCliContribution, PluginMentionProviderContribution};
+use bb_wire::project::{ProviderCommand, UploadedPromptAttachment};
 use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
 use bb_wire::system::{
     AppKeybindingOverride, SystemExecutionOptionsQuery, SystemExecutionOptionsResponse,
@@ -14,6 +15,7 @@ use bb_wire::timeline::TimelineRow;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::api::{Mutation, MutationReply};
+use crate::attach::UploadRequest;
 use crate::compose::{
     Inflight, Picker, composer_command, composer_mutation_finished, composer_snapshot,
     composer_tick, handle_composer_key, handle_picker_key, handle_queue_key, history_loaded, paste,
@@ -34,6 +36,9 @@ use crate::palette::{
 use crate::prompt::PromptDraft;
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
 use crate::timeline::{LoadRequest, TimelineView};
+use crate::typeahead::{
+    CommandCatalogKey, ComposerTarget, Typeahead, TypeaheadLoaded, TypeaheadRequest,
+};
 
 pub const INFO_TOAST_TTL: Duration = Duration::from_secs(4);
 pub const ERROR_TOAST_TTL: Duration = Duration::from_secs(8);
@@ -66,6 +71,14 @@ pub enum Mode {
     Picker(Picker),
     Queue {
         thread_id: String,
+        selected: usize,
+    },
+    AttachPrompt {
+        target: ComposerTarget,
+        input: LineInput,
+    },
+    Attachments {
+        target: ComposerTarget,
         selected: usize,
     },
 }
@@ -132,6 +145,12 @@ pub enum Action {
         generation: u64,
         loaded: PaletteLoaded,
     },
+    TypeaheadLoaded(TypeaheadLoaded),
+    AttachmentUploaded {
+        target: ComposerTarget,
+        path: std::path::PathBuf,
+        result: Result<UploadedPromptAttachment, String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,6 +189,8 @@ pub enum Effect {
         request: PaletteRequest,
     },
     SavePaletteRecents(Vec<String>),
+    Typeahead(TypeaheadRequest),
+    Upload(UploadRequest),
     Quit,
 }
 
@@ -200,6 +221,9 @@ pub struct AppState {
     pub palette_recents: Vec<String>,
     pub plugin_contributions: Option<Vec<PluginCliContribution>>,
     pub result_pane: Option<ResultPane>,
+    pub typeahead: Option<Typeahead>,
+    pub mention_providers: Load<Vec<PluginMentionProviderContribution>>,
+    pub command_catalogs: HashMap<CommandCatalogKey, Load<Vec<ProviderCommand>>>,
     pub stop_requested: HashSet<String>,
     pub history_requested: HashSet<String>,
     pub submit_key: SubmitKey,
@@ -246,6 +270,9 @@ impl AppState {
             palette_recents: Vec::new(),
             plugin_contributions: None,
             result_pane: None,
+            typeahead: None,
+            mention_providers: Load::Idle,
+            command_catalogs: HashMap::new(),
             stop_requested: HashSet::new(),
             history_requested: HashSet::new(),
             submit_key: SubmitKey::default(),
@@ -727,15 +754,32 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             history_loaded(state, &thread_id, result);
             Vec::new()
         }
-        Action::Paste(text) if state.focus == Focus::NewThread => {
-            new_thread_paste(state, &text);
-            Vec::new()
+        Action::Paste(text) => {
+            if let Some(effects) = crate::compose::paste_attachments(state, &text) {
+                return effects;
+            }
+            let mut effects = if state.focus == Focus::NewThread {
+                new_thread_paste(state, &text);
+                Vec::new()
+            } else {
+                paste(state, &text)
+            };
+            effects.extend(sync_active_typeahead(state));
+            effects
         }
-        Action::Paste(text) => paste(state, &text),
         Action::NewThreadLoaded { generation, loaded } => {
             state.new_thread_loaded(generation, loaded)
         }
         Action::PaletteLoaded { generation, loaded } => state.palette_loaded(generation, loaded),
+        Action::TypeaheadLoaded(loaded) => state.typeahead_loaded(loaded),
+        Action::AttachmentUploaded {
+            target,
+            path,
+            result,
+        } => {
+            state.attachment_uploaded(target, path, result);
+            Vec::new()
+        }
     }
 }
 
@@ -753,12 +797,34 @@ fn is_palette_chord(state: &AppState, key: &KeyEvent) -> Option<Command> {
         .filter(|command| matches!(command, Command::PaletteOpen | Command::QuickOpen))
 }
 
+fn sync_active_typeahead(state: &mut AppState) -> Vec<Effect> {
+    match state.active_composer_target() {
+        Some(target) if state.mode == Mode::Normal => state.sync_typeahead(&target),
+        _ => {
+            state.typeahead = None;
+            Vec::new()
+        }
+    }
+}
+
 fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+    let mut effects = dispatch_key(state, key);
+    effects.extend(sync_active_typeahead(state));
+    effects
+}
+
+fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     if state.result_pane.is_some() {
         return handle_pane_key(state, key);
     }
     if state.palette.is_some() {
         return handle_palette_key(state, key);
+    }
+    if state.mode == Mode::Normal
+        && let Some(target) = state.active_composer_target()
+        && let Some(effects) = crate::typeahead::handle_typeahead_key(state, &target, &key)
+    {
+        return effects;
     }
     if state.mode == Mode::Normal
         && matches!(
@@ -784,6 +850,12 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 return Vec::new();
             }
             handle_queue_key(state, thread_id, selected, key)
+        }
+        Mode::AttachPrompt { target, input } => {
+            crate::compose::handle_attach_prompt_key(state, target, input, key)
+        }
+        Mode::Attachments { target, selected } => {
+            crate::compose::handle_attachments_key(state, target, selected, key)
         }
         Mode::Normal if state.focus == Focus::NewThread => handle_new_thread_key(state, key),
         Mode::Normal if state.focus == Focus::Interaction => handle_interaction_key(state, key),
@@ -1092,6 +1164,8 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         | Command::CycleReasoning
         | Command::CycleReasoningBackward
         | Command::QueueList
+        | Command::AttachFile
+        | Command::Attachments
         | Command::ToggleSubmitMode => {}
     }
     Vec::new()

@@ -14,15 +14,18 @@ use bb_wire::project::WorkspacePathsQuery;
 use bb_wire::system::SystemEnvironmentProvidersQuery;
 use bb_wire::thread::ThreadSearchQuery;
 
-use crate::api::Api;
+use crate::api::{Api, AttachmentUpload};
 use crate::app::{Action, AppState, Effect, ToastLevel, update};
+use crate::attach::{ATTACHMENT_MAX_BYTES, UploadRequest, file_name, mime_type_for};
 use crate::new_thread::{NewThreadLoaded, NewThreadRequest};
 use crate::palette::{
     FILE_SEARCH_LIMIT, PaletteLoaded, PaletteRequest, THREAD_SEARCH_LIMIT_PER_GROUP,
 };
 use crate::platform::Platform;
 use crate::time::now_ms;
+use crate::typeahead::{TypeaheadLoaded, TypeaheadRequest};
 use crate::ui;
+use bb_wire::project::UploadedPromptAttachment;
 
 pub const TICK: Duration = Duration::from_millis(200);
 
@@ -178,6 +181,36 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                     previous.abort();
                 }
             }
+            Effect::Typeahead(request) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                let slot = request.slot();
+                let delay = request.debounce();
+                let task = tokio::spawn(async move {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    let loaded = run_typeahead_request(api.as_ref(), request).await;
+                    let _ = tx.send(Action::TypeaheadLoaded(loaded));
+                });
+                if let Some(slot) = slot
+                    && let Some(previous) = self.palette_tasks.insert(slot, task)
+                {
+                    previous.abort();
+                }
+            }
+            Effect::Upload(request) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = upload_attachment(api.as_ref(), &request).await;
+                    let _ = tx.send(Action::AttachmentUploaded {
+                        target: request.target,
+                        path: request.path,
+                        result,
+                    });
+                });
+            }
             Effect::SavePaletteRecents(recents) => {
                 if let Err(error) = self.platform.save_palette_recents(&recents) {
                     tracing::debug!(%error, "failed to save palette recents");
@@ -275,6 +308,78 @@ pub async fn run_palette_request<A: Api>(api: &A, request: PaletteRequest) -> Pa
             PaletteLoaded::Cli { label, result }
         }
     }
+}
+
+pub async fn run_typeahead_request<A: Api>(api: &A, request: TypeaheadRequest) -> TypeaheadLoaded {
+    let paths_query = |query: &str| WorkspacePathsQuery {
+        host_id: None,
+        environment_id: None,
+        query: Some(query.to_owned()),
+        limit: Some(TypeaheadRequest::path_limit()),
+        include_files: true,
+        include_directories: true,
+    };
+    match request {
+        TypeaheadRequest::MentionProviders => {
+            TypeaheadLoaded::MentionProviders(api.mention_providers().await)
+        }
+        TypeaheadRequest::WorkspacePaths { source, query } => {
+            let result = api.workspace_paths(source, paths_query(&query)).await;
+            TypeaheadLoaded::WorkspacePaths { query, result }
+        }
+        TypeaheadRequest::StoragePaths { thread_id, query } => {
+            let result = api
+                .thread_storage_paths(thread_id, paths_query(&query))
+                .await;
+            TypeaheadLoaded::StoragePaths { query, result }
+        }
+        TypeaheadRequest::PluginMentions(search) => {
+            let trigger = search.trigger.clone();
+            let query = search.q.clone();
+            let result = api.plugin_mentions(search).await;
+            TypeaheadLoaded::PluginMentions {
+                trigger,
+                query,
+                result,
+            }
+        }
+        TypeaheadRequest::Commands(key) => {
+            let result = api
+                .project_commands(key.project_id.clone(), key.query())
+                .await;
+            TypeaheadLoaded::Commands { key, result }
+        }
+    }
+}
+
+pub async fn upload_attachment<A: Api>(
+    api: &A,
+    request: &UploadRequest,
+) -> Result<UploadedPromptAttachment, String> {
+    let path = request.path.clone();
+    let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
+        let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("not a regular file".into());
+        }
+        if metadata.len() > ATTACHMENT_MAX_BYTES {
+            return Err(format!(
+                "{:.1}MB is over the {}MB attachment limit",
+                metadata.len() as f64 / (1024.0 * 1024.0),
+                ATTACHMENT_MAX_BYTES / (1024 * 1024)
+            ));
+        }
+        std::fs::read(&path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    api.upload_attachment(AttachmentUpload {
+        project_id: request.project_id.clone(),
+        file_name: file_name(&request.path),
+        mime_type: mime_type_for(&request.path),
+        bytes,
+    })
+    .await
 }
 
 pub fn terminal_action(event: std::io::Result<Event>) -> Option<Action> {

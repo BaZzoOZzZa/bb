@@ -790,3 +790,182 @@ async fn renders_live_palette_read_only() {
         keys(&mut state, &client, vec![esc]).await;
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only GET requests only"]
+async fn renders_live_mentions_read_only() {
+    use bb_tui::app::{Effect, Focus};
+    use bb_tui::runtime::run_typeahead_request;
+    use bb_tui::typeahead::MenuState;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let store = Store::spawn(
+        Arc::new(client.clone()),
+        NoRealtime,
+        None,
+        StoreConfig::default(),
+    );
+    let _interest = store.watch_sidebar();
+    let mut rx = store.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while rx.borrow_and_update().sidebar.data.is_none() {
+            rx.changed().await.expect("store");
+        }
+    })
+    .await
+    .expect("sidebar loaded");
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    state.read_only = true;
+    update(&mut state, Action::Snapshot(store.snapshot()));
+
+    async fn drive(state: &mut AppState, client: &BbClient, effects: Vec<Effect>) {
+        let mut pending = effects;
+        while !pending.is_empty() {
+            for effect in std::mem::take(&mut pending) {
+                match effect {
+                    Effect::Typeahead(request) => {
+                        let loaded = run_typeahead_request(client, request).await;
+                        pending.extend(update(state, Action::TypeaheadLoaded(loaded)));
+                    }
+                    Effect::FetchExecutionOptions { thread_id, query } => {
+                        let result = client.execution_options(query).await;
+                        pending.extend(update(
+                            state,
+                            Action::ExecutionOptionsLoaded { thread_id, result },
+                        ));
+                    }
+                    Effect::FetchDefaults(thread_id) => {
+                        let result = client.default_execution_options(thread_id.clone()).await;
+                        pending.extend(update(state, Action::DefaultsLoaded { thread_id, result }));
+                    }
+                    Effect::Mutate(mutation) => panic!("live test must not mutate: {mutation:?}"),
+                    Effect::Upload(request) => panic!("live test must not upload: {request:?}"),
+                    Effect::OpenExternal(target) => panic!("live test must not open {target}"),
+                    _ => {}
+                }
+            }
+        }
+    }
+    async fn keys(state: &mut AppState, client: &BbClient, events: Vec<KeyEvent>) {
+        for event in events {
+            let effects = update(state, Action::Key(event));
+            drive(state, client, effects).await;
+        }
+    }
+    fn text(value: &str) -> Vec<KeyEvent> {
+        value
+            .chars()
+            .map(|ch| KeyEvent::from(KeyCode::Char(ch)))
+            .collect()
+    }
+    fn print(state: &AppState, label: &str) {
+        if std::env::var_os("BB_TUI_LIVE_PRINT").is_none() {
+            return;
+        }
+        println!("--- {label}");
+        for line in render_lines(state, 120, 30) {
+            println!("{line}");
+        }
+    }
+    fn menu_summary(state: &AppState) -> String {
+        match state.typeahead.as_ref().map(|typeahead| &typeahead.menu) {
+            Some(MenuState::Mentions(ordered)) => format!(
+                "{} mentions in {:?}",
+                ordered.len(),
+                ordered
+                    .groups
+                    .iter()
+                    .map(|group| group.label.as_str())
+                    .collect::<Vec<_>>()
+            ),
+            Some(MenuState::Commands(ordered)) => format!(
+                "{} commands in {:?}",
+                ordered.len(),
+                ordered
+                    .groups
+                    .iter()
+                    .map(|group| group.label.as_str())
+                    .collect::<Vec<_>>()
+            ),
+            Some(other) => format!("{other:?}"),
+            None => "closed".into(),
+        }
+    }
+
+    let with_environment = state.rows.iter().position(|row| {
+        row.thread().is_some_and(|thread| {
+            state.sidebar_entry(&thread.id).is_some_and(|entry| {
+                entry.thread.environment_id.is_some() && !entry.thread.is_archived()
+            })
+        })
+    });
+    let Some(index) = with_environment else {
+        println!("no thread with an environment; skipping");
+        return;
+    };
+    state.selected = index;
+    state.focus = Focus::Sidebar;
+    keys(&mut state, &client, vec![KeyEvent::from(KeyCode::Enter)]).await;
+    keys(
+        &mut state,
+        &client,
+        vec![KeyEvent::from(KeyCode::Char('c'))],
+    )
+    .await;
+    assert_eq!(state.focus, Focus::Composer);
+    println!("mention triggers loaded: {:?}", state.mention_providers);
+
+    let word = state
+        .snapshot
+        .sidebar_threads()
+        .filter_map(|entry| entry.thread.title.clone())
+        .flat_map(|title| {
+            title
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .find(|word| word.chars().count() >= 4 && word.chars().all(char::is_alphanumeric))
+        .unwrap_or_else(|| "read".into());
+    let query: String = word.chars().take(4).collect();
+    keys(&mut state, &client, text(&format!("Привет 😀 @{query}"))).await;
+    println!("@{query}: {}", menu_summary(&state));
+    print(&state, "mention");
+    let has_items = state
+        .typeahead
+        .as_ref()
+        .is_some_and(|typeahead| !typeahead.menu.is_empty());
+    if has_items {
+        keys(&mut state, &client, vec![KeyEvent::from(KeyCode::Tab)]).await;
+        let composer = state.composer().expect("composer");
+        let mention = composer.draft().mentions.first().expect("mention chip");
+        assert_eq!(mention.start, 10);
+        println!(
+            "inserted {:?} as {}..{}",
+            composer.text(),
+            mention.start,
+            mention.end
+        );
+        print(&state, "chip");
+    }
+    keys(&mut state, &client, text(" /")).await;
+    println!("/: {}", menu_summary(&state));
+    print(&state, "commands");
+    keys(&mut state, &client, vec![KeyEvent::from(KeyCode::Esc)]).await;
+    let composer = state.composer().expect("composer");
+    let raw = composer.persisted_draft().serialize();
+    println!("draft json: {raw:?}");
+}

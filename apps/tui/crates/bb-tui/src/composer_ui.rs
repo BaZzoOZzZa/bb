@@ -14,6 +14,7 @@ use crate::prompt::{
     BlockedReason, SubmitMode, fallback_model_label, format_queued_message_preview,
     waiting_on_label,
 };
+use crate::typeahead::ComposerTarget;
 use crate::ui::truncate;
 use crate::wrap::truncate_spans;
 
@@ -289,8 +290,12 @@ pub fn editor_height(state: &AppState, thread_id: &str, width: usize) -> usize {
 }
 
 pub fn composer_height(state: &AppState, thread_id: &str, width: usize) -> u16 {
+    let attachments = state.composers.get(thread_id).is_some_and(|composer| {
+        !composer.draft().attachments.is_empty() || !composer.uploads.is_empty()
+    });
     let total = banner_lines(state, thread_id, width).len()
         + queue_lines(state, thread_id, width).len()
+        + usize::from(attachments)
         + 1
         + editor_height(state, thread_id, width.saturating_sub(1))
         + 1;
@@ -456,15 +461,21 @@ pub fn render_composer(state: &AppState, frame: &mut Frame, area: Rect, thread_i
     let banners = banner_lines(state, thread_id, width);
     let queue = queue_lines(state, thread_id, width);
     let editor = editor_height(state, thread_id, width.saturating_sub(1)) as u16;
+    let attachments = state
+        .composers
+        .get(thread_id)
+        .and_then(|composer| crate::typeahead_ui::attachment_line(state, composer, width));
     let [
         banner_area,
         queue_area,
+        attachment_area,
         border_area,
         editor_area,
         footer_area,
     ] = Layout::vertical([
         Constraint::Length(banners.len() as u16),
         Constraint::Length(queue.len() as u16),
+        Constraint::Length(u16::from(attachments.is_some())),
         Constraint::Length(1),
         Constraint::Min(editor.min(area.height.saturating_sub(2))),
         Constraint::Length(1),
@@ -491,12 +502,17 @@ pub fn render_composer(state: &AppState, frame: &mut Frame, area: Rect, thread_i
         border_area,
     );
     if let Some(composer) = state.composers.get(thread_id) {
+        crate::typeahead_ui::render_editor(composer, focused, frame, editor_area);
+        if let Some(line) = attachments {
+            frame.render_widget(Paragraph::new(line), attachment_area);
+        }
         if focused {
-            frame.render_widget(composer.textarea(), editor_area);
-        } else {
-            let mut textarea = composer.textarea().clone();
-            textarea.set_cursor_style(Style::default());
-            frame.render_widget(&textarea, editor_area);
+            crate::typeahead_ui::render_typeahead(
+                state,
+                &ComposerTarget::Thread(thread_id.to_owned()),
+                frame,
+                editor_area,
+            );
         }
     }
     frame.render_widget(

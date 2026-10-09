@@ -198,10 +198,21 @@ pub fn render_form(state: &AppState, form: &NewThreadForm, frame: &mut Frame, ar
     lines.push(status);
     let header = lines.len() as u16;
     let editor = (form.composer.line_count().clamp(3, MAX_EDITOR_LINES)) as u16;
-    let [fields_area, border_area, editor_area, _] = Layout::vertical([
-        Constraint::Length(header.min(inner.height.saturating_sub(2))),
+    let attachments =
+        crate::typeahead_ui::attachment_line(state, &form.composer, usize::from(inner.width));
+    let attachment_rows = u16::from(attachments.is_some());
+    let [fields_area, attachment_area, border_area, editor_area, _] = Layout::vertical([
+        Constraint::Length(header.min(inner.height.saturating_sub(2 + attachment_rows))),
+        Constraint::Length(attachment_rows),
         Constraint::Length(1),
-        Constraint::Min(editor.min(inner.height.saturating_sub(header + 1).max(1))),
+        Constraint::Min(
+            editor.min(
+                inner
+                    .height
+                    .saturating_sub(header + 1 + attachment_rows)
+                    .max(1),
+            ),
+        ),
         Constraint::Fill(1),
     ])
     .areas(inner);
@@ -232,12 +243,17 @@ pub fn render_form(state: &AppState, form: &NewThreadForm, frame: &mut Frame, ar
             )),
         border_area,
     );
+    crate::typeahead_ui::render_editor(&form.composer, prompt_focused, frame, editor_area);
+    if let Some(line) = attachments {
+        frame.render_widget(Paragraph::new(line), attachment_area);
+    }
     if prompt_focused {
-        frame.render_widget(form.composer.textarea(), editor_area);
-    } else {
-        let mut textarea = form.composer.textarea().clone();
-        textarea.set_cursor_style(Style::default());
-        frame.render_widget(&textarea, editor_area);
+        crate::typeahead_ui::render_typeahead(
+            state,
+            &crate::typeahead::ComposerTarget::NewThread,
+            frame,
+            editor_area,
+        );
     }
 }
 

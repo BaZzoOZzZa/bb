@@ -448,6 +448,8 @@ const COMMAND_ENTRIES: &[CommandEntry] = &[
     ),
     entry(Command::StopTurn, COMPOSER, "Stop the running turn", true),
     entry(Command::QueueList, COMPOSER, "Queued messages", true),
+    entry(Command::AttachFile, COMPOSER, "Attach file", false),
+    entry(Command::Attachments, COMPOSER, "Remove attachment", false),
     entry(
         Command::ToggleSubmitMode,
         COMPOSER,

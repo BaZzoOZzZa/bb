@@ -116,6 +116,7 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     if let Mode::Picker(picker) = &state.mode {
         composer_ui::render_picker(picker, frame, area);
     }
+    crate::typeahead_ui::render_attach_modes(state, frame, area);
     if let Some(form) = state.new_thread_form() {
         crate::new_thread_ui::render_form_picker(form, frame, area);
     }
@@ -670,6 +671,11 @@ fn hints(state: &AppState) -> String {
         Mode::Queue { .. } => {
             "j/k select · Enter/e edit · s send now · r retry · d delete · Esc close".into()
         }
+        Mode::AttachPrompt { .. } => "Enter attach · Tab complete path · Esc cancel".into(),
+        Mode::Attachments { .. } => "j/k select · d/x/Del remove · Esc close".into(),
+        Mode::Normal if state.typeahead_visible() => {
+            "↑/↓ select · Enter/Tab insert · Esc dismiss".into()
+        }
         Mode::Normal if state.focus == Focus::NewThread && state.new_thread_form().is_some() => {
             crate::new_thread_ui::hints(
                 state.new_thread_form().expect("form"),
@@ -682,9 +688,10 @@ fn hints(state: &AppState) -> String {
             key(Command::FocusNext),
         ),
         Mode::Normal if state.focus == Focus::Composer => format!(
-            "{} send · {} newline · ↑/↓ history · C-s steer · Esc Esc stop · {} model · {} queue",
+            "{} send · {} newline · ↑/↓ history · C-s steer · Esc Esc stop · @ mention · {} attach · {} model · {} queue",
             state.submit_key.submit_label(),
             state.submit_key.newline_label(),
+            key(Command::AttachFile),
             key(Command::ModelPicker),
             key(Command::QueueList),
         ),

@@ -18,8 +18,14 @@ use bb_wire::system::{
 };
 use bb_wire::thread::{CreateThreadRequest, ThreadResponse, UpdateThreadRequest};
 
-use bb_wire::plugin::{PluginCliContribution, PluginCliRequest, PluginCliResult};
-use bb_wire::project::{WorkspacePathListResponse, WorkspacePathsQuery};
+use bb_wire::plugin::{
+    PluginCliContribution, PluginCliRequest, PluginCliResult, PluginMentionProviderContribution,
+    PluginMentionSearchGroup, PluginMentionSearchQuery,
+};
+use bb_wire::project::{
+    ProjectCommandsQuery, ProviderCommand, UploadedPromptAttachment, WorkspacePathListResponse,
+    WorkspacePathsQuery,
+};
 use bb_wire::thread::{ThreadSearchQuery, ThreadSearchResponse};
 
 use crate::new_thread::CreationConfig;
@@ -300,6 +306,63 @@ pub trait Api: Send + Sync + 'static {
         plugin_id: String,
         request: PluginCliRequest,
     ) -> ApiFuture<PluginCliResult>;
+    fn mention_providers(&self) -> ApiFuture<Vec<PluginMentionProviderContribution>> {
+        unsupported("mention providers")
+    }
+    fn plugin_mentions(
+        &self,
+        _query: PluginMentionSearchQuery,
+    ) -> ApiFuture<Vec<PluginMentionSearchGroup>> {
+        unsupported("plugin mention search")
+    }
+    fn thread_storage_paths(
+        &self,
+        _thread_id: String,
+        _query: WorkspacePathsQuery,
+    ) -> ApiFuture<WorkspacePathListResponse> {
+        unsupported("thread storage paths")
+    }
+    fn project_commands(
+        &self,
+        _project_id: String,
+        _query: ProjectCommandsQuery,
+    ) -> ApiFuture<Vec<ProviderCommand>> {
+        unsupported("project commands")
+    }
+    fn upload_attachment(&self, _upload: AttachmentUpload) -> ApiFuture<UploadedPromptAttachment> {
+        unsupported("attachment upload")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct AttachmentUpload {
+    pub project_id: String,
+    pub file_name: String,
+    pub mime_type: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for AttachmentUpload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttachmentUpload")
+            .field("project_id", &self.project_id)
+            .field("file_name", &self.file_name)
+            .field("mime_type", &self.mime_type)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
+fn unsupported<T: Send + 'static>(what: &'static str) -> ApiFuture<T> {
+    Box::pin(async move { Err(format!("{what} is not available")) })
+}
+
+fn plugin_error_message(error: Option<&bb_wire::plugin::PluginErrorValue>) -> String {
+    match error {
+        Some(bb_wire::plugin::PluginErrorValue::Message(message)) => message.clone(),
+        Some(other) => serde_json::to_string(other).unwrap_or_else(|_| "plugin error".into()),
+        None => "plugin mention search failed".into(),
+    }
 }
 
 pub fn creation_config_from(config: &bb_wire::system::SystemConfigResponse) -> CreationConfig {
@@ -601,6 +664,79 @@ impl Api for BbClient {
         Box::pin(async move {
             client
                 .run_plugin_cli(&plugin_id, &request)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn mention_providers(&self) -> ApiFuture<Vec<PluginMentionProviderContribution>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .plugin_contributions()
+                .await
+                .map(|response| response.mention_providers)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn plugin_mentions(
+        &self,
+        query: PluginMentionSearchQuery,
+    ) -> ApiFuture<Vec<PluginMentionSearchGroup>> {
+        let client = self.clone();
+        Box::pin(async move {
+            let response = client
+                .plugin_mention_search(&query)
+                .await
+                .map_err(|error| error.to_string())?;
+            if response.ok {
+                Ok(response.groups)
+            } else {
+                Err(plugin_error_message(response.error.as_ref()))
+            }
+        })
+    }
+
+    fn thread_storage_paths(
+        &self,
+        thread_id: String,
+        query: WorkspacePathsQuery,
+    ) -> ApiFuture<WorkspacePathListResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .thread_storage_paths(&thread_id, &query)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn project_commands(
+        &self,
+        project_id: String,
+        query: ProjectCommandsQuery,
+    ) -> ApiFuture<Vec<ProviderCommand>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .project_commands(&project_id, &query)
+                .await
+                .map(|response| response.commands)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn upload_attachment(&self, upload: AttachmentUpload) -> ApiFuture<UploadedPromptAttachment> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .upload_project_attachment(
+                    &upload.project_id,
+                    &upload.file_name,
+                    upload.mime_type.as_deref(),
+                    upload.bytes,
+                )
                 .await
                 .map_err(|error| error.to_string())
         })

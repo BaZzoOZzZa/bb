@@ -655,6 +655,13 @@ impl PromptDraft {
         }
     }
 
+    pub fn with_attachments(self, source: &PromptDraft) -> Self {
+        Self {
+            attachments: source.attachments.clone(),
+            ..self
+        }
+    }
+
     pub fn with_text(&self, text: String) -> Self {
         let mentions = relocate_mentions(&self.text, &text, &self.mentions);
         Self {

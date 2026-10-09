@@ -1544,6 +1544,11 @@ fn picker_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn form_command(state: &mut AppState, command: Command) -> Option<Vec<Effect>> {
+    match command {
+        Command::AttachFile => return Some(state.open_attach_prompt()),
+        Command::Attachments => return Some(state.open_attachment_list()),
+        _ => {}
+    }
     let field = match command {
         Command::ModelPicker => FormField::Model,
         Command::ReasoningPicker => FormField::Reasoning,
@@ -1561,7 +1566,15 @@ fn prompt_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         return Vec::new();
     };
     match form.composer.handle_key(key, submit_key, now) {
-        ComposerKey::Submit | ComposerKey::Steer => state.submit_new_thread(),
+        ComposerKey::Submit | ComposerKey::Steer => {
+            match crate::compose::take_attach_command(
+                state,
+                &crate::typeahead::ComposerTarget::NewThread,
+            ) {
+                Some(effects) => effects,
+                None => state.submit_new_thread(),
+            }
+        }
         ComposerKey::Escape => {
             form.prompt_active = false;
             Vec::new()

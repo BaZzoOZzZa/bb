@@ -9,12 +9,16 @@ use bb_wire::queue::{
 use bb_wire::system::SystemExecutionOptionsQuery;
 use bb_wire::thread::{ThreadDisplayStatus, ThreadStatus};
 use bb_wire::timeline::{ModelFallback, ThreadTimelineResponse};
+use std::path::Path;
+
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::api::{Mutation, MutationReply};
 use crate::app::{AppState, Effect, Focus, Mode, ToastLevel};
+use crate::attach::{attach_command_argument, complete_path, list_dir, pasted_file_paths};
 use crate::composer::{Composer, ComposerKey, EDIT_HOLD_RENEWALS_PER_LEASE, EDIT_HOLD_RETRY};
 use crate::execution::{ExecutionState, Load, PickerOption, ResolvedExecution};
+use crate::input::{InputOutcome, LineInput};
 use crate::keymap::{Command, Keymap};
 use crate::prompt::{
     ExecutionSelection, PromptDraft, ShortcutInputs, ShortcutRequest, SubmitMode, SubmitModeInputs,
@@ -23,6 +27,7 @@ use crate::prompt::{
     can_submit_follow_up_shortcut, cycle_reasoning_value, cycle_value, history_drafts, placeholder,
     queued_input_to_draft, should_queue_follow_up, should_steer_when_ready,
 };
+use crate::typeahead::ComposerTarget;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inflight {
@@ -721,6 +726,8 @@ pub(crate) fn composer_command(state: &mut AppState, command: Command) -> Option
             }
             Vec::new()
         }
+        Command::AttachFile => state.open_attach_prompt(),
+        Command::Attachments => state.open_attachment_list(),
         Command::ToggleSubmitMode => {
             state.enter_steers = !state.enter_steers;
             let message = if state.enter_steers {
@@ -764,7 +771,13 @@ pub(crate) fn handle_composer_key(state: &mut AppState, key: KeyEvent) -> Vec<Ef
         return Vec::new();
     };
     match composer.handle_key(key, submit_key, now) {
-        ComposerKey::Submit => state.submit(false),
+        ComposerKey::Submit => {
+            let target = ComposerTarget::Thread(thread_id.clone());
+            match take_attach_command(state, &target) {
+                Some(effects) => effects,
+                None => state.submit(false),
+            }
+        }
         ComposerKey::Steer => state.submit(true),
         ComposerKey::Escape => {
             if composer.editing.is_some() {
@@ -1179,6 +1192,137 @@ pub(crate) fn history_loaded(
         }
         Err(error) => tracing::debug!(%error, thread_id, "prompt history unavailable"),
     }
+}
+
+pub(crate) fn take_attach_command(
+    state: &mut AppState,
+    target: &ComposerTarget,
+) -> Option<Vec<Effect>> {
+    let now = state.clock;
+    let composer = state.composer_for_mut(target)?;
+    if composer.editing.is_some() || !composer.draft().mentions.is_empty() {
+        return None;
+    }
+    let argument = attach_command_argument(&composer.draft().text)?.to_owned();
+    if argument.is_empty() {
+        composer.set_draft(
+            PromptDraft::default().with_attachments(composer.draft()),
+            now,
+        );
+        return Some(state.open_attach_prompt());
+    }
+    if state.read_only {
+        state.toast(
+            "Read-only mode: cannot upload attachments",
+            ToastLevel::Error,
+        );
+        return Some(Vec::new());
+    }
+    let single = crate::attach::normalize_path_word(&argument).filter(|path| path.is_file());
+    let paths = match single
+        .map(|path| vec![path])
+        .or_else(|| crate::attach::parse_path_list(&argument))
+    {
+        Some(paths) => paths,
+        None => {
+            state.toast(
+                "Give an absolute path (or ~/…) to attach",
+                ToastLevel::Error,
+            );
+            return Some(Vec::new());
+        }
+    };
+    if let Some(composer) = state.composer_for_mut(target) {
+        composer.set_draft(
+            PromptDraft::default().with_attachments(composer.draft()),
+            now,
+        );
+    }
+    Some(state.attach_paths(target, paths))
+}
+
+pub(crate) fn paste_attachments(state: &mut AppState, text: &str) -> Option<Vec<Effect>> {
+    let target = state.active_composer_target()?;
+    let paths = pasted_file_paths(text, Path::is_file)?;
+    Some(state.attach_paths(&target, paths))
+}
+
+pub(crate) fn handle_attach_prompt_key(
+    state: &mut AppState,
+    target: ComposerTarget,
+    mut input: LineInput,
+    key: KeyEvent,
+) -> Vec<Effect> {
+    if key.code == KeyCode::Tab {
+        if let Some(completed) = complete_path(input.text(), list_dir) {
+            input = LineInput::new(completed);
+        }
+        state.mode = Mode::AttachPrompt { target, input };
+        return Vec::new();
+    }
+    match input.handle_key(key) {
+        InputOutcome::Submit => {
+            let text = input.text().trim().to_owned();
+            if text.is_empty() {
+                return Vec::new();
+            }
+            state.attach_from_text(&target, &text)
+        }
+        InputOutcome::Cancel => Vec::new(),
+        _ => {
+            state.mode = Mode::AttachPrompt { target, input };
+            Vec::new()
+        }
+    }
+}
+
+pub(crate) fn handle_attachments_key(
+    state: &mut AppState,
+    target: ComposerTarget,
+    selected: usize,
+    key: KeyEvent,
+) -> Vec<Effect> {
+    let now = state.clock;
+    let count = state
+        .composer_for(&target)
+        .map_or(0, |composer| composer.draft().attachments.len());
+    if count == 0 {
+        return Vec::new();
+    }
+    let selected = selected.min(count - 1);
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => return Vec::new(),
+        KeyCode::Down | KeyCode::Char('j') => {
+            state.mode = Mode::Attachments {
+                target,
+                selected: (selected + 1).min(count - 1),
+            };
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            state.mode = Mode::Attachments {
+                target,
+                selected: selected.saturating_sub(1),
+            };
+        }
+        KeyCode::Char('d' | 'x') | KeyCode::Delete | KeyCode::Backspace => {
+            let removed = state
+                .composer_for_mut(&target)
+                .and_then(|composer| composer.remove_attachment(selected, now));
+            if let Some(removed) = removed {
+                state.toast(format!("Removed {}", removed.name), ToastLevel::Info);
+            }
+            if count > 1 {
+                state.mode = Mode::Attachments {
+                    target,
+                    selected: selected.min(count - 2),
+                };
+            }
+        }
+        _ => {
+            state.mode = Mode::Attachments { target, selected };
+        }
+    }
+    Vec::new()
 }
 
 pub(crate) fn paste(state: &mut AppState, text: &str) -> Vec<Effect> {

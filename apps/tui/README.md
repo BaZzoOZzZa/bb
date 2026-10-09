@@ -91,6 +91,47 @@ Unsent drafts are saved per thread under `$XDG_STATE_HOME/bb-tui/drafts`
 insert a new line and `Alt-Enter`/`C-Enter` send. Bracketed paste and the kitty
 keyboard protocol are enabled when the terminal supports them.
 
+## Mentions and attachments
+
+The composer and the new-thread prompt complete mentions like the web
+promptbox (`client-core/src/prompt/mentions`):
+
+| Trigger | Completes | Source |
+|---|---|---|
+| `@` | workspace files and folders, thread-storage files, threads, projects, sections, plugin items | `GET /environments/:id/paths` (or `/projects/:id/paths`), `GET /threads/:id/thread-storage/paths`, the sidebar, `GET /plugins/mentions/search` |
+| `#`, `$`, `!`, `~` | plugin items of mention providers that registered the trigger | `GET /plugins/contributions` (`mentionProviders`), `GET /plugins/mentions/search?trigger=` |
+| `/`, `$` | provider commands and skills, plus the provider's plan/goal prompt actions (`$` lists skills only) | `GET /projects/:id/commands?provider=` with the thread's environment |
+
+A trigger opens after whitespace or `(`, `[`, `{`; `@` queries may contain
+spaces. The popup groups and ranks results like the web menu (exact, prefix,
+substring, then supporting-text matches; paths first when the query contains
+`/`). Path and plugin searches wait 120 ms after the last keystroke and cancel
+the previous request. `↑`/`↓` or `C-n`/`C-p` move, `Enter`/`Tab` insert, `Esc`
+dismisses until the cursor leaves the trigger; with no rows (hint, loading)
+`Enter` still sends. A `/` text that matches no command stays plain text.
+
+An inserted mention is a chip: its serialized text (`@src/a.rs`,
+`@thread:thr_…`, `/review`, `#Issue title`) is highlighted, the cursor jumps
+over it, and `Backspace`/`Delete` or any edit that touches it removes the whole
+chip. Mention ranges are kept and sent as `PromptTextMention` offsets in UTF-16
+code units, so emoji (surrogate pairs, ZWJ sequences, flags), Cyrillic and CJK
+text give the same `start`/`end` as the web editor.
+
+Attachments: `C-o` (or `:attach` alone on the draft, or the palette's
+"Attach file") opens a path prompt with `Tab` completion; `:attach <path…>` as
+the whole draft attaches directly (quote paths with spaces). Pasting text that
+is only existing file paths (absolute, `~/`, `file://` URIs, shell-quoted or
+escaped) attaches them instead of inserting text. Files are uploaded with
+`POST /projects/:id/attachments` (multipart field `file`, 35 MB limit checked
+before reading) and shown as chips above the editor; uploads in progress show
+as `… name`. `M-a` lists attachments: `j`/`k` select, `d`/`x`/`Del` remove.
+Drafts keep mentions and attachments in the web draft format.
+`--read-only` refuses uploads; completion only reads.
+
+Not built yet: rendering a chip with its label instead of its serialized text,
+image previews of attachments, thread-link paste conversion, and dragging
+threads into the composer.
+
 ## Pending requests
 
 When the agent waits for you, the open thread replaces the composer with a
@@ -228,6 +269,10 @@ cargo test -p bb-client --test live -- --ignored --nocapture
 cargo test -p bb-tui --test live -- --ignored --nocapture
 ```
 
+`renders_live_mentions_read_only` opens a thread with an environment, types
+an `@` mention after Cyrillic and emoji text, inserts the first result as a
+chip, opens the `/` command list and prints the draft JSON; it never sends,
+uploads or saves.
 `renders_live_palette_read_only` loads the plugin commands, runs a thread
 search for a word from a sidebar title, searches files of a thread's
 environment and previews the first match; it never runs plugin commands.

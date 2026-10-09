@@ -8,7 +8,7 @@ use bb_store::{
     Backend, FetchError, FetchResult, LatestTimeline, LoadedTimelineState, StoreSnapshot,
     TimelineEntry, TurnDetailsEntry, TurnDetailsKey,
 };
-use bb_tui::api::{Api, ApiFuture, Mutation, MutationReply};
+use bb_tui::api::{Api, ApiFuture, AttachmentUpload, Mutation, MutationReply};
 use bb_tui::app::{Action, AppState, Effect, ServerInfo, update};
 use bb_tui::new_thread::CreationConfig;
 use bb_tui::palette::FileSource;
@@ -16,11 +16,14 @@ use bb_tui::platform::Platform;
 use bb_tui::ui;
 use bb_wire::environment::{CreateThreadEnvironmentArgs, Host};
 use bb_wire::interaction::PendingInteraction;
-use bb_wire::plugin::{PluginCliContribution, PluginCliRequest, PluginCliResult};
+use bb_wire::plugin::{
+    PluginCliContribution, PluginCliRequest, PluginCliResult, PluginMentionProviderContribution,
+    PluginMentionSearchGroup, PluginMentionSearchQuery,
+};
 use bb_wire::project::{
-    Project, ProjectBranchesQuery, ProjectBranchesResponse, ProjectKind,
-    ProjectWithThreadsResponse, SidebarBootstrapResponse, WorkspacePathEntry,
-    WorkspacePathListResponse, WorkspacePathsQuery,
+    Project, ProjectBranchesQuery, ProjectBranchesResponse, ProjectCommandsQuery, ProjectKind,
+    ProjectWithThreadsResponse, ProviderCommand, SidebarBootstrapResponse, UploadedAttachmentType,
+    UploadedPromptAttachment, WorkspacePathEntry, WorkspacePathListResponse, WorkspacePathsQuery,
 };
 use bb_wire::prompt::{
     ProjectExecutionDefaults, PromptHistoryEntry, ResolvedThreadExecutionOptions,
@@ -248,6 +251,14 @@ pub struct MockApi {
     pub files: HashMap<String, Vec<u8>>,
     pub cli_runs: Mutex<Vec<(String, PluginCliRequest)>>,
     pub cli_result: PluginCliResult,
+    pub mention_providers: Vec<PluginMentionProviderContribution>,
+    pub plugin_groups: Vec<PluginMentionSearchGroup>,
+    pub plugin_queries: Mutex<Vec<PluginMentionSearchQuery>>,
+    pub storage_paths: Vec<WorkspacePathEntry>,
+    pub storage_queries: Mutex<Vec<(String, WorkspacePathsQuery)>>,
+    pub commands: Vec<ProviderCommand>,
+    pub command_queries: Mutex<Vec<(String, ProjectCommandsQuery)>>,
+    pub uploads: Mutex<Vec<AttachmentUpload>>,
 }
 
 impl MockApi {
@@ -280,6 +291,14 @@ impl MockApi {
             files: HashMap::new(),
             cli_runs: Mutex::new(Vec::new()),
             cli_result: PluginCliResult::default(),
+            mention_providers: Vec::new(),
+            plugin_groups: Vec::new(),
+            plugin_queries: Mutex::new(Vec::new()),
+            storage_paths: Vec::new(),
+            storage_queries: Mutex::new(Vec::new()),
+            commands: Vec::new(),
+            command_queries: Mutex::new(Vec::new()),
+            uploads: Mutex::new(Vec::new()),
         })
     }
 
@@ -463,6 +482,72 @@ impl Api for MockApi {
         self.cli_runs.lock().unwrap().push((plugin_id, request));
         let result = self.cli_result.clone();
         Box::pin(async move { Ok(result) })
+    }
+
+    fn mention_providers(&self) -> ApiFuture<Vec<PluginMentionProviderContribution>> {
+        let providers = self.mention_providers.clone();
+        Box::pin(async move { Ok(providers) })
+    }
+
+    fn plugin_mentions(
+        &self,
+        query: PluginMentionSearchQuery,
+    ) -> ApiFuture<Vec<PluginMentionSearchGroup>> {
+        self.plugin_queries.lock().unwrap().push(query);
+        let groups = self.plugin_groups.clone();
+        Box::pin(async move { Ok(groups) })
+    }
+
+    fn thread_storage_paths(
+        &self,
+        thread_id: String,
+        query: WorkspacePathsQuery,
+    ) -> ApiFuture<WorkspacePathListResponse> {
+        self.storage_queries
+            .lock()
+            .unwrap()
+            .push((thread_id, query));
+        let paths = self.storage_paths.clone();
+        Box::pin(async move {
+            Ok(WorkspacePathListResponse {
+                paths,
+                ..WorkspacePathListResponse::default()
+            })
+        })
+    }
+
+    fn project_commands(
+        &self,
+        project_id: String,
+        query: ProjectCommandsQuery,
+    ) -> ApiFuture<Vec<ProviderCommand>> {
+        self.command_queries
+            .lock()
+            .unwrap()
+            .push((project_id, query));
+        let commands = self.commands.clone();
+        Box::pin(async move { Ok(commands) })
+    }
+
+    fn upload_attachment(&self, upload: AttachmentUpload) -> ApiFuture<UploadedPromptAttachment> {
+        let response = UploadedPromptAttachment {
+            source_project_id: Some(upload.project_id.clone()),
+            attachment_type: if upload
+                .mime_type
+                .as_deref()
+                .is_some_and(|mime| mime.starts_with("image/"))
+            {
+                UploadedAttachmentType::LocalImage
+            } else {
+                UploadedAttachmentType::LocalFile
+            },
+            path: format!("attachments/{}", upload.file_name),
+            name: upload.file_name.clone(),
+            mime_type: upload.mime_type.clone(),
+            size_bytes: upload.bytes.len() as u64,
+        };
+        self.uploads.lock().unwrap().push(upload);
+        Box::pin(async move { Ok(response) })
     }
 }
 
