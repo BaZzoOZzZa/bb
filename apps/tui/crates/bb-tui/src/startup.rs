@@ -12,6 +12,12 @@ use bb_client::{
 use clap::{Parser, Subcommand};
 
 use crate::app::ServerInfo;
+use crate::composer::SubmitKey;
+
+fn parse_submit_key(value: &str) -> Result<SubmitKey, String> {
+    SubmitKey::parse(value)
+        .ok_or_else(|| format!("expected `enter` or `ctrl-enter`, got `{value}`"))
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "bb-tui", version, about = "Terminal client for bb")]
@@ -28,6 +34,14 @@ pub struct Args {
         help = "Never send changes to the server (no mark-read, rename, archive, pin)"
     )]
     pub read_only: bool,
+    #[arg(
+        long,
+        env = "BB_TUI_SUBMIT_KEY",
+        default_value = "enter",
+        value_parser = parse_submit_key,
+        help = "Composer send key: `enter` (Shift/Alt+Enter or Ctrl+J for a new line) or `ctrl-enter` (Enter inserts a new line, Alt/Ctrl+Enter sends)"
+    )]
+    pub submit_key: SubmitKey,
     #[command(subcommand)]
     pub command: Option<TopCommand>,
 }

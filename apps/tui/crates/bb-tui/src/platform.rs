@@ -4,14 +4,34 @@ use std::process::{Command, Stdio};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+use crate::drafts::{DraftDir, default_dir};
+
 pub trait Platform: Send + Sync + 'static {
     fn copy(&self, text: &str) -> Result<(), String>;
 
     fn open(&self, target: &str) -> Result<(), String>;
+
+    fn load_draft(&self, thread_id: &str) -> Option<String>;
+
+    fn save_draft(&self, thread_id: &str, raw: Option<&str>) -> Result<(), String>;
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemPlatform;
+#[derive(Debug, Clone, Default)]
+pub struct SystemPlatform {
+    drafts: Option<DraftDir>,
+}
+
+impl SystemPlatform {
+    pub fn new() -> Self {
+        Self {
+            drafts: default_dir().map(DraftDir::new),
+        }
+    }
+
+    pub fn with_drafts(drafts: Option<DraftDir>) -> Self {
+        Self { drafts }
+    }
+}
 
 pub fn osc52_sequence(text: &str) -> String {
     format!("\u{1b}]52;c;{}\u{7}", STANDARD.encode(text))
@@ -65,6 +85,19 @@ impl Platform for SystemPlatform {
             let _ = child.wait();
         });
         Ok(())
+    }
+
+    fn load_draft(&self, thread_id: &str) -> Option<String> {
+        self.drafts.as_ref()?.load(thread_id)
+    }
+
+    fn save_draft(&self, thread_id: &str, raw: Option<&str>) -> Result<(), String> {
+        match &self.drafts {
+            Some(drafts) => drafts
+                .save(thread_id, raw)
+                .map_err(|error| format!("{}: {error}", drafts.root().display())),
+            None => Ok(()),
+        }
     }
 }
 

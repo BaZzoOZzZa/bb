@@ -38,6 +38,17 @@ pub enum Command {
     PreviousMessage,
     Copy,
     OpenExternal,
+    FocusComposer,
+    StopTurn,
+    ModelPicker,
+    ReasoningPicker,
+    PermissionPicker,
+    CycleModel,
+    CycleModelBackward,
+    CycleReasoning,
+    CycleReasoningBackward,
+    QueueList,
+    ToggleSubmitMode,
 }
 
 impl Command {
@@ -55,6 +66,17 @@ impl Command {
         Command::PreviousMessage,
         Command::Copy,
         Command::OpenExternal,
+        Command::FocusComposer,
+        Command::StopTurn,
+        Command::QueueList,
+        Command::ToggleSubmitMode,
+        Command::ModelPicker,
+        Command::ReasoningPicker,
+        Command::PermissionPicker,
+        Command::CycleModel,
+        Command::CycleModelBackward,
+        Command::CycleReasoning,
+        Command::CycleReasoningBackward,
         Command::ThreadNext,
         Command::ThreadPrevious,
         Command::Jump(1),
@@ -107,6 +129,12 @@ impl Command {
             Self::SidebarToggle => "sidebar.toggle",
             Self::PanelToggle => "panel.toggle",
             Self::Reload => "window.reload",
+            Self::FocusComposer => "composer.focus",
+            Self::ModelPicker => "modelPicker.toggle",
+            Self::CycleModel => "modelPicker.cycleModel",
+            Self::CycleModelBackward => "modelPicker.cycleModelBackward",
+            Self::CycleReasoning => "modelPicker.cycleReasoning",
+            Self::CycleReasoningBackward => "modelPicker.cycleReasoningBackward",
             _ => return None,
         })
     }
@@ -153,6 +181,17 @@ impl Command {
             Self::PreviousMessage => "Previous user message".into(),
             Self::Copy => "Copy selected row (OSC 52)".into(),
             Self::OpenExternal => "Open link / file of selected row".into(),
+            Self::FocusComposer => "Focus the composer".into(),
+            Self::StopTurn => "Stop the running turn".into(),
+            Self::ModelPicker => "Pick model".into(),
+            Self::ReasoningPicker => "Pick reasoning level".into(),
+            Self::PermissionPicker => "Pick permission mode".into(),
+            Self::CycleModel => "Next model".into(),
+            Self::CycleModelBackward => "Previous model".into(),
+            Self::CycleReasoning => "Next reasoning level".into(),
+            Self::CycleReasoningBackward => "Previous reasoning level".into(),
+            Self::QueueList => "Queued messages (edit, delete, send now)".into(),
+            Self::ToggleSubmitMode => "Toggle Enter: queue / steer while running".into(),
         }
     }
 }
@@ -332,6 +371,20 @@ impl Default for Keymap {
             (KeyChord::ch('['), Command::PreviousMessage),
             (KeyChord::ch('y'), Command::Copy),
             (KeyChord::ch('o'), Command::OpenExternal),
+            (KeyChord::ch('c'), Command::FocusComposer),
+            (KeyChord::ch('S'), Command::StopTurn),
+            (KeyChord::alt('q'), Command::QueueList),
+            (KeyChord::alt('t'), Command::ToggleSubmitMode),
+            (KeyChord::alt('m'), Command::ModelPicker),
+            (KeyChord::alt('e'), Command::ReasoningPicker),
+            (KeyChord::alt('p'), Command::PermissionPicker),
+            (KeyChord::alt('.'), Command::CycleModel),
+            (KeyChord::alt(','), Command::CycleModelBackward),
+            (KeyChord::alt('r'), Command::CycleReasoning),
+            (
+                KeyChord::new(KeyCode::Char('r'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+                Command::CycleReasoningBackward,
+            ),
         ];
         for n in 1..=9u8 {
             let digit = char::from(b'0' + n);
@@ -342,6 +395,24 @@ impl Default for Keymap {
 }
 
 impl Keymap {
+    pub fn is_composer_command(command: Command) -> bool {
+        matches!(
+            command,
+            Command::FocusNext
+                | Command::FocusPrevious
+                | Command::Jump(_)
+                | Command::QueueList
+                | Command::ToggleSubmitMode
+                | Command::ModelPicker
+                | Command::ReasoningPicker
+                | Command::PermissionPicker
+                | Command::CycleModel
+                | Command::CycleModelBackward
+                | Command::CycleReasoning
+                | Command::CycleReasoningBackward
+        )
+    }
+
     pub fn lookup(&self, event: &KeyEvent) -> Option<Command> {
         let chord = KeyChord::from_event(event);
         self.bindings

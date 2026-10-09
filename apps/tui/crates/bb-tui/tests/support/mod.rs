@@ -8,7 +8,7 @@ use bb_store::{
     Backend, FetchError, FetchResult, LatestTimeline, LoadedTimelineState, StoreSnapshot,
     TimelineEntry, TurnDetailsEntry, TurnDetailsKey,
 };
-use bb_tui::api::{Api, ApiFuture, Mutation};
+use bb_tui::api::{Api, ApiFuture, Mutation, MutationReply};
 use bb_tui::app::{Action, AppState, Effect, ServerInfo, update};
 use bb_tui::platform::Platform;
 use bb_tui::ui;
@@ -17,8 +17,12 @@ use bb_wire::interaction::PendingInteraction;
 use bb_wire::project::{
     Project, ProjectKind, ProjectWithThreadsResponse, SidebarBootstrapResponse,
 };
-use bb_wire::queue::ThreadQueuedMessage;
-use bb_wire::system::{AppKeybindingOverride, SystemAttentionResponse};
+use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
+use bb_wire::queue::{SendMessageResponse, ThreadQueuedMessage};
+use bb_wire::system::{
+    AppKeybindingOverride, SystemAttentionResponse, SystemExecutionOptionsQuery,
+    SystemExecutionOptionsResponse,
+};
 use bb_wire::thread::{ThreadListEntry, ThreadResponse, ThreadStatus};
 use bb_wire::timeline::{
     ConversationRole, ConversationRow, ThreadTimelineQuery, ThreadTimelineResponse, TimelineRow,
@@ -85,6 +89,7 @@ pub struct FakeBackend {
     pub turn_details: Mutex<HashMap<String, TurnSummaryDetailsResponse>>,
     pub timeline_queries: Mutex<Vec<ThreadTimelineQuery>>,
     pub details_queries: Mutex<Vec<TurnSummaryDetailsQuery>>,
+    pub queued: Mutex<HashMap<String, Vec<ThreadQueuedMessage>>>,
 }
 
 impl FakeBackend {
@@ -189,8 +194,14 @@ impl Backend for FakeBackend {
         Ok(Vec::new())
     }
 
-    async fn queued_messages(&self, _thread_id: String) -> FetchResult<Vec<ThreadQueuedMessage>> {
-        Ok(Vec::new())
+    async fn queued_messages(&self, thread_id: String) -> FetchResult<Vec<ThreadQueuedMessage>> {
+        Ok(self
+            .queued
+            .lock()
+            .unwrap()
+            .get(&thread_id)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
@@ -199,6 +210,10 @@ pub struct MockApi {
     pub mutations: Mutex<Vec<Mutation>>,
     pub overrides: Vec<AppKeybindingOverride>,
     pub fail: bool,
+    pub execution_options: SystemExecutionOptionsResponse,
+    pub defaults: Option<ResolvedThreadExecutionOptions>,
+    pub history: Vec<PromptHistoryEntry>,
+    pub execution_queries: Mutex<Vec<SystemExecutionOptionsQuery>>,
 }
 
 impl MockApi {
@@ -208,6 +223,10 @@ impl MockApi {
             mutations: Mutex::new(Vec::new()),
             overrides: Vec::new(),
             fail: false,
+            execution_options: SystemExecutionOptionsResponse::default(),
+            defaults: None,
+            history: Vec::new(),
+            execution_queries: Mutex::new(Vec::new()),
         })
     }
 
@@ -217,12 +236,16 @@ impl MockApi {
 }
 
 impl Api for MockApi {
-    fn mutate(&self, mutation: Mutation) -> ApiFuture<()> {
+    fn mutate(&self, mutation: Mutation) -> ApiFuture<MutationReply> {
         self.mutations.lock().unwrap().push(mutation.clone());
         if self.fail {
             return Box::pin(async { Err("server said no".to_string()) });
         }
         let id = mutation.thread_id().to_owned();
+        if mutation.is_composer() {
+            let reply = self.composer_reply(&mutation);
+            return Box::pin(async move { Ok(reply) });
+        }
         self.backend.patch_thread(&id, |entry| match &mutation {
             Mutation::Rename { title, .. } => entry.thread.title = Some(title.clone()),
             Mutation::Archive { .. } => entry.thread.archived_at = Some(NOW_MS),
@@ -233,13 +256,83 @@ impl Api for MockApi {
             Mutation::MarkUnread { .. } => entry.thread.last_read_at = Some(0),
             Mutation::Pin { .. } => entry.thread.pinned_at = Some(NOW_MS),
             Mutation::Unpin { .. } => entry.thread.pinned_at = None,
+            _ => {}
         });
-        Box::pin(async { Ok(()) })
+        Box::pin(async { Ok(MutationReply::Done) })
+    }
+
+    fn execution_options(
+        &self,
+        query: SystemExecutionOptionsQuery,
+    ) -> ApiFuture<SystemExecutionOptionsResponse> {
+        self.execution_queries.lock().unwrap().push(query);
+        let options = self.execution_options.clone();
+        Box::pin(async move { Ok(options) })
+    }
+
+    fn default_execution_options(
+        &self,
+        _thread_id: String,
+    ) -> ApiFuture<Option<ResolvedThreadExecutionOptions>> {
+        let defaults = self.defaults.clone();
+        Box::pin(async move { Ok(defaults) })
+    }
+
+    fn prompt_history(&self, _thread_id: String) -> ApiFuture<Vec<PromptHistoryEntry>> {
+        let history = self.history.clone();
+        Box::pin(async move { Ok(history) })
     }
 
     fn keybinding_overrides(&self) -> ApiFuture<Vec<AppKeybindingOverride>> {
         let overrides = self.overrides.clone();
         Box::pin(async move { Ok(overrides) })
+    }
+}
+
+impl MockApi {
+    fn composer_reply(&self, mutation: &Mutation) -> MutationReply {
+        let mut queued = self.backend.queued.lock().unwrap();
+        let list = queued.entry(mutation.thread_id().to_owned()).or_default();
+        match mutation {
+            Mutation::QueueMessage { thread_id, request } => {
+                list.push(ThreadQueuedMessage {
+                    id: format!("q{}", list.len() + 1),
+                    thread_id: thread_id.clone(),
+                    content: request.input.clone(),
+                    editable: true,
+                    updated_at: NOW_MS,
+                    ..ThreadQueuedMessage::default()
+                });
+                MutationReply::Done
+            }
+            Mutation::SendMessage { .. } => {
+                MutationReply::Delivery(SendMessageResponse::Sent { ok: true })
+            }
+            Mutation::SendQueued {
+                queued_message_id, ..
+            }
+            | Mutation::DeleteQueued {
+                queued_message_id, ..
+            } => {
+                list.retain(|message| &message.id != queued_message_id);
+                MutationReply::Delivery(SendMessageResponse::Sent { ok: true })
+            }
+            Mutation::UpdateQueued {
+                queued_message_id,
+                request,
+                ..
+            } => {
+                for message in list.iter_mut() {
+                    if &message.id == queued_message_id {
+                        message.content = request.input.clone();
+                        message.updated_at += 1;
+                    }
+                }
+                MutationReply::Done
+            }
+            Mutation::HoldQueued { .. } => MutationReply::Lease { lease_ms: 30_000 },
+            _ => MutationReply::Done,
+        }
     }
 }
 
@@ -298,6 +391,7 @@ pub fn buffer_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
 pub struct MockPlatform {
     pub copied: Mutex<Vec<String>>,
     pub opened: Mutex<Vec<String>>,
+    pub drafts: Mutex<HashMap<String, String>>,
 }
 
 impl Platform for MockPlatform {
@@ -308,6 +402,19 @@ impl Platform for MockPlatform {
 
     fn open(&self, target: &str) -> Result<(), String> {
         self.opened.lock().unwrap().push(target.to_owned());
+        Ok(())
+    }
+
+    fn load_draft(&self, thread_id: &str) -> Option<String> {
+        self.drafts.lock().unwrap().get(thread_id).cloned()
+    }
+
+    fn save_draft(&self, thread_id: &str, raw: Option<&str>) -> Result<(), String> {
+        let mut drafts = self.drafts.lock().unwrap();
+        match raw {
+            Some(raw) => drafts.insert(thread_id.to_owned(), raw.to_owned()),
+            None => drafts.remove(thread_id),
+        };
         Ok(())
     }
 }
@@ -447,4 +554,19 @@ pub fn press_mod(
         state,
         Action::Key(crossterm::event::KeyEvent::new(code, modifiers)),
     )
+}
+
+pub fn without_composer_loads(effects: Vec<Effect>) -> Vec<Effect> {
+    effects
+        .into_iter()
+        .filter(|effect| {
+            !matches!(
+                effect,
+                Effect::LoadDraft(_)
+                    | Effect::FetchDefaults(_)
+                    | Effect::FetchExecutionOptions { .. }
+                    | Effect::FetchPromptHistory(_)
+            )
+        })
+        .collect()
 }

@@ -272,3 +272,146 @@ async fn timeline_loads_turn_details_older_rows_and_copies_through_the_store() {
     assert_eq!(details[0].turn_id, "turn-1");
     assert_eq!(state.open_thread.as_deref(), Some(THREAD));
 }
+
+fn chord(
+    tx: &mpsc::UnboundedSender<Action>,
+    code: KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+) {
+    tx.send(Action::Key(KeyEvent::new(code, modifiers)))
+        .expect("send key");
+}
+
+fn type_text(tx: &mpsc::UnboundedSender<Action>, text: &str) {
+    for ch in text.chars() {
+        key(tx, KeyCode::Char(ch));
+    }
+}
+
+#[tokio::test]
+async fn composer_queues_sends_queued_saves_drafts_and_stops_through_the_loop() {
+    use bb_wire::prompt::{
+        PermissionMode, PromptInput, ReasoningLevel, ResolvedThreadExecutionOptions,
+    };
+    use bb_wire::queue::SendQueuedMessageMode;
+    use bb_wire::thread::{ThreadDisplayStatus, ThreadStatus};
+    use crossterm::event::KeyModifiers;
+
+    let backend = FakeBackend::new(sample_sidebar());
+    backend.patch_thread("thr_other", |entry| {
+        entry.thread.status = ThreadStatus::Active;
+        entry.runtime.display_status = ThreadDisplayStatus::Active;
+    });
+    let mut api = MockApi::new(backend.clone());
+    Arc::get_mut(&mut api).unwrap().defaults = Some(ResolvedThreadExecutionOptions {
+        model: "gpt-5".into(),
+        reasoning_level: ReasoningLevel::Medium,
+        permission_mode: PermissionMode::Auto,
+        ..ResolvedThreadExecutionOptions::default()
+    });
+    let platform = Arc::new(MockPlatform::default());
+    let store = Store::spawn(backend.clone(), NoRealtime, None, StoreConfig::default());
+    let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
+    let events = Box::pin(stream::poll_fn(move |cx| rx.poll_recv(cx)));
+    let state = AppState::new(
+        ServerInfo {
+            url: "http://fake/".into(),
+            profile: None,
+        },
+        Instant::now(),
+        NOW_MS,
+    );
+    let task_store = store.clone();
+    let task_api = api.clone();
+    let task_platform = platform.clone();
+    let handle = tokio::spawn(async move {
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut state = state;
+        run(
+            &mut terminal,
+            &mut state,
+            task_store,
+            task_api,
+            task_platform,
+            events,
+        )
+        .await
+        .expect("run");
+        (terminal, state)
+    });
+
+    wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
+    key(&tx, KeyCode::Char('/'));
+    type_text(&tx, "Refactor");
+    key(&tx, KeyCode::Enter);
+    key(&tx, KeyCode::Enter);
+    let execution = api.clone();
+    wait_until(move || !execution.execution_queries.lock().unwrap().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    key(&tx, KeyCode::Char('c'));
+    type_text(&tx, "queue me");
+    key(&tx, KeyCode::Enter);
+    wait_for(&store, |snapshot| snapshot.queued("thr_other").len() == 1).await;
+
+    chord(&tx, KeyCode::Char('q'), KeyModifiers::ALT);
+    key(&tx, KeyCode::Char('s'));
+    wait_for(&store, |snapshot| {
+        snapshot
+            .queued_messages
+            .get("thr_other")
+            .and_then(|resource| resource.data.as_deref())
+            .is_some_and(Vec::is_empty)
+    })
+    .await;
+
+    type_text(&tx, "draft text");
+    let drafts = platform.clone();
+    wait_until(move || {
+        drafts
+            .drafts
+            .lock()
+            .unwrap()
+            .get("thr_other")
+            .is_some_and(|raw| raw.contains("draft text"))
+    })
+    .await;
+    chord(&tx, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    key(&tx, KeyCode::Esc);
+    key(&tx, KeyCode::Esc);
+    let recorded = api.clone();
+    wait_until(move || {
+        recorded
+            .recorded()
+            .iter()
+            .any(|mutation| matches!(mutation, Mutation::Stop { .. }))
+    })
+    .await;
+    key(&tx, KeyCode::Tab);
+    key(&tx, KeyCode::Char('q'));
+
+    let (_terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("loop exits")
+        .expect("join");
+    let recorded = api.recorded();
+    let queued = recorded
+        .iter()
+        .find_map(|mutation| match mutation {
+            Mutation::QueueMessage { thread_id, request } => Some((thread_id, request)),
+            _ => None,
+        })
+        .expect("queued");
+    assert_eq!(queued.0, "thr_other");
+    assert_eq!(queued.1.input, vec![PromptInput::text("queue me")]);
+    assert_eq!(queued.1.model.as_deref(), Some("gpt-5"));
+    assert!(recorded.contains(&Mutation::SendQueued {
+        thread_id: "thr_other".into(),
+        queued_message_id: "q1".into(),
+        mode: SendQueuedMessageMode::Auto,
+    }));
+    assert!(recorded.contains(&Mutation::Stop {
+        thread_id: "thr_other".into()
+    }));
+    assert!(state.quit);
+    assert!(!platform.drafts.lock().unwrap().contains_key("thr_other"));
+}

@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{AppState, Focus, Mode, ToastLevel};
+use crate::composer_ui;
 use crate::indicator::{Indicator, display_status_label};
 use crate::input::LineInput;
 use crate::keymap::Command;
@@ -111,6 +112,9 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     }
     if let Mode::OpenPicker { targets, selected } = &state.mode {
         render_open_picker(targets, *selected, frame, area);
+    }
+    if let Mode::Picker(picker) = &state.mode {
+        composer_ui::render_picker(picker, frame, area);
     }
 }
 
@@ -388,7 +392,16 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     let meta = meta_line(state, thread_id, usize::from(meta_area.width));
     frame.render_widget(Paragraph::new(meta), meta_area);
-    render_timeline(state, frame, body, focused);
+    if !state.composer_available() || body.height < 6 {
+        render_timeline(state, frame, body, focused);
+        return;
+    }
+    let wanted = composer_ui::composer_height(state, thread_id, usize::from(body.width));
+    let height = wanted.min(body.height.saturating_sub(3).max(body.height / 2));
+    let [timeline_area, composer_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
+    render_timeline(state, frame, timeline_area, focused);
+    composer_ui::render_composer(state, frame, composer_area, thread_id);
 }
 
 fn meta_line(state: &AppState, thread_id: &str, width: usize) -> Line<'static> {
@@ -620,6 +633,17 @@ fn hints(state: &AppState) -> String {
         Mode::Rename { .. } => "Enter save · Esc cancel".into(),
         Mode::Help => "any key closes help".into(),
         Mode::OpenPicker { .. } => "1-9/Enter open · j/k move · Esc cancel".into(),
+        Mode::Picker(_) => "1-9/Enter choose · j/k move · Esc cancel".into(),
+        Mode::Queue { .. } => {
+            "j/k select · Enter/e edit · s send now · r retry · d delete · Esc close".into()
+        }
+        Mode::Normal if state.focus == Focus::Composer => format!(
+            "{} send · {} newline · ↑/↓ history · C-s steer · Esc Esc stop · {} model · {} queue",
+            state.submit_key.submit_label(),
+            state.submit_key.newline_label(),
+            key(Command::ModelPicker),
+            key(Command::QueueList),
+        ),
         Mode::Normal if state.focus == Focus::Main && state.open_thread.is_some() => format!(
             "{}/{} select · {} expand · {} copy · {} open · {}/{} messages · {} follow",
             key(Command::MoveDown),
@@ -707,6 +731,26 @@ fn render_toasts(state: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn help_entries(state: &AppState) -> Vec<(String, String)> {
+    let composer = [
+        (
+            state.submit_key.submit_label().to_owned(),
+            "Composer: send (queues while running)".to_owned(),
+        ),
+        (
+            state.submit_key.newline_label().to_owned(),
+            "Composer: new line".to_owned(),
+        ),
+        (
+            "C-s".to_owned(),
+            "Composer: steer the running turn".to_owned(),
+        ),
+        ("↑/↓".to_owned(), "Composer: prompt history".to_owned()),
+        (
+            "Esc Esc".to_owned(),
+            "Composer: stop the running turn".to_owned(),
+        ),
+        ("C-c".to_owned(), "Composer: clear, then stop".to_owned()),
+    ];
     Command::ALL
         .iter()
         .filter_map(|command| match command {
@@ -724,6 +768,7 @@ fn help_entries(state: &AppState) -> Vec<(String, String)> {
                 (!label.is_empty()).then(|| (label, command.description()))
             }
         })
+        .chain(composer)
         .collect()
 }
 
@@ -742,6 +787,8 @@ fn render_help(state: &AppState, frame: &mut Frame, area: Rect) {
     let per_column = usize::from(area.height.saturating_sub(2)).max(1);
     let columns = entries.len().div_ceil(per_column).max(1);
     let rows = entries.len().div_ceil(columns);
+    let fit = usize::from(area.width.saturating_sub(2)) / columns;
+    let desc_width = desc_width.min(fit.saturating_sub(key_width + 4)).max(1);
     let column_width = key_width + desc_width + 4;
     let width = ((column_width * columns + 2) as u16).min(area.width);
     let height = (rows as u16 + 2).min(area.height);
@@ -762,7 +809,10 @@ fn render_help(state: &AppState, frame: &mut Frame, area: Rect) {
                     format!(" {key:<key_width$}  "),
                     Style::new().fg(Color::Cyan),
                 ));
-                spans.push(Span::raw(format!("{desc:<desc_width$} ")));
+                spans.push(Span::raw(format!(
+                    "{:<desc_width$} ",
+                    truncate(desc, desc_width)
+                )));
             }
             Line::from(spans)
         })

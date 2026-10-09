@@ -12,7 +12,7 @@ use serde_json::json;
 use support::*;
 
 const WIDTH: u16 = 100;
-const HEIGHT: u16 = 24;
+const HEIGHT: u16 = 28;
 
 fn opened(rows: Vec<TimelineRow>, has_older: bool) -> AppState {
     let mut state = loaded_state(sample_sidebar());

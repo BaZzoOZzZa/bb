@@ -98,6 +98,43 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                 };
                 let _ = self.tx.send(Action::Notify { message, level });
             }
+            Effect::Refresh(key) => self.store.refresh(key),
+            Effect::LoadDraft(thread_id) => {
+                let raw = self.platform.load_draft(&thread_id);
+                let _ = self.tx.send(Action::DraftLoaded { thread_id, raw });
+            }
+            Effect::SaveDraft { thread_id, raw } => {
+                if let Err(error) = self.platform.save_draft(&thread_id, raw.as_deref()) {
+                    let _ = self.tx.send(Action::Notify {
+                        message: format!("Failed to save draft: {error}"),
+                        level: ToastLevel::Error,
+                    });
+                }
+            }
+            Effect::FetchExecutionOptions { thread_id, query } => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = api.execution_options(query).await;
+                    let _ = tx.send(Action::ExecutionOptionsLoaded { thread_id, result });
+                });
+            }
+            Effect::FetchDefaults(thread_id) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = api.default_execution_options(thread_id.clone()).await;
+                    let _ = tx.send(Action::DefaultsLoaded { thread_id, result });
+                });
+            }
+            Effect::FetchPromptHistory(thread_id) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = api.prompt_history(thread_id.clone()).await;
+                    let _ = tx.send(Action::PromptHistoryLoaded { thread_id, result });
+                });
+            }
             Effect::Quit => {}
         }
     }
@@ -111,6 +148,7 @@ pub fn terminal_action(event: std::io::Result<Event>) -> Option<Action> {
     match event {
         Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => Some(Action::Key(key)),
         Ok(Event::Resize(_, _)) => Some(Action::Resize),
+        Ok(Event::Paste(text)) => Some(Action::Paste(text)),
         _ => None,
     }
 }

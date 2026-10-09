@@ -3,13 +3,22 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bb_store::{ConnectionState, StoreSnapshot, TurnDetailsKey};
-use bb_wire::system::AppKeybindingOverride;
+use bb_store::{ConnectionState, ResourceKey, StoreSnapshot, TurnDetailsKey};
+use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
+use bb_wire::system::{
+    AppKeybindingOverride, SystemExecutionOptionsQuery, SystemExecutionOptionsResponse,
+};
 use bb_wire::thread::ThreadListEntry;
 use bb_wire::timeline::TimelineRow;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::api::Mutation;
+use crate::api::{Mutation, MutationReply};
+use crate::compose::{
+    Inflight, Picker, composer_command, composer_mutation_finished, composer_snapshot,
+    composer_tick, handle_composer_key, handle_picker_key, handle_queue_key, history_loaded, paste,
+};
+use crate::composer::{Composer, SubmitKey};
+use crate::execution::{ExecutionState, Load};
 use crate::indicator::is_thread_read;
 use crate::input::{InputOutcome, LineInput};
 use crate::keymap::{Command, Keymap};
@@ -25,6 +34,7 @@ const SIDEBAR_PAGE: isize = 10;
 pub enum Focus {
     Sidebar,
     Main,
+    Composer,
     Panel,
 }
 
@@ -39,6 +49,11 @@ pub enum Mode {
     Help,
     OpenPicker {
         targets: Vec<String>,
+        selected: usize,
+    },
+    Picker(Picker),
+    Queue {
+        thread_id: String,
         selected: usize,
     },
 }
@@ -73,8 +88,25 @@ pub enum Action {
     Snapshot(Arc<StoreSnapshot>),
     MutationFinished {
         mutation: Mutation,
-        result: Result<(), String>,
+        result: Result<MutationReply, String>,
     },
+    DraftLoaded {
+        thread_id: String,
+        raw: Option<String>,
+    },
+    ExecutionOptionsLoaded {
+        thread_id: String,
+        result: Result<SystemExecutionOptionsResponse, String>,
+    },
+    DefaultsLoaded {
+        thread_id: String,
+        result: Result<Option<ResolvedThreadExecutionOptions>, String>,
+    },
+    PromptHistoryLoaded {
+        thread_id: String,
+        result: Result<Vec<PromptHistoryEntry>, String>,
+    },
+    Paste(String),
     KeymapLoaded(Result<Vec<AppKeybindingOverride>, String>),
     Notify {
         message: String,
@@ -97,6 +129,18 @@ pub enum Effect {
     },
     Copy(String),
     OpenExternal(String),
+    Refresh(ResourceKey),
+    LoadDraft(String),
+    SaveDraft {
+        thread_id: String,
+        raw: Option<String>,
+    },
+    FetchExecutionOptions {
+        thread_id: String,
+        query: SystemExecutionOptionsQuery,
+    },
+    FetchDefaults(String),
+    FetchPromptHistory(String),
     Quit,
 }
 
@@ -114,6 +158,13 @@ pub struct AppState {
     pub mode: Mode,
     pub open_thread: Option<String>,
     pub timelines: HashMap<String, TimelineView>,
+    pub composers: HashMap<String, Composer>,
+    pub executions: HashMap<String, ExecutionState>,
+    pub inflight: HashMap<String, Inflight>,
+    pub stop_requested: HashSet<String>,
+    pub history_requested: HashSet<String>,
+    pub submit_key: SubmitKey,
+    pub enter_steers: bool,
     pub sidebar_visible: bool,
     pub panel_visible: bool,
     pub keymap: Keymap,
@@ -142,6 +193,13 @@ impl AppState {
             mode: Mode::Normal,
             open_thread: None,
             timelines: HashMap::new(),
+            composers: HashMap::new(),
+            executions: HashMap::new(),
+            inflight: HashMap::new(),
+            stop_requested: HashSet::new(),
+            history_requested: HashSet::new(),
+            submit_key: SubmitKey::default(),
+            enter_steers: false,
             sidebar_visible: true,
             panel_visible: false,
             keymap: Keymap::default(),
@@ -302,6 +360,9 @@ impl AppState {
             panes.push(Focus::Sidebar);
         }
         panes.push(Focus::Main);
+        if self.composer_available() {
+            panes.push(Focus::Composer);
+        }
         if self.panel_visible {
             panes.push(Focus::Panel);
         }
@@ -326,6 +387,12 @@ impl AppState {
         let mut effects = Vec::new();
         if self.open_thread.as_deref() != Some(thread_id.as_str()) {
             effects.push(Effect::WatchThread(Some(thread_id.clone())));
+            if let Some(previous) = self.open_thread.clone() {
+                effects.extend(self.flush_draft(&previous, true));
+            }
+            if self.focus == Focus::Composer {
+                self.focus = Focus::Main;
+            }
         }
         if let Some(entry) = self.sidebar_entry(&thread_id)
             && !is_thread_read(&entry.thread)
@@ -338,7 +405,8 @@ impl AppState {
         self.timelines
             .entry(thread_id.clone())
             .or_insert_with(|| TimelineView::new(thread_id.clone()));
-        self.open_thread = Some(thread_id);
+        self.open_thread = Some(thread_id.clone());
+        effects.extend(self.ensure_thread_data(&thread_id));
         effects.extend(self.sync_timeline());
         effects
     }
@@ -456,6 +524,7 @@ impl AppState {
 
 pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
     let effects = apply(state, action);
+    state.sync_composer_placeholder();
     if !state.read_only {
         return effects;
     }
@@ -485,7 +554,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             state.now_ms = now_ms;
             state.frame = state.frame.wrapping_add(1);
             state.toasts.retain(|toast| toast.expires_at > now);
-            Vec::new()
+            composer_tick(state, now)
         }
         Action::Snapshot(snapshot) => {
             state.attention = snapshot.sidebar.data.as_deref().map_or(0, attention_count);
@@ -495,10 +564,15 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             if first_load && state.snapshot.sidebar.data.is_some() {
                 state.select_first_thread();
             }
-            state.sync_timeline()
+            let mut effects = composer_snapshot(state);
+            effects.extend(state.sync_timeline());
+            effects
+        }
+        Action::MutationFinished { mutation, result } if mutation.is_composer() => {
+            composer_mutation_finished(state, mutation, result)
         }
         Action::MutationFinished { mutation, result } => match result {
-            Ok(()) => {
+            Ok(_) => {
                 if !mutation.is_silent() {
                     let title = state.thread_title(mutation.thread_id());
                     state.toast(
@@ -539,6 +613,32 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             state.toast(message, level);
             Vec::new()
         }
+        Action::DraftLoaded { thread_id, raw } => {
+            if let Some(composer) = state.composers.get_mut(&thread_id) {
+                composer.load_stored(raw.as_deref());
+            }
+            Vec::new()
+        }
+        Action::ExecutionOptionsLoaded { thread_id, result } => {
+            if let Some(execution) = state.executions.get_mut(&thread_id) {
+                execution.options = Load::from_result(result);
+            }
+            Vec::new()
+        }
+        Action::DefaultsLoaded { thread_id, result } => {
+            if let Some(execution) = state.executions.get_mut(&thread_id) {
+                if result.is_err() && execution.defaults.loaded().is_some() {
+                    return Vec::new();
+                }
+                execution.defaults = Load::from_result(result);
+            }
+            Vec::new()
+        }
+        Action::PromptHistoryLoaded { thread_id, result } => {
+            history_loaded(state, &thread_id, result);
+            Vec::new()
+        }
+        Action::Paste(text) => paste(state, &text),
     }
 }
 
@@ -548,6 +648,22 @@ fn is_ctrl_c(key: &KeyEvent) -> bool {
 
 fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     match std::mem::replace(&mut state.mode, Mode::Normal) {
+        Mode::Picker(picker) => {
+            if is_ctrl_c(&key) {
+                return Vec::new();
+            }
+            handle_picker_key(state, picker, key)
+        }
+        Mode::Queue {
+            thread_id,
+            selected,
+        } => {
+            if is_ctrl_c(&key) {
+                return Vec::new();
+            }
+            handle_queue_key(state, thread_id, selected, key)
+        }
+        Mode::Normal if state.focus == Focus::Composer => handle_composer_key(state, key),
         Mode::Help => {
             if is_ctrl_c(&key) {
                 return quit(state);
@@ -628,8 +744,10 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn quit(state: &mut AppState) -> Vec<Effect> {
+    let mut effects = state.flush_all_drafts();
     state.quit = true;
-    vec![Effect::Quit]
+    effects.push(Effect::Quit);
+    effects
 }
 
 fn timeline_command(state: &mut AppState, command: Command) -> Option<Vec<Effect>> {
@@ -681,8 +799,11 @@ fn timeline_command(state: &mut AppState, command: Command) -> Option<Vec<Effect
     Some(effects)
 }
 
-fn run_command(state: &mut AppState, command: Command) -> Vec<Effect> {
+pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect> {
     let in_sidebar = state.focus == Focus::Sidebar && state.sidebar_visible;
+    if let Some(effects) = composer_command(state, command) {
+        return effects;
+    }
     if state.focus == Focus::Main
         && state.open_thread.is_some()
         && let Some(effects) = timeline_command(state, command)
@@ -825,7 +946,18 @@ fn run_command(state: &mut AppState, command: Command) -> Vec<Effect> {
         | Command::NextMessage
         | Command::PreviousMessage
         | Command::Copy
-        | Command::OpenExternal => {}
+        | Command::OpenExternal
+        | Command::FocusComposer
+        | Command::StopTurn
+        | Command::ModelPicker
+        | Command::ReasoningPicker
+        | Command::PermissionPicker
+        | Command::CycleModel
+        | Command::CycleModelBackward
+        | Command::CycleReasoning
+        | Command::CycleReasoningBackward
+        | Command::QueueList
+        | Command::ToggleSubmitMode => {}
     }
     Vec::new()
 }

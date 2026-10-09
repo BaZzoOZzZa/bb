@@ -274,3 +274,194 @@ async fn renders_live_timelines_read_only() {
         "unknown timeline rows: {drift:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only GET requests only"]
+async fn renders_live_composer_read_only() {
+    use bb_store::Resource;
+    use bb_wire::project::PromptHistoryQuery;
+    use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
+    use bb_wire::queue::ThreadQueuedMessage;
+    use bb_wire::routes::system;
+    use bb_wire::system::{SystemExecutionOptionsQuery, SystemExecutionOptionsResponse};
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let limit: usize = std::env::var("BB_TUI_LIVE_THREADS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(10);
+    let print = std::env::var_os("BB_TUI_LIVE_PRINT").is_some();
+    let sidebar = client.sidebar_bootstrap().await.expect("sidebar");
+    let mut entries: Vec<_> = sidebar
+        .projects
+        .iter()
+        .chain(std::iter::once(&sidebar.personal_project))
+        .flat_map(|project| project.threads.iter().cloned())
+        .filter(|entry| !entry.thread.is_archived())
+        .collect();
+    entries.sort_by_key(|entry| -entry.thread.updated_at);
+    let mut drift = BTreeMap::new();
+    let mut history_total = 0usize;
+    for entry in entries.iter().take(limit) {
+        let thread_id = entry.thread.id.clone();
+        let query = SystemExecutionOptionsQuery {
+            host_id: None,
+            environment_id: entry.thread.environment_id.clone(),
+            provider_id: Some(entry.thread.provider_id.clone()),
+        };
+        let raw: serde_json::Value = client
+            .get_with(system::execution_options(), &query)
+            .await
+            .expect("execution options");
+        let options: SystemExecutionOptionsResponse =
+            serde_json::from_value(raw.clone()).expect("parse execution options");
+        collect_drift(
+            &raw,
+            &serde_json::to_value(&options).unwrap(),
+            "executionOptions",
+            &mut drift,
+        );
+        let raw: serde_json::Value = client
+            .get(threads::default_execution_options(&thread_id))
+            .await
+            .expect("defaults");
+        let defaults: Option<ResolvedThreadExecutionOptions> =
+            serde_json::from_value(raw.clone()).expect("parse defaults");
+        if let Some(defaults) = &defaults {
+            collect_drift(
+                &raw,
+                &serde_json::to_value(defaults).unwrap(),
+                "defaults",
+                &mut drift,
+            );
+        }
+        let raw: serde_json::Value = client
+            .get_with(
+                threads::prompt_history(&thread_id),
+                &PromptHistoryQuery::default(),
+            )
+            .await
+            .expect("history");
+        let history: Vec<PromptHistoryEntry> =
+            serde_json::from_value(raw.clone()).expect("parse history");
+        collect_drift(
+            &raw,
+            &serde_json::to_value(&history).unwrap(),
+            "history",
+            &mut drift,
+        );
+        history_total += history.len();
+        let raw: serde_json::Value = client
+            .get(threads::queued_messages(&thread_id))
+            .await
+            .expect("queued");
+        let queued: Vec<ThreadQueuedMessage> =
+            serde_json::from_value(raw.clone()).expect("parse queued");
+        collect_drift(
+            &raw,
+            &serde_json::to_value(&queued).unwrap(),
+            "queued",
+            &mut drift,
+        );
+        let timeline = client
+            .thread_timeline(&thread_id, &ThreadTimelineQuery::latest())
+            .await
+            .expect("timeline");
+
+        let mut snapshot = StoreSnapshot::default();
+        snapshot.sidebar.data = Some(Arc::new(sidebar.clone()));
+        snapshot.connection = bb_store::ConnectionState::Connected;
+        snapshot
+            .timelines
+            .insert(thread_id.clone(), support::timeline_entry(timeline));
+        snapshot.queued_messages.insert(
+            thread_id.clone(),
+            Resource {
+                data: Some(Arc::new(queued)),
+                ..Resource::default()
+            },
+        );
+        let mut state = AppState::new(
+            ServerInfo {
+                url: found.endpoint.to_string(),
+                profile: None,
+            },
+            Instant::now(),
+            now_ms(),
+        );
+        state.read_only = true;
+        update(&mut state, Action::Snapshot(Arc::new(snapshot)));
+        let index = state
+            .rows
+            .iter()
+            .position(|row| row.thread().is_some_and(|thread| thread.id == thread_id));
+        let Some(index) = index else {
+            continue;
+        };
+        state.selected = index;
+        update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
+        update(
+            &mut state,
+            Action::ExecutionOptionsLoaded {
+                thread_id: thread_id.clone(),
+                result: Ok(options),
+            },
+        );
+        update(
+            &mut state,
+            Action::DefaultsLoaded {
+                thread_id: thread_id.clone(),
+                result: Ok(defaults.clone()),
+            },
+        );
+        update(
+            &mut state,
+            Action::PromptHistoryLoaded {
+                thread_id: thread_id.clone(),
+                result: Ok(history.clone()),
+            },
+        );
+        let resolved = state.resolved_execution(&thread_id).expect("execution");
+        if defaults.is_some() {
+            assert!(!resolved.model.is_empty(), "{thread_id}: no model");
+        }
+        update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('c'))));
+        if !history.is_empty() {
+            update(&mut state, Action::Key(KeyEvent::from(KeyCode::Up)));
+            assert!(
+                !state.composer().expect("composer").text().is_empty(),
+                "{thread_id}: history"
+            );
+        }
+        let lines = render_lines(&state, 140, 40);
+        assert!(
+            lines
+                .iter()
+                .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) <= 140)
+        );
+        let footer = &lines[lines.len() - 3];
+        assert!(
+            footer.contains(&resolved.model_label) || resolved.model.is_empty(),
+            "{thread_id}: {footer}"
+        );
+        if print {
+            println!(
+                "== {thread_id} {}",
+                entry.thread.title_or_fallback().unwrap_or("")
+            );
+            for line in &lines[lines.len().saturating_sub(16)..] {
+                println!("{line}");
+            }
+        }
+    }
+    println!("history entries: {history_total}");
+    for (key, count) in &drift {
+        println!("drift {key}: {count}");
+    }
+}

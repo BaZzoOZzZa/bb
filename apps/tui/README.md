@@ -42,6 +42,55 @@ tool and diff content are fetched when expanded.
 | `y` | Copy the selected row to the clipboard (OSC 52) |
 | `o` | Open the row's link or file with `xdg-open` / `open` (picker if several) |
 
+## Composer
+
+The bottom of the thread view is the composer (`c` or `Tab` focuses it). It
+follows the web app's follow-up rules from `client-core/src/prompt`: an idle
+thread gets `POST /threads/:id/send` with `mode: "queue-if-active"`; while the
+thread is active, starting, provisioning, stopping or waiting for its host,
+Enter adds the message to the server-side queue instead; the steer key sends
+`mode: "steer-if-active"`, or with an empty draft sends the first queued
+message with `mode: "steer"`. Sending is blocked while the agent waits for an
+answer to a pending request, and on an idle thread until its default execution
+options have loaded.
+
+| Keys (composer focused) | Action |
+|---|---|
+| `Enter` | Send (queue while running) |
+| `Shift-Enter`, `Alt-Enter`, `C-j` | New line |
+| `C-s` (`C-Enter` where the terminal reports it) | Steer the running turn |
+| `↑`/`↓` on the first/last line | Prompt history (`GET /threads/:id/prompt-history`) |
+| `Esc Esc` | Stop the running turn (a single `Esc` leaves the composer when idle) |
+| `C-c` | Clear the draft; on an empty draft stop the turn, or quit when idle |
+
+| Keys (thread open) | Action |
+|---|---|
+| `M-m`, `M-e`, `M-p` | Model, reasoning level and permission mode pickers |
+| `M-.`/`M-,`, `M-r`/`M-R` | Cycle model, cycle reasoning level |
+| `M-t` | Toggle what Enter does while running: queue (default) or steer |
+| `M-q` | Queued messages: `j`/`k`, `Enter`/`e` edit, `s` send now, `r` retry a failed one, `d` delete |
+| `S` | Stop the running turn |
+
+Pickers use `GET /system/execution-options?providerId=&environmentId=` and
+`GET /threads/:id/default-execution-options`: only the provider's permission
+modes are offered, modes above the machine's permission ceiling are disabled,
+the reasoning level is reconciled when the model changes, and an active model
+fallback is used until you pick another model. Picked values are sent as
+`executionInputSources: "explicit"`.
+
+Editing a queued message holds it on the server (`POST
+/queued-messages/:id/edit-hold`, renewed four times per lease) and saves with
+`PATCH` and `expectedUpdatedAt`; `Esc` cancels and restores your draft.
+Above the editor the composer shows the plan-mode, goal, todo and model-fallback
+banners, the queue, and a footer with the model, reasoning level, permission
+mode and context-window usage.
+
+Unsent drafts are saved per thread under `$XDG_STATE_HOME/bb-tui/drafts`
+(`~/.local/state/bb-tui/drafts`) in the web app's draft format.
+`--submit-key ctrl-enter` (or `BB_TUI_SUBMIT_KEY=ctrl-enter`) makes Enter
+insert a new line and `Alt-Enter`/`C-Enter` send. Bracketed paste and the kitty
+keyboard protocol are enabled when the terminal supports them.
+
 Through Turbo from the repository root:
 
 ```sh
@@ -71,7 +120,9 @@ cargo test -p bb-client --test live -- --ignored --nocapture
 cargo test -p bb-tui --test live -- --ignored --nocapture
 ```
 
-`renders_live_timelines_read_only` parses the latest timeline and every
+`renders_live_composer_read_only` parses the execution options, default
+execution options, prompt history and queue of the same threads and renders
+the composer for each. `renders_live_timelines_read_only` parses the latest timeline and every
 collapsed turn of the most recently updated threads (`BB_TUI_LIVE_THREADS`,
 default 10), reports unknown row kinds and server fields the wire types do not
 model, and renders each thread fully expanded (`BB_TUI_LIVE_PRINT=1` prints the

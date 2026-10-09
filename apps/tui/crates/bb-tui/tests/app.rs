@@ -85,7 +85,7 @@ fn first_load_selects_first_thread_and_vim_keys_move() {
 fn enter_opens_thread_marks_unread_read_and_focuses_main() {
     let mut state = loaded_state(sample_sidebar());
     press(&mut state, KeyCode::Char('j'));
-    let effects = press(&mut state, KeyCode::Enter);
+    let effects = without_composer_loads(press(&mut state, KeyCode::Enter));
     assert_eq!(
         effects,
         vec![
@@ -109,7 +109,7 @@ fn enter_opens_thread_marks_unread_read_and_focuses_main() {
     press(&mut state, KeyCode::Esc);
     assert_eq!(state.focus, Focus::Sidebar);
     press(&mut state, KeyCode::Char('k'));
-    let effects = press(&mut state, KeyCode::Enter);
+    let effects = without_composer_loads(press(&mut state, KeyCode::Enter));
     assert_eq!(effects, vec![Effect::WatchThread(Some("thr_wait".into()))]);
 }
 
@@ -282,7 +282,7 @@ fn mutation_results_show_toasts_that_expire() {
             mutation: Mutation::Pin {
                 thread_id: "thr_old".into(),
             },
-            result: Ok(()),
+            result: Ok(bb_tui::api::MutationReply::Done),
         },
     );
     assert_eq!(effects, vec![Effect::RefreshSidebar]);
@@ -325,7 +325,7 @@ fn mutation_results_show_toasts_that_expire() {
             mutation: Mutation::MarkRead {
                 thread_id: "thr_old".into(),
             },
-            result: Ok(()),
+            result: Ok(bb_tui::api::MutationReply::Done),
         },
     );
     assert_eq!(silent, vec![Effect::RefreshSidebar]);
@@ -420,8 +420,14 @@ fn help_overlay_lists_keys_and_closes_on_any_key() {
     press(&mut state, KeyCode::Char('?'));
     let text = render_lines(&state, 100, 40).join("\n");
     assert!(text.contains("Keys"), "{text}");
-    assert!(text.contains("│ r         Rename thread"), "{text}");
-    assert!(text.contains("y         Copy selected row"), "{text}");
+    let has_row = |key: &str, desc: &str| {
+        text.lines()
+            .any(|line| line.contains(&format!(" {key} ")) && line.contains(desc))
+    };
+    assert!(has_row("r", "Rename thread"), "{text}");
+    assert!(has_row("y", "Copy selected row"), "{text}");
+    assert!(has_row("M-m", "Pick model"), "{text}");
+    assert!(has_row("Esc Esc", "Composer: stop"), "{text}");
     assert!(text.contains("M-1…M-9"), "{text}");
     assert!(text.contains("j/↓"), "{text}");
     press(&mut state, KeyCode::Char('q'));
@@ -505,7 +511,7 @@ fn read_only_mode_drops_mutations() {
     let mut state = loaded_state(sample_sidebar());
     state.read_only = true;
     press(&mut state, KeyCode::Char('j'));
-    let effects = press(&mut state, KeyCode::Enter);
+    let effects = without_composer_loads(press(&mut state, KeyCode::Enter));
     assert_eq!(
         effects,
         vec![Effect::WatchThread(Some("thr_unread".into()))]
