@@ -865,6 +865,7 @@ pub fn terminal_action(event: std::io::Result<Event>) -> Option<Action> {
         Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => Some(Action::Key(key)),
         Ok(Event::Resize(_, _)) => Some(Action::Resize),
         Ok(Event::Paste(text)) => Some(Action::Paste(text)),
+        Ok(Event::Mouse(mouse)) => Some(Action::Mouse(mouse)),
         Ok(Event::FocusGained) => Some(Action::TerminalFocus(true)),
         Ok(Event::FocusLost) => Some(Action::TerminalFocus(false)),
         _ => None,

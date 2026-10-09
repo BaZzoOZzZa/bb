@@ -17,7 +17,7 @@ use crate::fuzzy::{match_paths, match_text};
 use crate::input::{InputOutcome, LineInput};
 use crate::keymap::Command;
 use crate::settings::SettingsSection;
-use crate::sidebar::{RowKey, project_label, thread_title};
+use crate::sidebar::{RowKey, project_display_label, project_label, project_labels, thread_title};
 use crate::time::compact_relative_time;
 
 pub const RESULT_LIMIT: usize = 50;
@@ -1310,12 +1310,7 @@ impl AppState {
 
     pub(crate) fn project_name(&self, project_id: &str) -> Option<String> {
         let sidebar = self.snapshot.sidebar.data.as_deref()?;
-        sidebar
-            .projects
-            .iter()
-            .chain(std::iter::once(&sidebar.personal_project))
-            .find(|project| project.project.id == project_id)
-            .map(project_label)
+        project_display_label(sidebar, project_id)
     }
 
     fn next_palette_generation(&mut self) -> u64 {
@@ -1412,9 +1407,15 @@ impl AppState {
             .chain(std::iter::once(&sidebar.personal_project))
             .filter(|project| !project.project.id.is_empty())
             .collect();
+        let names = project_labels(sidebar);
         let labels: Vec<String> = projects
             .iter()
-            .map(|project| project_label(project))
+            .map(|project| {
+                names
+                    .get(&project.project.id)
+                    .cloned()
+                    .unwrap_or_else(|| project_label(project))
+            })
             .collect();
         match_text(
             &labels,
@@ -1448,7 +1449,7 @@ impl AppState {
         let Some(sidebar) = self.snapshot.sidebar.data.as_deref() else {
             return Vec::new();
         };
-        let mut project_names = HashMap::new();
+        let mut project_names = project_labels(sidebar);
         let mut personal_ids = HashSet::new();
         personal_ids.insert(sidebar.personal_project.project.id.clone());
         for project in sidebar
@@ -1459,7 +1460,9 @@ impl AppState {
             if project.project.kind == ProjectKind::Personal {
                 personal_ids.insert(project.project.id.clone());
             }
-            project_names.insert(project.project.id.clone(), project_label(project));
+            project_names
+                .entry(project.project.id.clone())
+                .or_insert_with(|| project_label(project));
         }
         let threads: Vec<ThreadListEntry> = sidebar
             .projects

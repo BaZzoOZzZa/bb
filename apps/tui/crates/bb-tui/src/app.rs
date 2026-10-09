@@ -113,6 +113,7 @@ pub struct ServerInfo {
 #[derive(Debug, Clone)]
 pub enum Action {
     Key(KeyEvent),
+    Mouse(crossterm::event::MouseEvent),
     Resize,
     Tick {
         now: Instant,
@@ -257,7 +258,6 @@ pub struct AppState {
     pub executions: HashMap<String, ExecutionState>,
     pub inflight: HashMap<String, Inflight>,
     pub interaction_forms: HashMap<String, InteractionForm>,
-    pub interaction_follow_ups: HashMap<String, String>,
     pub new_thread: Option<NewThreadForm>,
     pub new_thread_generation: u64,
     pub new_thread_draft: Option<PromptDraft>,
@@ -288,6 +288,8 @@ pub struct AppState {
     pub automations: Option<AutomationsView>,
     pub splits: Vec<String>,
     pub split_maximized: bool,
+    pub theme: crate::theme::Theme,
+    pub mouse_areas: crate::mouse::MouseAreas,
     pub clock: Instant,
     pub now_ms: i64,
     pub frame: u64,
@@ -313,7 +315,6 @@ impl AppState {
             executions: HashMap::new(),
             inflight: HashMap::new(),
             interaction_forms: HashMap::new(),
-            interaction_follow_ups: HashMap::new(),
             new_thread: None,
             new_thread_generation: 0,
             new_thread_draft: None,
@@ -344,6 +345,8 @@ impl AppState {
             automations: None,
             splits: Vec::new(),
             split_maximized: false,
+            theme: crate::theme::Theme::default(),
+            mouse_areas: crate::mouse::MouseAreas::default(),
             clock: now,
             now_ms,
             frame: 0,
@@ -631,7 +634,7 @@ impl AppState {
         }
     }
 
-    fn toggle_group(&mut self, expand: Option<bool>) {
+    pub(crate) fn toggle_group(&mut self, expand: Option<bool>) {
         let Some(row) = self.selected_row().cloned() else {
             return;
         };
@@ -683,7 +686,7 @@ impl AppState {
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
+    pub(crate) fn move_selection(&mut self, delta: isize) {
         if self.rows.is_empty() {
             return;
         }
@@ -766,6 +769,11 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
 fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
     match action {
         Action::Key(key) => handle_key(state, key),
+        Action::Mouse(mouse) => {
+            let mut effects = crate::mouse::handle_mouse(state, mouse);
+            effects.extend(sync_active_typeahead(state));
+            effects
+        }
         Action::Resize => state.with_timeline(TimelineView::auto_load_older),
         Action::Tick { now, now_ms } => {
             state.clock = now;
@@ -965,7 +973,7 @@ fn sync_active_typeahead(state: &mut AppState) -> Vec<Effect> {
     }
 }
 
-fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     let mut effects = dispatch_key(state, key);
     effects.extend(sync_active_typeahead(state));
     effects

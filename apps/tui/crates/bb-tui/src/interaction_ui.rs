@@ -206,28 +206,7 @@ fn approval_body(
     (title, body)
 }
 
-fn approval_footer(
-    decisions: &[ApprovalDecision],
-    plan: bool,
-    form: &ApprovalForm,
-    width: usize,
-) -> Vec<Line<'static>> {
-    if let Some(input) = &form.reason {
-        let label = if plan { "Feedback: " } else { "Reason: " };
-        let mut spans = vec![Span::styled(label.to_owned(), bold())];
-        spans.extend(input_spans(input, false, true, Style::new()));
-        return vec![
-            Line::from(truncate_spans(spans, width)),
-            Line::from(Span::styled(
-                if plan {
-                    "Enter keep planning and send feedback · Esc back"
-                } else {
-                    "Enter deny and send the reason to the agent · Esc back"
-                },
-                muted(),
-            )),
-        ];
-    }
+fn approval_footer(decisions: &[ApprovalDecision], plan: bool) -> Vec<Line<'static>> {
     let items: Vec<(String, String)> = decisions
         .iter()
         .map(|decision| {
@@ -237,16 +216,7 @@ fn approval_footer(
             )
         })
         .collect();
-    let extra = if decisions.contains(&ApprovalDecision::Deny) {
-        if plan {
-            "f feedback · Esc leave"
-        } else {
-            "r deny with reason · Esc leave"
-        }
-    } else {
-        "Esc leave"
-    };
-    vec![button_line(&items, extra)]
+    vec![button_line(&items, "Esc leave")]
 }
 
 fn question_tabs(questions: &[Question], form: &QuestionForm) -> Line<'static> {
@@ -491,7 +461,7 @@ fn plugin_body(
         &[
             ("o".to_owned(), "Open in browser".to_owned()),
             ("y".to_owned(), "Copy link".to_owned()),
-            ("x".to_owned(), capitalize(cancel_label(*cancel))),
+            ("C-x".to_owned(), capitalize(cancel_label(*cancel))),
         ],
         "j/k scroll · Esc leave",
     )];
@@ -547,7 +517,7 @@ pub fn panel_view(state: &AppState, thread_id: &str, width: usize) -> PanelView 
         (RequestKind::Approval(payload), FormBody::Approval(approval)) => {
             let (heading, body) = approval_body(interaction, payload, approval, width);
             let decisions = ordered_decisions(&payload.available_decisions);
-            let footer = approval_footer(&decisions, false, approval, width);
+            let footer = approval_footer(&decisions, false);
             (Some(heading), body, footer, true)
         }
         (
@@ -556,14 +526,14 @@ pub fn panel_view(state: &AppState, thread_id: &str, width: usize) -> PanelView 
                 plan,
                 plan_file_path,
             },
-            FormBody::Approval(form_state),
+            FormBody::Approval(_),
         ) => {
             let mut body = render_markdown(plan, width.max(1), Style::new()).lines;
             if let Some(path) = plan_file_path.as_deref().filter(|path| !path.is_empty()) {
                 body.push(Line::from(Span::styled(path.to_owned(), muted())));
             }
             let decisions = ordered_decisions(&approval.available_decisions);
-            let footer = approval_footer(&decisions, true, form_state, width);
+            let footer = approval_footer(&decisions, true);
             let heading = approval
                 .reason
                 .clone()

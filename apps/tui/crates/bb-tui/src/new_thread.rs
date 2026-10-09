@@ -36,7 +36,7 @@ use crate::execution::{Load, PickerOption};
 use crate::input::{InputOutcome, LineInput};
 use crate::keymap::Command;
 use crate::prompt::PromptDraft;
-use crate::sidebar::project_label;
+use crate::sidebar::{project_label, project_labels};
 
 pub const NEW_THREAD_COMPOSER_ID: &str = "new-thread";
 const PROMPT_PLACEHOLDER: &str = "Describe the task for the new thread";
@@ -643,7 +643,15 @@ impl NewThreadForm {
             environment_unavailable: environment.is_none(),
         });
         Resolved {
-            project_label: project.map_or_else(|| self.project_id.clone(), project_label),
+            project_label: snapshot
+                .sidebar
+                .data
+                .as_deref()
+                .and_then(|sidebar| {
+                    crate::sidebar::project_display_label(sidebar, &self.project_id)
+                })
+                .or_else(|| project.map(project_label))
+                .unwrap_or_else(|| self.project_id.clone()),
             project_found: project.is_some(),
             projectless,
             source_host_ids: hosts
@@ -926,6 +934,7 @@ fn project_entries(snapshot: &StoreSnapshot, current: &str) -> Vec<(PickerItem, 
     let Some(sidebar) = snapshot.sidebar.data.as_deref() else {
         return Vec::new();
     };
+    let labels = project_labels(sidebar);
     sidebar
         .projects
         .iter()
@@ -934,7 +943,10 @@ fn project_entries(snapshot: &StoreSnapshot, current: &str) -> Vec<(PickerItem, 
         .map(|project| {
             (
                 item(
-                    project_label(project),
+                    labels
+                        .get(&project.project.id)
+                        .cloned()
+                        .unwrap_or_else(|| project_label(project)),
                     None,
                     false,
                     project.project.id == current,

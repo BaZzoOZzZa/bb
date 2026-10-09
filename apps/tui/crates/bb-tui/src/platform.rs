@@ -102,6 +102,7 @@ pub struct SystemPlatform {
     recents: Option<PathBuf>,
     keyboard_enhanced: bool,
     focus_reporting: bool,
+    mouse_capture: bool,
     tmux: bool,
 }
 
@@ -112,6 +113,7 @@ impl SystemPlatform {
             recents: recents_path(),
             keyboard_enhanced: false,
             focus_reporting: false,
+            mouse_capture: false,
             tmux: std::env::var_os("TMUX").is_some(),
         }
     }
@@ -122,12 +124,18 @@ impl SystemPlatform {
             recents: None,
             keyboard_enhanced: false,
             focus_reporting: false,
+            mouse_capture: false,
             tmux: false,
         }
     }
 
     pub fn with_focus_reporting(mut self, enabled: bool) -> Self {
         self.focus_reporting = enabled;
+        self
+    }
+
+    pub fn with_mouse_capture(mut self, enabled: bool) -> Self {
+        self.mouse_capture = enabled;
         self
     }
 
@@ -451,6 +459,9 @@ impl Platform for SystemPlatform {
         if self.focus_reporting {
             let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
         }
+        if self.mouse_capture {
+            let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+        }
         let _ = crossterm::execute!(
             stdout,
             DisableBracketedPaste,
@@ -463,6 +474,9 @@ impl Platform for SystemPlatform {
         let _ = crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste);
         if self.focus_reporting {
             let _ = crossterm::execute!(stdout, crossterm::event::EnableFocusChange);
+        }
+        if self.mouse_capture {
+            let _ = crossterm::execute!(stdout, crossterm::event::EnableMouseCapture);
         }
         if self.keyboard_enhanced {
             let _ = crossterm::execute!(
@@ -505,6 +519,9 @@ impl Platform for SystemPlatform {
         if self.focus_reporting {
             let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
         }
+        if self.mouse_capture {
+            let _ = crossterm::execute!(stdout, crossterm::event::DisableMouseCapture);
+        }
         crossterm::execute!(
             stdout,
             DisableBracketedPaste,
@@ -526,6 +543,9 @@ impl Platform for SystemPlatform {
             .map_err(|error| error.to_string());
         if self.focus_reporting {
             let _ = crossterm::execute!(stdout, crossterm::event::EnableFocusChange);
+        }
+        if self.mouse_capture {
+            let _ = crossterm::execute!(stdout, crossterm::event::EnableMouseCapture);
         }
         if self.keyboard_enhanced {
             let _ = crossterm::execute!(

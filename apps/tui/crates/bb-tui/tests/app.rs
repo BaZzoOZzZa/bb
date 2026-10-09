@@ -52,7 +52,7 @@ fn sidebar_renders_tree_glyphs_times_and_status_bar() {
     assert!(lines[4].contains("1d"), "{text}");
     assert!(lines[5].contains("▾ beta"), "{text}");
     assert!(lines[6].contains("Refactor parser"), "{text}");
-    assert!(lines[7].contains("▾ Personal"), "{text}");
+    assert!(!text.contains("Personal"), "{text}");
     let status = lines.last().unwrap();
     assert!(status.contains("http://127.0.0.1:4000/"), "{status}");
     assert!(status.contains("● connected"), "{status}");
@@ -73,10 +73,7 @@ fn first_load_selects_first_thread_and_vim_keys_move() {
     press(&mut state, KeyCode::Char('k'));
     assert_eq!(selected_key(&state), Some(RowKey::Group("proj_a".into())));
     press_mod(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
-    assert_eq!(
-        selected_key(&state),
-        Some(RowKey::Group("proj_personal".into()))
-    );
+    assert_eq!(selected_key(&state), thread_key("thr_other"));
     press(&mut state, KeyCode::Char('g'));
     assert_eq!(state.selected, 0);
 }
@@ -179,7 +176,7 @@ fn slash_filters_threads_and_esc_clears() {
     assert!(screen(&state).contains("No matching threads"));
     press(&mut state, KeyCode::Esc);
     assert_eq!(state.filter, "");
-    assert_eq!(state.rows.len(), 7);
+    assert_eq!(state.rows.len(), 6);
     press(&mut state, KeyCode::Char('/'));
     type_text(&mut state, "docs");
     press(&mut state, KeyCode::Enter);
@@ -498,10 +495,10 @@ fn sidebar_scrolls_to_keep_selection_visible() {
     let mut state = loaded_state(sidebar);
     press_mod(&mut state, KeyCode::Char('G'), KeyModifiers::SHIFT);
     let lines = render_lines(&state, 80, 12);
-    assert!(lines[9].contains("Personal"), "{lines:?}");
+    assert!(lines[9].contains("Task 29"), "{lines:?}");
     press(&mut state, KeyCode::Char('k'));
     let lines = render_lines(&state, 80, 12);
-    assert!(lines[8].contains("Task 29"), "{lines:?}");
+    assert!(lines[8].contains("Task 28"), "{lines:?}");
     press(&mut state, KeyCode::Char('g'));
     let lines = render_lines(&state, 80, 12);
     assert!(lines[1].contains("alpha"), "{lines:?}");

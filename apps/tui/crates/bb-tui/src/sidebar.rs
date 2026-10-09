@@ -88,6 +88,156 @@ pub fn project_label(project: &ProjectWithThreadsResponse) -> String {
     project.project.name.clone()
 }
 
+fn all_projects(
+    sidebar: &SidebarBootstrapResponse,
+) -> impl Iterator<Item = &ProjectWithThreadsResponse> {
+    sidebar
+        .projects
+        .iter()
+        .chain(std::iter::once(&sidebar.personal_project))
+        .filter(|project| !project.project.id.is_empty())
+}
+
+fn remote_tail(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    let path = match trimmed.split_once("://") {
+        Some((_, rest)) => rest.split_once('/').map(|(_, path)| path)?,
+        None => trimmed.rsplit_once(':').map(|(_, path)| path)?,
+    };
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let tail = parts[parts.len().saturating_sub(2)..].join("/");
+    (!tail.is_empty()).then_some(tail)
+}
+
+fn source_path(project: &ProjectWithThreadsResponse) -> Option<&str> {
+    project
+        .sources
+        .iter()
+        .find(|source| source.is_default)
+        .or_else(|| project.sources.first())
+        .map(|source| source.path.trim_end_matches(['/', '\\']))
+        .filter(|path| !path.is_empty())
+}
+
+fn path_tail(path: &str, depth: usize) -> String {
+    let parts: Vec<&str> = path
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts[parts.len().saturating_sub(depth)..].join("/")
+}
+
+fn distinct_path_tails(paths: &[Option<&str>]) -> Vec<Option<String>> {
+    let deepest = paths
+        .iter()
+        .flatten()
+        .map(|path| {
+            path.split(['/', '\\'])
+                .filter(|part| !part.is_empty())
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    let mut depths = vec![1usize; paths.len()];
+    for _ in 0..deepest {
+        let tails: Vec<Option<String>> = paths
+            .iter()
+            .zip(&depths)
+            .map(|(path, depth)| path.map(|path| path_tail(path, *depth)))
+            .collect();
+        let mut changed = false;
+        for (index, tail) in tails.iter().enumerate() {
+            let Some(tail) = tail else { continue };
+            if tails
+                .iter()
+                .enumerate()
+                .any(|(other, value)| other != index && value.as_ref() == Some(tail))
+                && depths[index] < deepest
+            {
+                depths[index] += 1;
+                changed = true;
+            }
+        }
+        if !changed {
+            return tails;
+        }
+    }
+    paths
+        .iter()
+        .zip(&depths)
+        .map(|(path, depth)| path.map(|path| path_tail(path, *depth)))
+        .collect()
+}
+
+fn unique_among(values: &[Option<String>], index: usize) -> Option<String> {
+    let value = values[index].as_ref()?;
+    let duplicated = values
+        .iter()
+        .enumerate()
+        .any(|(other, candidate)| other != index && candidate.as_ref() == Some(value));
+    (!duplicated).then(|| value.clone())
+}
+
+pub fn project_labels(sidebar: &SidebarBootstrapResponse) -> HashMap<String, String> {
+    let projects: Vec<&ProjectWithThreadsResponse> = all_projects(sidebar).collect();
+    let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, project) in projects.iter().enumerate() {
+        by_name
+            .entry(project_label(project).trim().to_lowercase())
+            .or_default()
+            .push(index);
+    }
+    let mut labels = HashMap::new();
+    for indexes in by_name.values() {
+        if indexes.len() == 1 {
+            let project = projects[indexes[0]];
+            labels.insert(project.project.id.clone(), project_label(project));
+            continue;
+        }
+        let remotes: Vec<Option<String>> = indexes
+            .iter()
+            .map(|index| {
+                projects[*index]
+                    .project
+                    .git_remote_url
+                    .as_deref()
+                    .and_then(remote_tail)
+            })
+            .collect();
+        let paths: Vec<Option<&str>> = indexes
+            .iter()
+            .map(|index| source_path(projects[*index]))
+            .collect();
+        let tails = distinct_path_tails(&paths);
+        for (position, index) in indexes.iter().enumerate() {
+            let project = projects[*index];
+            let qualifier = unique_among(&remotes, position)
+                .or_else(|| unique_among(&tails, position))
+                .unwrap_or_else(|| {
+                    let id = &project.project.id;
+                    id.strip_prefix("proj_")
+                        .unwrap_or(id)
+                        .chars()
+                        .take(8)
+                        .collect()
+                });
+            labels.insert(
+                project.project.id.clone(),
+                format!("{} ({qualifier})", project_label(project)),
+            );
+        }
+    }
+    labels
+}
+
+pub fn project_display_label(
+    sidebar: &SidebarBootstrapResponse,
+    project_id: &str,
+) -> Option<String> {
+    project_labels(sidebar).remove(project_id)
+}
+
 fn compare_created_desc(left: &ThreadListEntry, right: &ThreadListEntry) -> Ordering {
     right
         .thread
@@ -295,12 +445,25 @@ impl<'a> Emitter<'_, 'a> {
 }
 
 pub fn build_rows(sidebar: &SidebarBootstrapResponse, view: SidebarView<'_>) -> Vec<SidebarRow> {
+    let has_projects = sidebar
+        .projects
+        .iter()
+        .any(|project| project.project.kind != ProjectKind::Personal);
     let projects: Vec<&ProjectWithThreadsResponse> = sidebar
         .projects
         .iter()
         .chain(std::iter::once(&sidebar.personal_project))
-        .filter(|project| !project.project.id.is_empty() || !project.threads.is_empty())
+        .filter(|project| {
+            if std::ptr::eq(*project, &sidebar.personal_project)
+                || project.project.kind == ProjectKind::Personal
+            {
+                project.threads.iter().any(is_listed) || !has_projects
+            } else {
+                !project.project.id.is_empty() || !project.threads.is_empty()
+            }
+        })
         .collect();
+    let labels = project_labels(sidebar);
     let listed: Vec<&ThreadListEntry> = projects
         .iter()
         .flat_map(|project| project.threads.iter())
@@ -363,7 +526,10 @@ pub fn build_rows(sidebar: &SidebarBootstrapResponse, view: SidebarView<'_>) -> 
         project_roots.sort_by(|a, b| compare_standard(a, b));
         emitter.emit_group(
             project.project.id.clone(),
-            project_label(project),
+            labels
+                .get(&project.project.id)
+                .cloned()
+                .unwrap_or_else(|| project_label(project)),
             project_roots,
             false,
         );
@@ -480,7 +646,6 @@ mod tests {
                 "# beta",
                 "Fix the bug",
                 "Orphan child",
-                "# Personal",
             ]
         );
         let recent = rows.iter().find_map(SidebarRow::thread).map(|_| ());
@@ -514,7 +679,6 @@ mod tests {
                 "Recent",
                 "  Child agent",
                 "# beta",
-                "# Personal",
             ]
         );
     }
@@ -548,5 +712,80 @@ mod tests {
         let mut sidebar = sample();
         sidebar.projects[0].threads[0].has_pending_interaction = true;
         assert_eq!(attention_count(&sidebar), 2);
+    }
+
+    fn sourced(
+        id: &str,
+        name: &str,
+        remote: Option<&str>,
+        path: &str,
+    ) -> ProjectWithThreadsResponse {
+        let mut project = project(id, name, vec![]);
+        project.project.git_remote_url = remote.map(Into::into);
+        project.sources = vec![bb_wire::project::ProjectSource {
+            path: path.into(),
+            is_default: true,
+            ..Default::default()
+        }];
+        project
+    }
+
+    #[test]
+    fn duplicate_project_names_get_remote_path_or_id_qualifiers() {
+        let sidebar = SidebarBootstrapResponse {
+            projects: vec![
+                sourced(
+                    "p1",
+                    "bb",
+                    Some("git@github.com:get-bb/bb.git"),
+                    "/home/a/work/bb",
+                ),
+                sourced(
+                    "p2",
+                    "BB",
+                    Some("https://github.com/fork/bb"),
+                    "/home/a/tui/bb",
+                ),
+                sourced("p3", "app", None, "/home/a/work/app"),
+                sourced("p4", "app", None, "/srv/other/app"),
+                sourced("proj_abcdef123", "web", None, "/x/web"),
+                sourced("proj_zzzzzz999", "web", None, "/x/web"),
+                sourced("p7", "solo", None, "/x/solo"),
+            ],
+            ..SidebarBootstrapResponse::default()
+        };
+        let labels = project_labels(&sidebar);
+        assert_eq!(labels["p1"], "bb (get-bb/bb)");
+        assert_eq!(labels["p2"], "BB (fork/bb)");
+        assert_eq!(labels["p3"], "app (work/app)");
+        assert_eq!(labels["p4"], "app (other/app)");
+        assert_eq!(labels["proj_abcdef123"], "web (abcdef12)");
+        assert_eq!(labels["proj_zzzzzz999"], "web (zzzzzz99)");
+        assert_eq!(labels["p7"], "solo");
+    }
+
+    #[test]
+    fn empty_personal_project_is_hidden_unless_there_are_no_projects() {
+        let collapsed = HashSet::new();
+        let expanded = HashSet::new();
+        let view = SidebarView {
+            collapsed: &collapsed,
+            expanded_threads: &expanded,
+            filter: "",
+        };
+        let mut sidebar = SidebarBootstrapResponse {
+            projects: vec![project("p1", "alpha", vec![])],
+            personal_project: project("proj_personal", "Personal", vec![]),
+            ..SidebarBootstrapResponse::default()
+        };
+        assert_eq!(labels(&build_rows(&sidebar, view)), vec!["# alpha"]);
+        sidebar.personal_project.threads = vec![thread("t1", "proj_personal", "Note", 1)];
+        assert_eq!(
+            labels(&build_rows(&sidebar, view)),
+            vec!["# alpha", "# Personal", "Note"]
+        );
+        sidebar.projects.clear();
+        sidebar.personal_project.threads.clear();
+        assert_eq!(labels(&build_rows(&sidebar, view)), vec!["# Personal"]);
     }
 }

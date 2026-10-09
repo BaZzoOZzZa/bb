@@ -23,9 +23,9 @@ use crate::keymap::{Command, Keymap};
 use crate::prompt::{
     ExecutionSelection, PromptDraft, ShortcutInputs, ShortcutRequest, SubmitMode, SubmitModeInputs,
     build_auto_follow_up_request, build_create_queued_follow_up_request,
-    build_follow_up_shortcut_request, build_follow_up_submit_mode, build_steer_follow_up_request,
-    can_submit_follow_up_shortcut, cycle_reasoning_value, cycle_value, history_drafts, placeholder,
-    queued_input_to_draft, should_queue_follow_up, should_steer_when_ready,
+    build_follow_up_shortcut_request, build_follow_up_submit_mode, can_submit_follow_up_shortcut,
+    cycle_reasoning_value, cycle_value, history_drafts, placeholder, queued_input_to_draft,
+    should_queue_follow_up, should_steer_when_ready,
 };
 use crate::typeahead::ComposerTarget;
 
@@ -420,25 +420,6 @@ impl AppState {
             thread_id: thread_id.to_owned(),
             queued_message_id: queued_message_id.to_owned(),
             mode,
-        })]
-    }
-
-    pub(crate) fn send_follow_up_text(&mut self, thread_id: &str, text: String) -> Vec<Effect> {
-        let draft = PromptDraft::from_text(text);
-        let execution = self.execution_selection(thread_id);
-        let Some(request) = build_steer_follow_up_request(draft.to_input(), execution.as_ref())
-        else {
-            return Vec::new();
-        };
-        if let Some(composer) = self.composers.get_mut(thread_id)
-            && composer.pending_restore.is_none()
-        {
-            composer.pending_restore = Some(draft);
-        }
-        self.inflight_mut(thread_id).submitting += 1;
-        vec![Effect::Mutate(Mutation::SendMessage {
-            thread_id: thread_id.to_owned(),
-            request: Box::new(request),
         })]
     }
 

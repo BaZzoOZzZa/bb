@@ -13,6 +13,12 @@ use clap::{Parser, Subcommand};
 
 use crate::app::ServerInfo;
 use crate::composer::SubmitKey;
+use crate::theme::Appearance;
+
+fn parse_appearance(value: &str) -> Result<Appearance, String> {
+    Appearance::parse(value)
+        .ok_or_else(|| format!("expected `auto`, `dark` or `light`, got `{value}`"))
+}
 
 fn parse_submit_key(value: &str) -> Result<SubmitKey, String> {
     SubmitKey::parse(value)
@@ -48,6 +54,19 @@ pub struct Args {
         help = "Settings file (default: ~/.config/bb-tui/config.toml)"
     )]
     pub config_file: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "BB_TUI_APPEARANCE",
+        value_parser = parse_appearance,
+        help = "Color scheme: `auto` (read COLORFGBG), `dark` or `light`; overrides `appearance` in config.toml. NO_COLOR turns colors off"
+    )]
+    pub appearance: Option<Appearance>,
+    #[arg(
+        long,
+        env = "BB_TUI_NO_MOUSE",
+        help = "Do not capture the mouse (keeps the terminal's own text selection); overrides `mouse` in config.toml"
+    )]
+    pub no_mouse: bool,
     #[command(subcommand)]
     pub command: Option<TopCommand>,
 }
@@ -58,6 +77,10 @@ pub enum TopCommand {
     Connect(ConnectCommand),
     #[command(about = "Print the settings file path and the effective settings")]
     Config,
+    #[command(
+        about = "Check server discovery, the HTTP API and the realtime websocket (read-only)"
+    )]
+    Doctor,
 }
 
 #[derive(Debug, Subcommand)]

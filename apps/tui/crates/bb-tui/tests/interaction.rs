@@ -8,8 +8,6 @@ use bb_tui::api::{InteractionValue, Mutation, MutationReply};
 use bb_tui::app::{Action, AppState, Effect, Focus, ServerInfo, update};
 use bb_tui::runtime::run;
 use bb_wire::interaction::PendingInteraction;
-use bb_wire::prompt::PromptInput;
-use bb_wire::queue::SendMessageMode;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::stream;
 use ratatui::Terminal;
@@ -172,23 +170,19 @@ fn command_approval_renders_and_allow_for_session_sends_the_session_grant() {
 }
 
 #[test]
-fn deny_with_reason_resolves_then_steers_the_reason_to_the_agent() {
+fn deny_resolves_with_only_the_decision_like_the_web_banner() {
     let mut state = waiting_state(vec![command_approval()]);
-    key(&mut state, KeyCode::Char('r'));
-    type_text(&mut state, "use pnpm instead");
-    assert!(screen(&state).contains("Reason: use pnpm instead"));
-    let mutation = only_mutation(key(&mut state, KeyCode::Enter));
+    assert!(key(&mut state, KeyCode::Char('r')).is_empty());
+    let mutation = only_mutation(key(&mut state, KeyCode::Char('d')));
     assert_eq!(resolution_json(&mutation), json!({"decision": "deny"}));
-
-    let follow_up = only_mutation(finish(&mut state, mutation, Ok(MutationReply::Done)));
-    match follow_up {
-        Mutation::SendMessage { thread_id, request } => {
-            assert_eq!(thread_id, THREAD);
-            assert_eq!(request.mode, SendMessageMode::SteerIfActive);
-            assert_eq!(request.input, vec![PromptInput::text("use pnpm instead")]);
-        }
-        other => panic!("unexpected {other:?}"),
-    }
+    assert!(!screen(&state).contains("Reason"));
+    let effects = finish(&mut state, mutation, Ok(MutationReply::Done));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Mutate(_))),
+        "{effects:?}"
+    );
 }
 
 #[test]
@@ -210,7 +204,7 @@ fn failed_resolution_shows_the_error_and_allows_a_retry() {
 }
 
 #[test]
-fn plan_review_approves_or_keeps_planning_with_feedback() {
+fn plan_review_approves_or_keeps_planning() {
     let plan = pending(
         "int_plan",
         json!({
@@ -237,10 +231,8 @@ fn plan_review_approves_or_keeps_planning_with_feedback() {
     );
     assert!(key(&mut state, KeyCode::Char('s')).is_empty());
 
-    key(&mut state, KeyCode::Char('f'));
-    type_text(&mut state, "split step 2");
-    assert!(screen(&state).contains("Feedback: split step 2"));
-    let mutation = only_mutation(key(&mut state, KeyCode::Enter));
+    assert!(key(&mut state, KeyCode::Char('f')).is_empty());
+    let mutation = only_mutation(key(&mut state, KeyCode::Char('d')));
     assert_eq!(resolution_json(&mutation), json!({"decision": "deny"}));
 }
 
@@ -505,15 +497,16 @@ fn unknown_plugin_request_falls_back_to_json_and_web_link() {
         "{text}"
     );
     assert!(text.contains("\"teal\""), "{text}");
-    assert!(text.contains("[x] Stop turn"), "{text}");
+    assert!(text.contains("[C-x] Stop turn"), "{text}");
     assert_eq!(
         key(&mut state, KeyCode::Char('o')),
         vec![Effect::OpenExternal(
             "http://127.0.0.1:4000/threads/thr_wait".into()
         )]
     );
+    assert_eq!(key(&mut state, KeyCode::Char('x')), Vec::new());
     assert_eq!(
-        only_mutation(key(&mut state, KeyCode::Char('x'))),
+        only_mutation(ctrl(&mut state, 'x')),
         Mutation::Stop {
             thread_id: THREAD.into()
         }

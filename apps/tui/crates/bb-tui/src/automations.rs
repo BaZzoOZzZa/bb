@@ -1138,6 +1138,7 @@ fn project_choices(state: &AppState) -> Vec<(String, String)> {
     let Some(sidebar) = state.snapshot.sidebar.data.as_deref() else {
         return Vec::new();
     };
+    let labels = crate::sidebar::project_labels(sidebar);
     sidebar
         .projects
         .iter()
@@ -1146,7 +1147,10 @@ fn project_choices(state: &AppState) -> Vec<(String, String)> {
         .map(|project| {
             (
                 project.project.id.clone(),
-                project_label(&project.project.name, &project.project.id),
+                labels
+                    .get(&project.project.id)
+                    .cloned()
+                    .unwrap_or_else(|| project_label(&project.project.name, &project.project.id)),
             )
         })
         .collect()

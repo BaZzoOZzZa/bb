@@ -1466,3 +1466,24 @@ async fn renders_live_settings_read_only() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; GET requests and one websocket upgrade"]
+async fn doctor_live_read_only() {
+    use clap::Parser;
+    let dir = tempfile::tempdir().expect("dir");
+    let config = dir.path().join("config.toml");
+    let args = bb_tui::startup::Args::try_parse_from([
+        "bb-tui",
+        "--config",
+        config.to_str().expect("path"),
+        "doctor",
+    ])
+    .expect("args");
+    let report = bb_tui::doctor::diagnose(&args).await;
+    let text = report.render();
+    println!("{text}");
+    assert!(!report.failed(), "{text}");
+    assert!(text.contains("GET /health"), "{text}");
+    assert!(text.contains("websocket"), "{text}");
+}

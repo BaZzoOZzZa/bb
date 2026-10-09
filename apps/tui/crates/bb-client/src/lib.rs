@@ -19,5 +19,5 @@ pub use endpoint::ServerEndpoint;
 pub use error::{ClientError, HttpError};
 pub use http::{BbClient, ClientConfig};
 pub use profiles::{CredentialStore, ProfileList, ProfileStore, ServerProfile};
-pub use realtime::{RealtimeClient, RealtimeConfig, RealtimeEvent, Subscription};
+pub use realtime::{RealtimeClient, RealtimeConfig, RealtimeEvent, Subscription, probe_realtime};
 pub use terminal::{TerminalConfig, TerminalConnection, TerminalConnectionState, TerminalEvent};

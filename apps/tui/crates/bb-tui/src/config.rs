@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, TableLike};
 
 use crate::composer::SubmitKey;
+use crate::theme::Appearance;
 
 pub const CONFIG_FILE: &str = "config.toml";
 
@@ -95,11 +96,25 @@ impl Default for NotificationPrefs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub submit_key: Option<SubmitKey>,
     pub theme: Option<String>,
+    pub appearance: Appearance,
+    pub mouse: bool,
     pub notifications: NotificationPrefs,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            submit_key: None,
+            theme: None,
+            appearance: Appearance::Auto,
+            mouse: true,
+            notifications: NotificationPrefs::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -222,6 +237,14 @@ pub fn parse(raw: &str) -> (Config, Vec<String>) {
                 Some(name) => config.theme = Some(name.to_owned()),
                 None => reader.warnings.push("`theme` must be a theme name".into()),
             },
+            "appearance" => reader.choice(
+                key,
+                item,
+                Appearance::parse,
+                "\"auto\", \"dark\", \"light\"",
+                &mut config.appearance,
+            ),
+            "mouse" => reader.bool(key, item, &mut config.mouse),
             "notifications" => match item.as_table_like() {
                 Some(table) => notifications = Some(table),
                 None => reader
@@ -281,6 +304,8 @@ pub fn render(config: &Config) -> String {
         "theme = \"{}\"",
         theme.replace('\\', "\\\\").replace('"', "\\\"")
     );
+    let _ = writeln!(out, "appearance = \"{}\"", config.appearance.as_str());
+    let _ = writeln!(out, "mouse = {}", config.mouse);
     let prefs = &config.notifications;
     let _ = writeln!(out, "\n[notifications]");
     for (key, value) in [
@@ -351,6 +376,8 @@ mod tests {
             r#"
 submit_key = "ctrl-enter"
 theme = "Solarized (dark)"
+appearance = "light"
+mouse = false
 
 [notifications]
 enabled = true
@@ -368,6 +395,8 @@ terminal_title = true
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(config.submit_key, Some(SubmitKey::ModifierEnter));
         assert_eq!(config.theme.as_deref(), Some("Solarized (dark)"));
+        assert_eq!(config.appearance, Appearance::Light);
+        assert!(!config.mouse);
         assert_eq!(
             config.notifications,
             NotificationPrefs {
@@ -391,7 +420,7 @@ terminal_title = true
     #[test]
     fn invalid_values_warn_and_keep_defaults() {
         let (config, warnings) = parse(
-            "submit_key = \"space\"\ncolor = 1\nnotifications = { bell = \"loud\", desktop = \"pigeon\", sound = true }\n",
+            "submit_key = \"space\"\ncolor = 1\nappearance = \"sepia\"\nnotifications = { bell = \"loud\", desktop = \"pigeon\", sound = true }\n",
         );
         assert_eq!(config, Config::default());
         assert_eq!(
@@ -399,6 +428,7 @@ terminal_title = true
             [
                 "`submit_key` must be \"enter\" or \"ctrl-enter\"",
                 "unknown setting `color`",
+                "`appearance` must be one of \"auto\", \"dark\", \"light\"",
                 "`notifications.bell` must be true or false; using true",
                 "`notifications.desktop` must be one of \"auto\", \"osc9\", \"osc777\", \"native\", \"off\"",
                 "unknown setting `notifications.sound`",

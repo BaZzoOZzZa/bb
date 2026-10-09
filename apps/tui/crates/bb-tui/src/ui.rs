@@ -69,6 +69,12 @@ fn pane_block(title: &str, focused: bool) -> Block<'static> {
 }
 
 pub fn render(state: &AppState, frame: &mut Frame) {
+    state.mouse_areas.clear();
+    render_frame(state, frame);
+    crate::theme::apply(state.theme, frame.buffer_mut());
+}
+
+fn render_frame(state: &AppState, frame: &mut Frame) {
     let area = frame.area();
     let banner = banner_text(state);
     let [banner_area, body, status] = Layout::vertical([
@@ -118,6 +124,7 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     }
     if state.panel_visible {
         crate::panel_ui::render_panel(state, frame, panel_area);
+        state.mouse_areas.panel.set(Some(panel_area));
     }
     if let Some(view) = &state.settings {
         crate::settings_ui::render_settings(state, view, frame, body);
@@ -272,6 +279,7 @@ fn render_sidebar(state: &AppState, frame: &mut Frame, area: Rect) {
     }
     offset = offset.min(state.rows.len().saturating_sub(height));
     state.sidebar_offset.set(offset);
+    state.mouse_areas.sidebar.set(Some((list_area, offset)));
 
     let width = usize::from(list_area.width);
     for (line_index, (index, row)) in state
@@ -329,8 +337,15 @@ fn render_sidebar(state: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn group_line(group: &GroupRow, width: usize) -> Line<'static> {
-    let arrow = if group.collapsed { "▸ " } else { "▾ " };
-    let count = group.thread_count.to_string();
+    let arrow = match (group.thread_count, group.collapsed) {
+        (0, _) => "  ",
+        (_, true) => "▸ ",
+        (_, false) => "▾ ",
+    };
+    let count = match group.thread_count {
+        0 => "no threads".to_owned(),
+        count => count.to_string(),
+    };
     let attention = if group.collapsed && group.attention > 0 {
         format!("●{} ", group.attention)
     } else {
@@ -469,11 +484,22 @@ fn render_thread_pane(
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     let meta = meta_line(state, thread_id, usize::from(meta_area.width));
     frame.render_widget(Paragraph::new(meta), meta_area);
+    let record = |timeline: Rect, composer: Option<Rect>, interaction: Option<Rect>| {
+        state.mouse_areas.record_pane(crate::mouse::PaneArea {
+            thread_id: thread_id.to_owned(),
+            pane: number.filter(|_| state.is_split()).map(|number| number - 1),
+            area,
+            timeline,
+            composer,
+            interaction,
+        });
+    };
     if !is_open {
         if state.interaction_panel_visible(thread_id) && body.height >= 3 {
             let [timeline_area, notice] =
                 Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(body);
             render_timeline(state, frame, timeline_area, thread_id, false);
+            record(timeline_area, None, None);
             frame.render_widget(
                 Paragraph::new(truncate(
                     "? Waiting for your answer · focus this pane to respond",
@@ -489,6 +515,7 @@ fn render_thread_pane(
             || body.height < 6
         {
             render_timeline(state, frame, body, thread_id, false);
+            record(body, None, None);
             return;
         }
         let wanted = composer_ui::composer_height(state, thread_id, usize::from(body.width));
@@ -497,6 +524,7 @@ fn render_thread_pane(
             Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
         render_timeline(state, frame, timeline_area, thread_id, false);
         composer_ui::render_composer(state, frame, composer_area, thread_id);
+        record(timeline_area, Some(composer_area), None);
         return;
     }
     if state.interaction_panel_visible(thread_id) && body.height >= 6 {
@@ -506,10 +534,12 @@ fn render_thread_pane(
             Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
         render_timeline(state, frame, timeline_area, thread_id, focused);
         crate::interaction_ui::render_panel(state, frame, panel_area, thread_id);
+        record(timeline_area, None, Some(panel_area));
         return;
     }
     if !state.composer_available() || body.height < 6 {
         render_timeline(state, frame, body, thread_id, focused);
+        record(body, None, None);
         return;
     }
     let wanted = composer_ui::composer_height(state, thread_id, usize::from(body.width));
@@ -518,6 +548,7 @@ fn render_thread_pane(
         Layout::vertical([Constraint::Fill(1), Constraint::Length(height)]).areas(body);
     render_timeline(state, frame, timeline_area, thread_id, focused);
     composer_ui::render_composer(state, frame, composer_area, thread_id);
+    record(timeline_area, Some(composer_area), None);
 }
 
 fn meta_line(state: &AppState, thread_id: &str, width: usize) -> Line<'static> {
@@ -919,6 +950,10 @@ fn help_entries(state: &AppState) -> Vec<(String, String)> {
         ),
         ("↑/↓".to_owned(), "Composer: prompt history".to_owned()),
         (
+            "mouse".to_owned(),
+            "Click: open / focus / select · wheel: scroll".to_owned(),
+        ),
+        (
             "Esc Esc".to_owned(),
             "Composer: stop the running turn".to_owned(),
         ),
@@ -928,14 +963,13 @@ fn help_entries(state: &AppState) -> Vec<(String, String)> {
             "Request: allow once / for session / deny".to_owned(),
         ),
         (
-            "r / f".to_owned(),
-            "Request: deny or keep planning with a reason".to_owned(),
-        ),
-        (
             "1-9 Space".to_owned(),
             "Question: choose / toggle option".to_owned(),
         ),
-        ("C-x".to_owned(), "Request: cancel / stop turn".to_owned()),
+        (
+            "C-x".to_owned(),
+            "Question, secret, plugin request: cancel (provider question: stop turn)".to_owned(),
+        ),
         (
             "j/k Enter".to_owned(),
             "New thread: move between fields / pick a value".to_owned(),

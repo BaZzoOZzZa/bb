@@ -1,27 +1,344 @@
 # bb-tui
 
-Terminal client for bb, written in Rust (ratatui + crossterm + tokio).
+Terminal client for bb, written in Rust (ratatui + crossterm + tokio). It is
+a public client of the bb server: everything goes through the same REST API
+and realtime WebSocket the web app uses, and the server keeps owning product
+policy. The TUI never talks to the host daemon.
 
-## Layout
+## Contents
 
-- `crates/bb-wire` — serde mirrors of the server contract
-- `crates/bb-client` — REST, realtime WebSocket, connect auth
-- `crates/bb-store` — cache, invalidation, timeline merge
-- `crates/bb-view` — view-model and formatting ported from `packages/thread-view`
-- `crates/bb-tui` — the `bb-tui` binary
+- [Install](#install)
+- [Run](#run)
+- [Connecting to a server](#connecting-to-a-server)
+- [Environment variables](#environment-variables)
+- [Settings file](#settings-file)
+- [Colors and mouse](#colors-and-mouse)
+- [Read-only mode](#read-only-mode)
+- [bb-tui doctor](#bb-tui-doctor)
+- [Keys](#keys)
+- Feature guides: [timeline](#thread-timeline), [composer](#composer),
+  [mentions](#mentions-and-attachments), [requests](#pending-requests),
+  [new thread](#new-thread), [palette](#command-palette-and-search),
+  [right panel](#right-panel), [terminals](#terminals),
+  [notifications](#notifications), [settings](#server-settings),
+  [automations](#automations), [split panes](#split-panes)
+- [Coverage compared with the web app](#coverage-compared-with-the-web-app)
+- [Development](#development)
 
-## Build and run
+## Install
+
+You need Rust 1.88 or newer and a running bb server
+(the bb desktop app, `bb serve`, or a machine reachable through bb connect).
 
 ```sh
 cd apps/tui
-cargo run -- --server-url http://127.0.0.1:3000
-cargo build --release
+cargo install --path crates/bb-tui
+cargo install --path crates/bb-tui --features keyring,notifications
 ```
 
-`--server-url` falls back to `BB_SERVER_URL`. Press `q` to quit and `?` for
-the key list. `--read-only` (or `BB_TUI_READ_ONLY=1`) never sends changes to
-the server: opening a thread does not mark it read, and rename, archive, pin
-and read toggles are refused.
+The binary is `bb-tui`. Optional features:
+
+| Feature | Adds |
+|---|---|
+| `keyring` | stores bb connect machine credentials in the OS keyring instead of `~/.config/bb-tui/credentials.json` |
+| `notifications` | `desktop = "native"`: system notifications through D-Bus, macOS or Windows |
+
+From the repository root the package also builds through Turbo:
+
+```sh
+pnpm exec turbo run build test lint typecheck --filter=@bb/tui
+```
+
+## Run
+
+```sh
+bb-tui
+bb-tui --server-url http://127.0.0.1:38886
+bb-tui --profile work
+bb-tui --read-only
+```
+
+| Command | Does |
+|---|---|
+| `bb-tui` | opens the TUI against the discovered server |
+| `bb-tui connect pair <code>` | redeems a bb connect machine code and saves a profile |
+| `bb-tui connect list` | lists saved profiles |
+| `bb-tui config` | prints the settings file path, any warnings and the effective settings |
+| `bb-tui doctor` | checks discovery, the HTTP API and the WebSocket, then exits |
+| `bb-tui --help`, `--version` | usage and version |
+
+| Flag | Env | Meaning |
+|---|---|---|
+| `--server-url <url>` | `BB_SERVER_URL` | server to use (cannot be combined with `--profile`) |
+| `--profile <name>` | `BB_TUI_PROFILE` | saved profile, matched by id, name, connect handle or URL |
+| `--read-only` | `BB_TUI_READ_ONLY` | never send changes ([details](#read-only-mode)) |
+| `--submit-key enter\|ctrl-enter` | `BB_TUI_SUBMIT_KEY` | what Enter does in the composer |
+| `--appearance auto\|dark\|light` | `BB_TUI_APPEARANCE` | color scheme ([details](#colors-and-mouse)) |
+| `--no-mouse` | `BB_TUI_NO_MOUSE` | do not capture the mouse |
+| `--config <path>` | `BB_TUI_CONFIG` | settings file |
+
+`q` quits, `?` lists the keys. On start the TUI checks `GET /health` and
+`GET /api/v1/system/version`; an unreachable server, an old server (older
+than 0.45) or a server that is moving machines shows as a toast, and the
+banner at the top reports a lost realtime connection while it reconnects.
+
+## Connecting to a server
+
+Without `--profile`, the server URL is resolved in this order:
+
+1. `--server-url`
+2. `BB_SERVER_URL`
+3. `serverUrl` from `$BB_DATA_DIR/bb-app-runtime.json` (default `~/.bb`), when
+   the `pid` written there is still running (the bb desktop app writes it)
+4. `http://127.0.0.1:38886`
+
+`bb-tui doctor` prints each of these and the one that won.
+
+### bb connect profiles
+
+A remote bb server reachable through bb connect is paired once with a machine
+code:
+
+```sh
+bb connect machine-code
+bb-tui connect pair bbmc_…
+bb-tui connect pair 'https://…?code=…'
+bb-tui connect pair bbmc_… --name work --device-name laptop --no-activate
+bb-tui connect list
+bb-tui --profile work
+```
+
+`pair` accepts the bare code, the pairing link, or the JSON record the web app
+copies. It saves the profile in `~/.config/bb-tui/servers.json`
+(`$XDG_CONFIG_HOME/bb-tui/`), stores the `bbcm_` machine credential in the OS
+keyring (with `--features keyring`) or in `~/.config/bb-tui/credentials.json`
+(mode 0600), and makes the profile active unless `--no-activate` is given.
+`connect list` marks the active profile; select one at startup with
+`--profile` or `BB_TUI_PROFILE`. REST calls send the credential as
+`x-bb-connect-machine`; WebSockets use a desktop-session cookie that is
+renewed five minutes before it expires and after a 401/403.
+
+The credential lets the holder act on the server as you. Do not share
+`credentials.json` or pairing codes.
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `BB_SERVER_URL` | server URL (after `--server-url`) |
+| `BB_DATA_DIR` | bb data directory searched for `bb-app-runtime.json` (default `~/.bb`) |
+| `BB_TUI_PROFILE` | saved profile to use (`--profile`) |
+| `BB_TUI_READ_ONLY` | `1`/`true` turns on read-only mode |
+| `BB_TUI_SUBMIT_KEY` | `enter` or `ctrl-enter` |
+| `BB_TUI_APPEARANCE` | `auto`, `dark` or `light` |
+| `BB_TUI_NO_MOUSE` | `1`/`true` leaves the mouse to the terminal |
+| `BB_TUI_CONFIG` | settings file path |
+| `BB_TUI_LOG` | append logs to this file (nothing is logged otherwise) |
+| `RUST_LOG` | log filter for `BB_TUI_LOG`, e.g. `bb_client=debug` (default `info`) |
+| `NO_COLOR` | any non-empty value turns colors off |
+| `COLORFGBG` | read by `appearance = "auto"` to detect a light background |
+| `XDG_CONFIG_HOME` | base for `bb-tui/config.toml`, `servers.json`, `credentials.json` |
+| `XDG_STATE_HOME` | base for `bb-tui/drafts/` and `bb-tui/palette-recents.json` |
+| `VISUAL`, `EDITOR` | editor for `e` in the right panel |
+| `TMUX` | wraps OSC notifications for tmux passthrough |
+
+## Settings file
+
+Settings live in `~/.config/bb-tui/config.toml` (`$XDG_CONFIG_HOME/bb-tui/`).
+Use `--config <path>` or `BB_TUI_CONFIG` to point somewhere else. The file is
+optional, and every key has a default:
+
+```toml
+submit_key = "enter"
+theme = "base16-ocean.dark"
+appearance = "auto"
+mouse = true
+
+[notifications]
+enabled = true
+turn_finished = true
+needs_input = true
+errors = true
+toast = true
+bell = true
+desktop = "auto"
+desktop_when = "unfocused"
+plugin_signals = true
+terminal_title = false
+```
+
+| Key | Values |
+|---|---|
+| `submit_key` | `enter` or `ctrl-enter`. `--submit-key` and `BB_TUI_SUBMIT_KEY` override it |
+| `theme` | syntax highlighting theme for code blocks, diffs and previews: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`. Default `base16-ocean.dark`, or `InspiredGitHub` on a light background |
+| `appearance` | `auto` (detect from `COLORFGBG`, else dark), `dark` or `light`. `--appearance` and `BB_TUI_APPEARANCE` override it |
+| `mouse` | `true` captures the mouse for clicks and scrolling; `false` leaves it to the terminal. `--no-mouse` overrides it |
+| `notifications.enabled` | turns all thread notifications on or off |
+| `notifications.turn_finished`, `needs_input`, `errors` | which events notify |
+| `notifications.toast`, `bell` | the in-app toast and the terminal bell |
+| `notifications.desktop` | `auto`, `osc9`, `osc777`, `native`, `off` |
+| `notifications.desktop_when` | `unfocused` (default) or `always` |
+| `notifications.plugin_signals` | show push-notifications plugin signals |
+| `notifications.terminal_title` | set the terminal title to `bb`, `(N) bb` with N threads needing attention, or `● bb` when the server reports attention elsewhere. The previous title is restored on exit (xterm title stack) |
+
+Unknown keys and invalid values are reported as toasts at startup, and the
+default is used instead. `bb-tui config` prints the file path, any warnings and
+the effective settings.
+
+Other files the TUI writes: unsent drafts in `$XDG_STATE_HOME/bb-tui/drafts/`
+(`~/.local/state/bb-tui/drafts`, the web app's draft format) and recently run
+palette commands in `$XDG_STATE_HOME/bb-tui/palette-recents.json`.
+
+## Colors and mouse
+
+The UI uses the terminal's 16 named colors plus true-color diff tints and
+syntax highlighting.
+
+- `NO_COLOR` (any non-empty value, see no-color.org) removes every
+  foreground and background color, including syntax highlighting and terminal
+  output. Selections, toasts and banners stay visible as reverse video.
+- `appearance = "light"` (or `auto` when `COLORFGBG` reports a light
+  background, as rxvt, Konsole and some others do) swaps colors that vanish on
+  a light background: white text becomes black, gray becomes dark gray,
+  yellow and cyan get darker shades, the unfocused selection and the diff
+  tints get light backgrounds, and the default syntax theme becomes
+  `InspiredGitHub`. Terminals that do not set `COLORFGBG` need
+  `appearance = "light"` or `--appearance light`.
+
+The mouse is captured by default (`mouse = false` or `--no-mouse` turns it off,
+which brings back the terminal's own text selection; most terminals also
+select with `Shift` held while the mouse is captured):
+
+| Where | Click | Wheel |
+|---|---|---|
+| Sidebar | a thread opens it; a project header folds it | moves the selection 3 rows |
+| Timeline | focuses the pane (another split pane becomes the focused one) and selects the row | scrolls 3 lines; scrolling up stops following new output, scrolling to the end resumes it |
+| Composer, request panel | focuses it | |
+| Right panel | focuses it | moves 3 rows (Info, Diff, File); scrolls back 3 lines (Terminal) |
+| Palette, pickers, settings, automations, dialogs | | moves the selection |
+
+The mouse is released while `$EDITOR` runs and while a terminal is attached
+fullscreen.
+
+## Read-only mode
+
+`--read-only` (or `BB_TUI_READ_ONLY=1`) never sends a change to the server.
+Use it to look at a production server safely or to demo. Everything that
+reads still works: the sidebar, timelines, diffs, file previews, search,
+settings, automations, terminals (watched, not typed into) and
+notifications. These are refused with a toast and nothing is sent:
+
+- opening a thread does not mark it read; rename, archive, pin, read toggles
+- sending, steering, queueing, stopping, editing queued messages
+- answering, denying or cancelling requests
+- creating threads, uploading attachments
+- git actions (commit, merge, ready, draft)
+- running plugin commands
+- typing into, resizing, creating or closing terminals
+- every change in the settings and automations views
+
+A few reads are `POST` requests on the server (the diff patch batch, the
+automations plugin's `automations_overview` RPC); they change nothing.
+
+## bb-tui doctor
+
+`bb-tui doctor` checks the connection without opening the UI and exits with
+status 1 if a check fails. It only sends `GET` requests and opens (then
+closes) the realtime WebSocket without subscribing to anything:
+
+```
+Discovery
+       --server-url         not set
+       BB_SERVER_URL        not set
+       app runtime file     /home/me/.bb/bb-app-runtime.json → http://127.0.0.1:38886 (pid 4242 running)
+       default              http://127.0.0.1:38886
+  ok   using                http://127.0.0.1:38886 (from /home/me/.bb/bb-app-runtime.json)
+
+Server
+  ok   GET /health          ok in 2 ms
+  ok   GET /system/version  0.45.0
+
+Realtime
+  ok   websocket            ws://127.0.0.1:38886/ws upgraded in 1 ms
+
+Settings
+       config file          /home/me/.config/bb-tui/config.toml (not created, defaults)
+       profiles             0 saved, none active
+       colors               dark (auto)
+       mouse                captured
+```
+
+With `--profile` it reports the profile and checks the bb connect server it
+points to; `--server-url`, `--config` and the other flags apply as usual.
+
+## Keys
+
+`?` shows the key list. The table below is the default
+keymap of the main screen. Keys with a web command id follow the server's
+keyboard overrides (Settings → Keyboard in the web app; `Cmd`-only shortcuts
+are skipped), so a key you rebind in the web app is rebound here too. Each
+feature section below has the keys that work inside that view.
+
+| Keys | Action | Web command id |
+|---|---|---|
+| `C-k`, `:` | Command palette | `palette.open` |
+| `C-p` | Quick open a file of this thread's workspace | `file.quickOpen` |
+| `f` | Search threads (titles and messages) | `thread.search` |
+| `P` | Switch project | |
+| `j`/`k`, `↓`/`↑` | Move down / up | |
+| `g`/`G`, `Home`/`End` | Go to top / bottom | |
+| `PgDn`/`C-f`, `PgUp` | Page down / up | |
+| `C-d`, `C-u` | Half page down / up | |
+| `Enter` | Open thread / expand row | |
+| `Space` | Fold / unfold group or row | |
+| `h`/`←`, `l`/`→` | Collapse / expand group or row | |
+| `]`, `[` | Next / previous user message | |
+| `y` | Copy the selected row (OSC 52) | |
+| `o` | Open the row's link or file | |
+| `/` | Filter the sidebar | |
+| `r` | Rename thread | `thread.rename` |
+| `a` | Archive / unarchive thread | `thread.archive` |
+| `u` | Undo last archive | |
+| `m` | Mark read / unread | |
+| `p` | Pin / unpin thread | |
+| `J`, `K` | Open next / previous thread | `thread.next`, `thread.previous` |
+| `M-1` … `M-9` | Open thread #1-9 | `thread.jump.1` … `thread.jump.9` |
+| `n` | New thread | `thread.new` |
+| `N` | New thread in this thread's environment | |
+| `c` | Focus the composer | `composer.focus` |
+| `C-o` | Attach a file | |
+| `M-a` | Message attachments | |
+| `S` | Stop the running turn | |
+| `M-q` | Queued messages | |
+| `M-t` | Toggle what Enter does while running (queue / steer) | |
+| `M-m`, `M-e`, `M-p` | Model, reasoning and permission pickers | `modelPicker.toggle` (model) |
+| `M-.`, `M-,` | Next / previous model | `modelPicker.cycleModel`, `modelPicker.cycleModelBackward` |
+| `M-r`, `M-R` | Next / previous reasoning level | `modelPicker.cycleReasoning`, `modelPicker.cycleReasoningBackward` |
+| `w`, `M-w` | Answer the next waiting request | |
+| `!` | Notification center | |
+| `Tab`, `S-Tab` | Focus next / previous pane | `pane.focus.next`, `pane.focus.previous` |
+| `C-b` | Toggle sidebar | `sidebar.toggle` |
+| `i` | Toggle right panel | `panel.toggle` |
+| `D` | Show / hide the git diff | `diff.toggle` |
+| `>`, `<` | Next / previous panel tab | `panel.nextTab`, `panel.previousTab` |
+| `Z` | Maximize / restore the right panel | `panel.fullScreen.toggle` |
+| `T` | Thread terminals | `terminal.open` |
+| `,` | Settings | `settings.open` |
+| `A` | Automations | |
+| `V` | Open the selected thread in a split pane | |
+| `M-h`/`M-←`, `M-l`/`M-→` | Focus the split pane to the left / right | `pane.focus.left`, `pane.focus.right` |
+| — | Focus split pane 1-4 | `pane.focus.1` … `pane.focus.4` |
+| `X` | Close the focused split pane | `pane.close` |
+| `M-z` | Maximize / restore the focused split pane | `pane.maximize.toggle` |
+| `C-r` | Reload data | `window.reload` |
+| `Esc` | Back / clear filter / close | `app.back` |
+| `?` | Help | |
+| `q`, `C-c` | Quit (`C-c` in the composer clears the draft first) | |
+
+Commands without a default key (commit, merge, mark ready, convert to draft,
+new terminal, attach terminal fullscreen, new automation, settings sections)
+run from the command palette. Inside the right panel `C`, `M`, `R` and `W`
+run the git actions.
 
 ## Thread timeline
 
@@ -143,23 +460,18 @@ oldest first (`1 of N`).
 
 | Request | Keys |
 |---|---|
-| Command, file change, permission, tool approval | `y` allow once · `s` allow for session · `d` deny · `1-3` by position · `r` deny and steer a reason to the agent · `e` show the whole command |
-| Plan review | `y` approve plan · `d` keep planning · `f` keep planning and steer feedback |
+| Command, file change, permission, tool approval | `y` allow once · `s` allow for session · `d` deny · `1-3` by position · `e` show the whole command |
+| Plan review | `y` approve plan · `d` keep planning |
 | Questions (provider or the ask-user-question plugin) | `1-9` choose (the last number is `Other…`) · `j/k` + `Space` · `Tab`/`←→` switch question · `Enter` next / submit · typing goes to the `Other…` answer |
 | Secret request (secrets plugin) | type into the masked field · `Tab`/`↑↓` field · `C-t` show/hide · `Enter` next empty field, then submit |
-| Any other plugin request | shown as pretty JSON · `o` open the thread in the web app · `y` copy the link · `x` cancel |
+| Any other plugin request | shown as pretty JSON · `o` open the thread in the web app · `y` copy the link · `C-x` cancel |
 
-`C-x` cancels question, secret and plugin requests (a provider request stops
-the turn instead, like the web app) and `Esc` leaves the panel. Denial reasons
-and plan feedback are not part of the resolve request, so they are sent as a
-steer message after the denial succeeds. Secret values are never shown unless
-revealed, are redacted from debug output and cleared after submission.
-
-Through Turbo from the repository root:
-
-```sh
-pnpm exec turbo run build test lint typecheck --filter=@bb/tui
-```
+`C-x` cancels question, secret and plugin requests (a provider question
+stops the turn instead, like the web app); approvals and plan reviews cannot
+be cancelled, only answered. `Esc` leaves the panel. As in the web app, a
+denial or "keep planning" sends only the decision. Secret values are never
+shown unless revealed, are redacted from debug output and cleared after
+submission.
 
 ## New thread
 
@@ -530,60 +842,60 @@ panel, palette and keys act on the focused pane's thread. `pane.focus.1`-`4`
 have no default key but follow server keybinding overrides. A background pane
 waiting for an answer shows a one-line notice; focus it to answer.
 
-## Settings file
+## Coverage compared with the web app
 
-Settings live in `~/.config/bb-tui/config.toml` (`$XDG_CONFIG_HOME/bb-tui/`).
-Use `--config <path>` or `BB_TUI_CONFIG` to point somewhere else. The file is
-optional, and every key has a default:
+| Area | In the TUI | Missing or different |
+|---|---|---|
+| Sidebar | projects, Personal, pinned, nesting, unread and waiting markers, filter, rename, archive and undo, pin, read toggles, split panes. Projects with the same name are told apart by their remote (`owner/repo`), then the checkout path tail, then the id. The Personal group is hidden while it has no threads (unless there are no projects), like the web list; empty projects show `no threads` | sections and organization modes (by section, machine), sorting choices, drag and drop, hide/show groups |
+| Timeline | Markdown, code highlighting, tables, work/tool/diff rows, turn summaries, lazy loading of older rows and collapsed turns, plan, goal and todo banners | images, Mermaid, KaTeX, inline-vis HTML, message directives (`::task` and others show a short placeholder) |
+| Composer | send, queue, steer, stop, prompt history, model/reasoning/permission pickers, queued messages, drafts in the web format, mentions, `/` and `$` commands, attachments by path | voice input, image paste and previews, scheduled send, prompt library, chip labels (chips show their serialized text) |
+| Requests | approvals, plan review, provider and plugin questions, secret requests, a JSON fallback for other plugin requests | plugin request renderers (only the generic fallback) |
+| New thread | projects, environments, branches, providers, models, reasoning, permissions, reuse of an environment | service tiers, plugin input controls other than worktree/checkout, guided machine setup |
+| Palette | commands, thread search, project switcher, quick open, plugin CLI commands | plugin palette commands registered from React, settings and plugin-page entries |
+| Right panel | Info, Diff (lazy patches), File preview, Terminal, git commit/merge/ready/draft | merge base choice, file filter, context expansion, image previews, push and create-PR flows (no such server actions) |
+| Terminals | list, attach, input, resize, replay, flow control, fullscreen attach | mouse reporting to programs, links, rename/restart, machine terminals |
+| Notifications | toast, bell, OSC 9/777 or native desktop notifications, notification center, push-notifications plugin signals | web push |
+| Settings | General, Providers, Keyboard (view), Projects, Machines, Installed plugins (with settings forms), Archived threads | appearance, AI services, browser, files, mobile, environment variables, updates, marketplaces, experiments, community; rebinding keys; installing plugins |
+| Automations | list, detail, run history, pause/resume, run now, create/edit agent automations, delete | script automations, filters and sort modes |
 
-```toml
-submit_key = "enter"
-theme = "base16-ocean.dark"
+Intentionally not supported, because they need a browser or a GUI:
 
-[notifications]
-enabled = true
-turn_finished = true
-needs_input = true
-errors = true
-toast = true
-bell = true
-desktop = "auto"
-desktop_when = "unfocused"
-plugin_signals = true
-terminal_title = false
+- React UI contributed by plugins (nav panels, thread panel actions, settings
+  sections, file openers, overlays, themes, icons); plugins work through their
+  CLI commands, RPC, mention providers and settings descriptors instead
+- the embedded browser, browser automation previews and agent annotations;
+  links open in the system browser
+- voice input, Monaco editor and PDF preview (files open in `$EDITOR` or the
+  system opener)
+- drag and drop, the web app's appearance settings, mobile QR pairing,
+  desktop app updates and zoom
+- side chat, docs, the tasks board, the GitHub browser, the provider usage
+  card, the prompt library and drafts UI
+- `/internal/*` routes and the host daemon protocol
+
+Like the web app, denying an approval or keeping a plan in planning sends only
+the decision (`POST /threads/:id/interactions/:id/resolve` with
+`{ decision: "deny" }`); there is no reason or feedback field. Type a follow-up
+in the composer afterwards if you want to explain.
+
+## Development
+
+- `crates/bb-wire` — serde mirrors of the server contract
+- `crates/bb-client` — REST, realtime WebSocket, connect auth, discovery
+- `crates/bb-store` — cache, invalidation, timeline merge
+- `crates/bb-view` — view-model and formatting ported from `packages/thread-view`
+- `crates/bb-tui` — the `bb-tui` binary: an Elm-style `update(state, action) ->
+  effects` loop in `app.rs`, rendering in `*_ui.rs`, effects executed by
+  `runtime.rs` through the `Api` and `Platform` traits so tests run against
+  fake backends
+
+```sh
+cd apps/tui
+cargo run -- --server-url http://127.0.0.1:38886 --read-only
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
 ```
-
-| Key | Values |
-|---|---|
-| `submit_key` | `enter` or `ctrl-enter`. `--submit-key` and `BB_TUI_SUBMIT_KEY` override it |
-| `theme` | syntax highlighting theme for code blocks, diffs and previews: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)` |
-| `notifications.enabled` | turns all thread notifications on or off |
-| `notifications.turn_finished`, `needs_input`, `errors` | which events notify |
-| `notifications.toast`, `bell` | the in-app toast and the terminal bell |
-| `notifications.desktop` | `auto`, `osc9`, `osc777`, `native`, `off` |
-| `notifications.desktop_when` | `unfocused` (default) or `always` |
-| `notifications.plugin_signals` | show push-notifications plugin signals |
-| `notifications.terminal_title` | set the terminal title to `bb`, `(N) bb` with N threads needing attention, or `● bb` when the server reports attention elsewhere. The previous title is restored on exit (xterm title stack) |
-
-Unknown keys and invalid values are reported as toasts at startup, and the
-default is used instead. `bb-tui config` prints the file path, any warnings and
-the effective settings.
-
-## Server connection (`bb-client`)
-
-The server URL is resolved in this order: `--server-url`, `BB_SERVER_URL`,
-`serverUrl` from `$BB_DATA_DIR/bb-app-runtime.json` (default `~/.bb`) when its
-`pid` is still running, then `http://127.0.0.1:38886`. The client then probes
-`GET /health` and `GET /api/v1/system/version`; an old or unknown server
-version is a warning, not an error.
-
-Saved servers live in `~/.config/bb-tui/servers.json` (or
-`$XDG_CONFIG_HOME/bb-tui/`). A bb connect profile is paired from a code minted
-by `bb connect machine-code`; its `bbcm_` machine credential is stored in the
-OS keyring when built with `--features keyring`, otherwise in
-`~/.config/bb-tui/credentials.json` with mode 0600. REST calls send it as
-`x-bb-connect-machine`; WebSockets use a desktop-session cookie that is renewed
-five minutes before expiry and after a 401/403.
 
 The live integration tests are ignored by default and only send GET requests:
 
@@ -616,12 +928,6 @@ the composer for each. `renders_live_timelines_read_only` parses the latest time
 collapsed turn of the most recently updated threads (`BB_TUI_LIVE_THREADS`,
 default 10), reports unknown row kinds and server fields the wire types do not
 model, and renders each thread fully expanded (`BB_TUI_LIVE_PRINT=1` prints the
-screens).
-
-## Checks
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-```
+screens). `renders_live_settings_read_only` walks every settings section and
+`lists_live_thread_terminals_read_only` lists a thread's terminals; `bb-tui doctor`
+against the live server is covered by `doctor_live_read_only`.

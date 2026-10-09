@@ -23,7 +23,6 @@ use crate::sidebar::SidebarRow;
 #[derive(Debug, Default)]
 pub struct ApprovalForm {
     pub expanded: bool,
-    pub reason: Option<LineInput>,
 }
 
 #[derive(Debug, Default)]
@@ -128,7 +127,7 @@ impl InteractionForm {
 
     pub fn is_typing(&self) -> bool {
         match &self.body {
-            FormBody::Approval(form) => form.reason.is_some(),
+            FormBody::Approval(_) => false,
             FormBody::Question(form) => form.editing,
             FormBody::Secret(_) => true,
             FormBody::Plugin => false,
@@ -286,7 +285,7 @@ impl AppState {
         !self.read_only
     }
 
-    fn decide(&mut self, decision: ApprovalDecision, follow_up: Option<String>) -> Vec<Effect> {
+    fn decide(&mut self, decision: ApprovalDecision) -> Vec<Effect> {
         let Some(thread_id) = self.open_thread.clone() else {
             return Vec::new();
         };
@@ -310,16 +309,9 @@ impl AppState {
             return Vec::new();
         }
         let resolution = build_approval_resolution(&interaction, decision);
-        if let Some(text) = follow_up.filter(|text| !text.trim().is_empty()) {
-            self.interaction_follow_ups
-                .insert(interaction.id.clone(), text.trim().to_owned());
-        }
         if let Some(form) = self.interaction_forms.get_mut(&interaction.id) {
             form.submitting = true;
             form.error = None;
-            if let FormBody::Approval(approval) = &mut form.body {
-                approval.reason = None;
-            }
         }
         vec![Effect::Mutate(Mutation::ResolveInteraction {
             thread_id,
@@ -556,19 +548,6 @@ fn approval_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     let FormBody::Approval(approval) = &mut form.body else {
         return Vec::new();
     };
-    if let Some(input) = approval.reason.as_mut() {
-        return match input.handle_key(key) {
-            InputOutcome::Submit => {
-                let text = input.text().to_owned();
-                state.decide(ApprovalDecision::Deny, Some(text))
-            }
-            InputOutcome::Cancel => {
-                approval.reason = None;
-                Vec::new()
-            }
-            _ => Vec::new(),
-        };
-    }
     let available = match &form.kind {
         RequestKind::Approval(payload) => ordered_decisions(&payload.available_decisions),
         RequestKind::PlanReview { approval, .. } => {
@@ -577,22 +556,14 @@ fn approval_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         _ => Vec::new(),
     };
     match key.code {
-        KeyCode::Char('y') => state.decide(ApprovalDecision::AllowOnce, None),
-        KeyCode::Char('s') => state.decide(ApprovalDecision::AllowForSession, None),
-        KeyCode::Char('d') => state.decide(ApprovalDecision::Deny, None),
+        KeyCode::Char('y') => state.decide(ApprovalDecision::AllowOnce),
+        KeyCode::Char('s') => state.decide(ApprovalDecision::AllowForSession),
+        KeyCode::Char('d') => state.decide(ApprovalDecision::Deny),
         KeyCode::Char(ch @ '1'..='9') => {
             match available.get(usize::from(ch as u8 - b'1')).copied() {
-                Some(decision) => state.decide(decision, None),
+                Some(decision) => state.decide(decision),
                 None => Vec::new(),
             }
-        }
-        KeyCode::Char('r' | 'f') => {
-            if available.contains(&ApprovalDecision::Deny) {
-                approval.reason = Some(LineInput::default());
-            } else {
-                state.toast("This request cannot be denied", ToastLevel::Info);
-            }
-            Vec::new()
         }
         KeyCode::Char('e') => {
             approval.expanded = !approval.expanded;
@@ -796,7 +767,6 @@ fn plugin_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     match key.code {
         KeyCode::Char('o') => state.open_in_web(false),
         KeyCode::Char('y') => state.open_in_web(true),
-        KeyCode::Char('x') => state.cancel_interaction(),
         KeyCode::Esc => leave(state),
         _ if scroll_key(state, &key) => Vec::new(),
         _ => fallback(state, key),
@@ -820,14 +790,6 @@ pub(crate) fn interaction_paste(state: &mut AppState, text: &str) {
         _ => None,
     };
     match &mut form.body {
-        FormBody::Approval(ApprovalForm {
-            reason: Some(input),
-            ..
-        }) => {
-            for ch in text.chars().filter(|ch| !ch.is_control()) {
-                input.insert(ch);
-            }
-        }
         FormBody::Question(body) if body.editing => {
             let index = current_question.unwrap_or(0);
             let Some(input) = body.inputs.get_mut(index) else {
@@ -861,7 +823,6 @@ pub(crate) fn interaction_mutation_finished(
 ) -> Vec<Effect> {
     let thread_id = mutation.thread_id().to_owned();
     let interaction_id = mutation.interaction_id().unwrap_or_default().to_owned();
-    let follow_up = state.interaction_follow_ups.remove(&interaction_id);
     let form = state.interaction_forms.get_mut(&interaction_id);
     match result {
         Ok(_) => {
@@ -880,15 +841,11 @@ pub(crate) fn interaction_mutation_finished(
                 other => other.success_message().to_owned(),
             };
             state.toast(message, ToastLevel::Info);
-            let mut effects = vec![
+            vec![
                 Effect::Refresh(ResourceKey::Interactions(thread_id.clone())),
-                Effect::Refresh(ResourceKey::Thread(thread_id.clone())),
+                Effect::Refresh(ResourceKey::Thread(thread_id)),
                 Effect::RefreshSidebar,
-            ];
-            if let Some(text) = follow_up {
-                effects.extend(state.send_follow_up_text(&thread_id, text));
-            }
-            effects
+            ]
         }
         Err(error) => {
             if let Some(form) = form {

@@ -1433,6 +1433,24 @@ impl TimelineView {
         self.auto_load_older()
     }
 
+    pub fn item_at_line(&self, line: usize) -> Option<usize> {
+        let (width, height) = self.viewport_size();
+        let mut top = 0;
+        for placement in self.layout(width, height) {
+            if line < top + placement.take {
+                return Some(placement.index);
+            }
+            top += placement.take;
+        }
+        None
+    }
+
+    pub fn select_at_line(&mut self, line: usize) -> Option<usize> {
+        let index = self.item_at_line(line)?;
+        self.selected = Some(self.items[index].key.clone());
+        Some(index)
+    }
+
     pub fn select_edge(&mut self, top: bool) -> Vec<LoadRequest> {
         if self.items.is_empty() {
             return Vec::new();

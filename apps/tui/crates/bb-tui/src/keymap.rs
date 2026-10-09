@@ -284,7 +284,7 @@ impl Command {
             Self::AttachFile => "Attach a file to the message (path prompt)".into(),
             Self::Attachments => "Message attachments (remove)".into(),
             Self::DiffToggle => "Show / hide the git diff panel".into(),
-            Self::PanelNextTab => "Next panel tab (Info, Diff, File)".into(),
+            Self::PanelNextTab => "Next panel tab (Info, Diff, File, Terminal)".into(),
             Self::PanelPreviousTab => "Previous panel tab".into(),
             Self::PanelFullScreen => "Maximize / restore the right panel".into(),
             Self::GitCommit => "Commit uncommitted changes (confirm)".into(),

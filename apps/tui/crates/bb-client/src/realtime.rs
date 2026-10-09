@@ -134,6 +134,21 @@ impl RealtimeClient {
     }
 }
 
+pub async fn probe_realtime(client: &BbClient, timeout: Duration) -> Result<String, String> {
+    let url = client.endpoint().websocket_url(REALTIME_WS_PATH);
+    let mut stream = match open_websocket(client, &url, timeout).await {
+        Ok(stream) => stream,
+        Err(WsOpenError::Rejected {
+            retried_auth: true, ..
+        }) => open_websocket(client, &url, timeout)
+            .await
+            .map_err(|error| error.describe())?,
+        Err(error) => return Err(error.describe()),
+    };
+    let _ = stream.close(None).await;
+    Ok(url.to_string())
+}
+
 enum Outcome {
     Shutdown,
     Idle,
