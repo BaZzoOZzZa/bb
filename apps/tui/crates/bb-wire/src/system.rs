@@ -546,3 +546,24 @@ pub struct SystemConfigResponse {
     pub voice_transcription_enabled: bool,
     pub data_dir: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SystemProviderCatalogEntry {
+    pub id: String,
+    pub display_name: String,
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub plugin_enabled: bool,
+    pub enabled: bool,
+    pub available: bool,
+    pub logo_url: Option<String>,
+    #[serde(deserialize_with = "crate::common::lenient_option")]
+    pub info: Option<ProviderInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemProviderEnabledRequest {
+    pub enabled: bool,
+}

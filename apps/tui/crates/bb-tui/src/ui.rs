@@ -119,6 +119,9 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     if state.panel_visible {
         crate::panel_ui::render_panel(state, frame, panel_area);
     }
+    if let Some(view) = &state.settings {
+        crate::settings_ui::render_settings(state, view, frame, body);
+    }
     render_status(state, frame, status);
     render_toasts(state, frame, body);
     if state.mode == Mode::Help {
@@ -663,6 +666,9 @@ fn hints(state: &AppState) -> String {
     if let Some(hint) = crate::palette_ui::hints(state.palette.as_ref(), state.result_pane.as_ref())
     {
         return hint;
+    }
+    if let Some(view) = &state.settings {
+        return crate::settings::settings_hints(view);
     }
     let key = |command| first_label(state, command);
     match &state.mode {

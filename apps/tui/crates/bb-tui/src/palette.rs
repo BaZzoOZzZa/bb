@@ -16,6 +16,7 @@ use crate::app::{AppState, Effect, Focus, ToastLevel};
 use crate::fuzzy::{match_paths, match_text};
 use crate::input::{InputOutcome, LineInput};
 use crate::keymap::Command;
+use crate::settings::SettingsSection;
 use crate::sidebar::{RowKey, project_label, thread_title};
 use crate::time::compact_relative_time;
 
@@ -394,6 +395,7 @@ const LAYOUT: &str = "Window and layout";
 const WORKSPACE: &str = "Workspace";
 const COMPOSER: &str = "Composer and models";
 const TIMELINE: &str = "Timeline";
+const SETTINGS: &str = "Settings";
 
 const COMMAND_ENTRIES: &[CommandEntry] = &[
     entry(Command::NewThread, THREADS, "New thread", false),
@@ -496,6 +498,43 @@ const COMMAND_ENTRIES: &[CommandEntry] = &[
         Command::ToggleSubmitMode,
         COMPOSER,
         "Toggle Enter while running: queue / steer",
+        false,
+    ),
+    entry(Command::Settings, SETTINGS, "Open settings", false),
+    entry(
+        Command::SettingsSection(SettingsSection::Providers),
+        SETTINGS,
+        "Provider settings",
+        false,
+    ),
+    entry(
+        Command::SettingsSection(SettingsSection::Projects),
+        SETTINGS,
+        "Project settings",
+        false,
+    ),
+    entry(
+        Command::SettingsSection(SettingsSection::Machines),
+        SETTINGS,
+        "Machine settings",
+        false,
+    ),
+    entry(
+        Command::SettingsSection(SettingsSection::Plugins),
+        SETTINGS,
+        "Installed plugins",
+        false,
+    ),
+    entry(
+        Command::SettingsSection(SettingsSection::Archived),
+        SETTINGS,
+        "Archived threads",
+        false,
+    ),
+    entry(
+        Command::SettingsSection(SettingsSection::Keyboard),
+        SETTINGS,
+        "Keyboard shortcuts settings",
         false,
     ),
     entry(Command::Copy, TIMELINE, "Copy selected row", true),

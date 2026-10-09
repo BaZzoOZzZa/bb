@@ -889,3 +889,32 @@ pub struct EnvironmentStatusQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merge_base_branch: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateHostRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateHostPermissionCeilingRequest {
+    pub max_permission_mode: PermissionMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HostProviderCliStatus {
+    pub display_name: String,
+    pub executable_name: Option<String>,
+    pub executable_path: Option<String>,
+    pub installed: bool,
+    pub install_source: Option<String>,
+    pub current_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub minimum_supported_version: Option<String>,
+    pub needs_update: bool,
+    pub version_unsupported: bool,
+}
+
+pub type HostProviderCliStatusResponse = std::collections::BTreeMap<String, HostProviderCliStatus>;

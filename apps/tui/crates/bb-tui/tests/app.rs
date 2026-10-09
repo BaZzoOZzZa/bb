@@ -419,7 +419,7 @@ fn thread_next_previous_and_jump_open_threads() {
 fn help_overlay_lists_keys_and_closes_on_any_key() {
     let mut state = loaded_state(sample_sidebar());
     press(&mut state, KeyCode::Char('?'));
-    let text = render_lines(&state, 100, 40).join("\n");
+    let text = render_lines(&state, 100, 44).join("\n");
     assert!(text.contains("Keys"), "{text}");
     let has_row = |key: &str, desc: &str| {
         text.lines()

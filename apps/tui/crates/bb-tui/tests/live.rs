@@ -1347,3 +1347,122 @@ async fn lists_live_thread_terminals_read_only() {
         println!("{screen}");
     }
 }
+
+async fn run_live_settings(
+    client: &BbClient,
+    state: &mut AppState,
+    effects: Vec<bb_tui::app::Effect>,
+) {
+    let mut pending = effects;
+    for _ in 0..6 {
+        let mut next = Vec::new();
+        for effect in pending {
+            if let bb_tui::app::Effect::Settings(request) = effect {
+                assert!(
+                    !matches!(request, bb_tui::settings::SettingsRequest::Mutate(_)),
+                    "settings tried to change the server: {request:?}"
+                );
+                let loaded = bb_tui::runtime::run_settings_request(client, request).await;
+                next.extend(update(state, Action::SettingsLoaded(loaded)));
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        pending = next;
+    }
+}
+
+fn live_key(code: crossterm::event::KeyCode) -> Action {
+    Action::Key(crossterm::event::KeyEvent::from(code))
+}
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only GET requests only"]
+async fn renders_live_settings_read_only() {
+    use crossterm::event::KeyCode;
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let store = Store::spawn(
+        Arc::new(client.clone()),
+        NoRealtime,
+        None,
+        StoreConfig::default(),
+    );
+    let _interest = store.watch_sidebar();
+    let mut rx = store.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let snapshot = rx.borrow_and_update().clone();
+            if snapshot.sidebar.data.is_some() && snapshot.hosts.data.is_some() {
+                break;
+            }
+            rx.changed().await.expect("store");
+        }
+    })
+    .await
+    .expect("sidebar and hosts loaded");
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    state.read_only = true;
+    update(&mut state, Action::Snapshot(store.snapshot()));
+    let effects = update(&mut state, live_key(KeyCode::Char(',')));
+    run_live_settings(&client, &mut state, effects).await;
+    let print = std::env::var_os("BB_TUI_LIVE_PRINT").is_some();
+    let mut screens = Vec::new();
+    let view = state.settings.as_ref().expect("settings open");
+    assert!(view.config.loaded().is_some(), "{:?}", view.config);
+    assert!(view.catalog.loaded().is_some(), "{:?}", view.catalog);
+    assert!(view.plugins.loaded().is_some(), "{:?}", view.plugins);
+    screens.push(render_lines(&state, 140, 40).join("\n"));
+    assert!(
+        screens[0].contains("Default thread followup behavior"),
+        "{}",
+        screens[0]
+    );
+
+    let refused = update(&mut state, live_key(KeyCode::Char(' ')));
+    assert!(refused.is_empty(), "{refused:?}");
+
+    for (digit, label) in [
+        ('2', "Providers"),
+        ('3', "Keyboard"),
+        ('4', "Projects"),
+        ('5', "Machines"),
+        ('6', "Installed plugins"),
+        ('7', "Archived threads"),
+    ] {
+        update(&mut state, live_key(KeyCode::Esc));
+        let effects = update(&mut state, live_key(KeyCode::Char(digit)));
+        run_live_settings(&client, &mut state, effects).await;
+        update(&mut state, live_key(KeyCode::Enter));
+        if digit == '5' || digit == '6' {
+            let effects = update(&mut state, live_key(KeyCode::Enter));
+            run_live_settings(&client, &mut state, effects).await;
+        }
+        let screen = render_lines(&state, 140, 40).join("\n");
+        assert!(screen.contains(label), "{screen}");
+        assert!(!screen.contains("Couldn't load"), "{screen}");
+        screens.push(screen);
+        if digit == '5' || digit == '6' {
+            update(&mut state, live_key(KeyCode::Esc));
+        }
+    }
+    let archived = &state.settings.as_ref().expect("settings").archived;
+    assert!(archived.loaded && archived.error.is_none(), "{archived:?}");
+    if print {
+        for screen in screens {
+            println!("{screen}\n");
+        }
+    }
+}

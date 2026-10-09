@@ -243,11 +243,92 @@ impl PluginSettingDescriptor {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PluginSettingsSchema(pub Vec<(String, PluginSettingDescriptor)>);
+
+impl PluginSettingsSchema {
+    pub fn get(&self, key: &str) -> Option<&PluginSettingDescriptor> {
+        self.0
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, descriptor)| descriptor)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &PluginSettingDescriptor)> {
+        self.0
+            .iter()
+            .map(|(name, descriptor)| (name.as_str(), descriptor))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::ops::Index<&str> for PluginSettingsSchema {
+    type Output = PluginSettingDescriptor;
+
+    fn index(&self, key: &str) -> &Self::Output {
+        self.get(key).expect("unknown plugin setting")
+    }
+}
+
+impl Serialize for PluginSettingsSchema {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (name, descriptor) in &self.0 {
+            map.serialize_entry(name, descriptor)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginSettingsSchema {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SchemaVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SchemaVisitor {
+            type Value = PluginSettingsSchema;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a map of plugin setting descriptors")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(PluginSettingsSchema::default())
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut access: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut entries = Vec::new();
+                while let Some((name, descriptor)) =
+                    access.next_entry::<String, PluginSettingDescriptor>()?
+                {
+                    entries.retain(|(existing, _): &(String, PluginSettingDescriptor)| {
+                        existing != &name
+                    });
+                    entries.push((name, descriptor));
+                }
+                Ok(PluginSettingsSchema(entries))
+            }
+        }
+
+        deserializer.deserialize_any(SchemaVisitor)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PluginSettingsResponse {
     pub ok: bool,
-    pub schema: BTreeMap<String, PluginSettingDescriptor>,
+    pub schema: PluginSettingsSchema,
     pub values: JsonObject,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<PluginErrorValue>,

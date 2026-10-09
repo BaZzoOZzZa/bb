@@ -1176,3 +1176,50 @@ fn system_health_version_and_config() {
     assert_eq!(config.host_daemon_port, Some(38887));
     assert_eq!(parse_plugin_command_id("plugin:Bad/x"), None);
 }
+
+#[test]
+fn plugin_settings_schema_keeps_server_order() {
+    let settings: PluginSettingsResponse = parse_roundtrip(json!({
+        "ok": true,
+        "schema": {
+            "zeta": {"type": "boolean", "label": "Zeta"},
+            "alpha": {"type": "string", "label": "Alpha", "secret": true},
+            "mid": {"type": "select", "label": "Mid", "options": ["a", "b"]}
+        },
+        "values": {"alpha": {"set": true}}
+    }));
+    let keys: Vec<&str> = settings.schema.iter().map(|(key, _)| key).collect();
+    assert_eq!(keys, vec!["zeta", "alpha", "mid"]);
+    assert!(settings.schema["alpha"].is_secret());
+}
+
+#[test]
+fn provider_catalog_and_host_cli_status() {
+    let catalog: Vec<SystemProviderCatalogEntry> = parse_roundtrip(json!([{
+        "id": "codex",
+        "displayName": "Codex",
+        "pluginId": "provider-codex",
+        "pluginName": "Codex provider",
+        "pluginEnabled": true,
+        "enabled": false,
+        "available": true,
+        "logoUrl": null,
+        "info": null
+    }]));
+    assert_eq!(catalog[0].plugin_id, "provider-codex");
+    assert!(!catalog[0].enabled && catalog[0].plugin_enabled);
+
+    let status: HostProviderCliStatusResponse = parse(json!({
+        "claude-code": {
+            "displayName": "Claude Code",
+            "installed": true,
+            "currentVersion": "2.1.0",
+            "latestVersion": "2.1.1",
+            "needsUpdate": true,
+            "installAction": {"kind": "update"}
+        }
+    }));
+    let entry = &status["claude-code"];
+    assert_eq!(entry.current_version.as_deref(), Some("2.1.0"));
+    assert!(entry.needs_update);
+}

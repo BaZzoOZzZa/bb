@@ -70,6 +70,8 @@ pub enum Command {
     TerminalOpen,
     TerminalNew,
     TerminalAttach,
+    Settings,
+    SettingsSection(crate::settings::SettingsSection),
 }
 
 impl Command {
@@ -143,6 +145,7 @@ impl Command {
         Command::TerminalOpen,
         Command::TerminalNew,
         Command::TerminalAttach,
+        Command::Settings,
         Command::Reload,
         Command::Back,
         Command::Help,
@@ -179,6 +182,7 @@ impl Command {
             Self::PanelPreviousTab => "panel.previousTab",
             Self::PanelFullScreen => "panel.fullScreen.toggle",
             Self::Reload => "window.reload",
+            Self::Settings => "settings.open",
             Self::FocusComposer => "composer.focus",
             Self::ModelPicker => "modelPicker.toggle",
             Self::CycleModel => "modelPicker.cycleModel",
@@ -263,6 +267,8 @@ impl Command {
             Self::TerminalOpen => "Thread terminals (right panel)".into(),
             Self::TerminalNew => "Start a new terminal".into(),
             Self::TerminalAttach => "Attach the terminal fullscreen (C-\\ detaches)".into(),
+            Self::Settings => "Settings".into(),
+            Self::SettingsSection(section) => format!("Settings: {}", section.label()),
         }
     }
 }
@@ -437,6 +443,7 @@ impl Default for Keymap {
             (KeyChord::ch('<'), Command::PanelPreviousTab),
             (KeyChord::ch('Z'), Command::PanelFullScreen),
             (KeyChord::ch('T'), Command::TerminalOpen),
+            (KeyChord::ch(','), Command::Settings),
             (KeyChord::ctrl('r'), Command::Reload),
             (KeyChord::plain(PageDown), Command::PageDown),
             (KeyChord::plain(PageUp), Command::PageUp),

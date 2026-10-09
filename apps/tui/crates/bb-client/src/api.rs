@@ -4,7 +4,8 @@ use bb_wire::environment::{
     EnvironmentDiffFilesResponse, EnvironmentDiffPatchRequest, EnvironmentDiffPatchResponse,
     EnvironmentDiffQuery, EnvironmentDiffResponse, EnvironmentPullRequestResponse,
     EnvironmentStatusQuery, EnvironmentStatusResponse, GitBranchOptions, Host,
-    ListEnvironmentsQuery, UpdateEnvironmentRequest,
+    HostProviderCliStatusResponse, ListEnvironmentsQuery, UpdateEnvironmentRequest,
+    UpdateHostPermissionCeilingRequest, UpdateHostRequest,
 };
 use bb_wire::interaction::{
     PendingInteraction, ResolvePendingInteractionRequest, RespondPluginInteractionRequest,
@@ -41,8 +42,8 @@ use bb_wire::routes::{
 use bb_wire::system::{
     AppKeybindingOverrides, ProviderInfo, SystemAttentionResponse, SystemConfigResponse,
     SystemEnvironmentProvidersQuery, SystemEnvironmentProvidersResponse,
-    SystemExecutionOptionsQuery, SystemExecutionOptionsResponse, SystemProvidersQuery,
-    SystemVersionQuery, SystemVersionResponse,
+    SystemExecutionOptionsQuery, SystemExecutionOptionsResponse, SystemProviderCatalogEntry,
+    SystemProviderEnabledRequest, SystemProvidersQuery, SystemVersionQuery, SystemVersionResponse,
 };
 use bb_wire::terminal::{
     CloseTerminalRequest, CreateTerminalRequest, RestartTerminalRequest, TerminalInputRequest,
@@ -133,6 +134,24 @@ impl BbClient {
         query: &SystemProvidersQuery,
     ) -> Result<JsonValue, ClientError> {
         self.get_with(system::provider_states(), query).await
+    }
+
+    pub async fn system_provider_catalog(
+        &self,
+    ) -> Result<Vec<SystemProviderCatalogEntry>, ClientError> {
+        self.get(system::provider_catalog()).await
+    }
+
+    pub async fn set_provider_enabled(
+        &self,
+        provider_id: &str,
+        enabled: bool,
+    ) -> Result<Vec<SystemProviderCatalogEntry>, ClientError> {
+        self.call_with(
+            system::set_provider_enabled(provider_id),
+            &SystemProviderEnabledRequest { enabled },
+        )
+        .await
     }
 
     pub async fn system_usage_limits(&self) -> Result<JsonValue, ClientError> {
@@ -856,6 +875,29 @@ impl BbClient {
 
     pub async fn get_host(&self, id: &str) -> Result<Host, ClientError> {
         self.get(hosts::get(id)).await
+    }
+
+    pub async fn update_host(
+        &self,
+        id: &str,
+        request: &UpdateHostRequest,
+    ) -> Result<Host, ClientError> {
+        self.call_with(hosts::update(id), request).await
+    }
+
+    pub async fn update_host_permission_ceiling(
+        &self,
+        id: &str,
+        request: &UpdateHostPermissionCeilingRequest,
+    ) -> Result<Host, ClientError> {
+        self.call_with(hosts::permission_ceiling(id), request).await
+    }
+
+    pub async fn host_provider_cli_status(
+        &self,
+        id: &str,
+    ) -> Result<HostProviderCliStatusResponse, ClientError> {
+        self.get(hosts::provider_cli_status(id)).await
     }
 
     pub async fn list_terminals(

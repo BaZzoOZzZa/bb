@@ -414,6 +414,52 @@ thread marks its notifications read. The status bar shows `! N new` for
 unread notifications, `⚑ N` for threads that need attention, and `⚑` alone
 when `GET /system/attention` reports attention outside the listed threads.
 
+## Server settings
+
+`,` (the web's `settings.open`, or "Open settings" in the palette) opens the
+settings view over the main area. It follows the web settings sections
+(`components/settings/settings-sections.ts`) that work without a browser:
+
+| Section | Shows | Changes |
+|---|---|---|
+| General | server URL, bb version (and the upgrade command when an update is out), data directory, server machine, then the general settings the server reports: followup behavior, Git changes, archive confirmation, history after a context clear, new branch prefix, machine server URL, streamer mode, usage data, diagnostic events | `Enter`/`Space` toggles; text fields open an input. The branch prefix is checked like the server does (at most 64 characters, must start a valid git branch name); the machine server URL must be an http(s) URL without credentials, empty means the server URL |
+| Providers | `GET /system/providers/catalog`: enabled providers in the saved order, then disabled ones, with Default / Unavailable / Disabled badges and how finished turns display | `Space` enables or disables (`PUT /system/providers/:id/enabled`), `d` makes it the default, `c` toggles collapsing finished turns, `Enter` lists its models (`GET /system/execution-options?providerId=`); "Allow faster service tiers" toggles |
+| Keyboard | every TUI command with its keys and web command id; `/` filters | `Enter` runs the command; rebinding is done in the web app (its overrides apply here) |
+| Projects | sidebar projects with remote, how many machines have a checkout, thread count | `Enter` opens the project: name, remote, id, created, checkouts per machine (path or "Not set up", primary, offline), thread defaults (`GET /projects/:id/default-execution-options`). `r` renames (`PATCH /projects/:id`), `D` deletes after confirmation (`DELETE /projects/:id`) |
+| Machines | bb version, then each machine with online/offline, server, lifecycle and needs-update badges and when it was last seen | `Enter` opens the machine: id, status, type, machine provider, permission limit, updates, projects with a checkout there, installed provider CLIs and their versions (`GET /hosts/:id/provider-clis/status`, only while online). `r` renames (`PATCH /hosts/:id`), `Enter` on the permission limit picks a new one (`PATCH /hosts/:id/permission-ceiling`) |
+| Installed plugins | `GET /plugins`: name, id, version, status badge, whether it has settings; `/` filters | `Space` enables or disables (`POST /plugins/:id/enable` / `disable`). `Enter` opens the plugin; plugins with settings get a form built from `GET /plugins/:id/settings` |
+| Archived threads | `GET /threads?archived=true` in pages of 50, grouped by project, `child` badge and when it was archived; `t` cycles all/root/child, `p` cycles the project, `/` searches the loaded titles | `Enter` opens the thread, `u` unarchives, `D`/`x`/`Del` deletes after confirmation (the dialog says how many child threads go too, from `GET /threads/:id/child-summary`); "Load more" fetches the next page |
+
+The plugin settings form keeps the server's field order and renders each
+descriptor type: `boolean` (`Enter`/`Space` toggles), `select` and `project`
+(a picker; `1`-`9` choose), `number` (must be finite; empty clears it),
+`string` (multiline strings are edited on one line with `\n` for a line break
+and `\\` for a backslash), and secret strings (masked input, shown as `[set]`
+or `[not set]`, an empty input keeps the stored secret, never logged). Each
+change is sent alone as `PUT /plugins/:id/settings` with `{ values: { key:
+value } }`; a value the plugin rejects shows its error under the field.
+Descriptor types the TUI does not know are shown read-only. General settings
+are saved like the web app: the whole settings object from `GET
+/system/config` with the one change merged in, `PUT /settings/general`.
+
+Keys: `j`/`k`, `PgUp`/`PgDn`, `g`/`G` move; `Tab`, `h`/`←` and `Esc` go to the
+section list (`Esc` first closes an open project, machine or plugin and clears
+a filter), where `j`/`k` or `1`-`7` pick a section and `Enter`/`l` return to
+it; `y` copies ids, paths and URLs; `C-r` reloads the section; `C-k` opens the
+palette; `q` or `,` close the view, and so does `Esc` in the section list. A row shows
+`[saving…]` until the server answers, and a second change to the same row
+waits for it. The palette has entries for each section ("Provider settings",
+"Archived threads", …); running any other command from the palette closes the
+settings first. `--read-only` refuses every change in the view; it only reads.
+
+Not built yet: appearance, AI services, browser, files, mobile, environment
+variables, updates, plugin marketplaces, experiments and community sections;
+reordering providers; adding project checkouts on other machines, machine
+setup, removal, suspend/resume and update retry; archived-thread search
+through `GET /threads/search`; installing and updating plugins; rebinding keys.
+Projects have no archive state on the server, so the project view offers
+delete (as the web app does) rather than archive.
+
 ## Settings file
 
 Settings live in `~/.config/bb-tui/config.toml` (`$XDG_CONFIG_HOME/bb-tui/`).

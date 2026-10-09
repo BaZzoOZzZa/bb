@@ -35,6 +35,7 @@ use crate::palette::{
 };
 use crate::panel::{GitAction, PanelLoaded, PanelRequest, RightPanel};
 use crate::prompt::PromptDraft;
+use crate::settings::{SettingsLoaded, SettingsRequest, SettingsView};
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
 use crate::terminal::{TerminalLoaded, TerminalPanel, TerminalRequest};
 use crate::timeline::{LoadRequest, TimelineView};
@@ -180,6 +181,7 @@ pub enum Action {
         thread_id: String,
         result: Result<Vec<bb_wire::interaction::PendingInteraction>, String>,
     },
+    SettingsLoaded(SettingsLoaded),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -229,6 +231,7 @@ pub enum Effect {
     SetTitle(String),
     FetchNotificationInteractions(String),
     Terminal(TerminalRequest),
+    Settings(SettingsRequest),
     Quit,
 }
 
@@ -277,6 +280,7 @@ pub struct AppState {
     pub attention: usize,
     pub waiting: usize,
     pub notifications: crate::notifications::Notifications,
+    pub settings: Option<SettingsView>,
     pub clock: Instant,
     pub now_ms: i64,
     pub frame: u64,
@@ -329,6 +333,7 @@ impl AppState {
             attention: 0,
             waiting: 0,
             notifications: crate::notifications::Notifications::default(),
+            settings: None,
             clock: now,
             now_ms,
             frame: 0,
@@ -696,6 +701,10 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
                     false
                 }
             },
+            Effect::Settings(SettingsRequest::Mutate(mutation)) => {
+                state.settings_refused(mutation);
+                false
+            }
             Effect::Mutate(mutation) => {
                 if !mutation.is_silent() {
                     state.toast(
@@ -873,6 +882,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::TerminalRawInput(bytes) => state.fullscreen_input(bytes),
         Action::FullscreenResize { cols, rows } => state.fullscreen_resize(cols, rows),
         Action::FullscreenEnded(message) => state.fullscreen_ended(message),
+        Action::SettingsLoaded(loaded) => state.settings_loaded(loaded),
     }
 }
 
@@ -912,6 +922,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
     if state.palette.is_some() {
         return handle_palette_key(state, key);
+    }
+    if state.settings.is_some() {
+        return crate::settings::handle_settings_key(state, key);
     }
     if state.panel.confirm.is_some() {
         return crate::panel::handle_confirm_key(state, key);
@@ -1111,6 +1124,19 @@ fn timeline_command(state: &mut AppState, command: Command) -> Option<Vec<Effect
 }
 
 pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect> {
+    if state.settings.is_some()
+        && !matches!(
+            command,
+            Command::Settings
+                | Command::SettingsSection(_)
+                | Command::PaletteOpen
+                | Command::Help
+                | Command::Quit
+                | Command::Reload
+        )
+    {
+        state.close_settings();
+    }
     let in_sidebar = state.focus == Focus::Sidebar && state.sidebar_visible;
     if let Some(effects) = composer_command(state, command) {
         return effects;
@@ -1213,6 +1239,8 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             }
         }
         Command::NextPending => return state.jump_to_pending(),
+        Command::Settings => return state.open_settings(None),
+        Command::SettingsSection(section) => return state.open_settings(Some(section)),
         Command::Notifications => state.open_notifications(),
         Command::PaletteOpen => return state.open_palette(PaletteKind::Commands),
         Command::QuickOpen => return state.open_palette(PaletteKind::Files),

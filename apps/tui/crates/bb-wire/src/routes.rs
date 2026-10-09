@@ -163,6 +163,14 @@ pub mod system {
         http_get("/system/providers/state".into())
     }
 
+    pub fn provider_catalog() -> Route {
+        http_get("/system/providers/catalog".into())
+    }
+
+    pub fn set_provider_enabled(id: &str) -> Route {
+        http_put(format!("/system/providers/{}/enabled", encode_segment(id)))
+    }
+
     pub fn usage_limits() -> Route {
         http_get("/system/usage-limits".into())
     }
@@ -603,6 +611,21 @@ pub mod hosts {
 
     pub fn get(id: &str) -> Route {
         http_get(format!("/hosts/{}", encode_segment(id)))
+    }
+
+    pub fn update(id: &str) -> Route {
+        http_patch(format!("/hosts/{}", encode_segment(id)))
+    }
+
+    pub fn permission_ceiling(id: &str) -> Route {
+        http_patch(format!("/hosts/{}/permission-ceiling", encode_segment(id)))
+    }
+
+    pub fn provider_cli_status(id: &str) -> Route {
+        http_get(format!(
+            "/hosts/{}/provider-clis/status",
+            encode_segment(id)
+        ))
     }
 }
 

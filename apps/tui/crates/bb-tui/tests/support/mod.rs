@@ -231,8 +231,93 @@ impl Backend for FakeBackend {
     }
 }
 
+#[derive(Default)]
+pub struct SettingsFake {
+    pub config: Mutex<bb_wire::system::SystemConfigResponse>,
+    pub version: bb_wire::system::SystemVersionResponse,
+    pub catalog: Mutex<Vec<bb_wire::system::SystemProviderCatalogEntry>>,
+    pub host_clis: HashMap<String, bb_wire::environment::HostProviderCliStatusResponse>,
+    pub archived: Mutex<Vec<ThreadListEntry>>,
+    pub thread_queries: Mutex<Vec<bb_wire::thread::ThreadListQuery>>,
+    pub child_counts: HashMap<String, u32>,
+    pub plugins: Mutex<Vec<bb_wire::plugin::InstalledPlugin>>,
+    pub plugin_settings: Mutex<HashMap<String, bb_wire::plugin::PluginSettingsResponse>>,
+    pub mutations: Mutex<Vec<bb_tui::settings::SettingsMutation>>,
+    pub reject: Mutex<Option<String>>,
+}
+
+impl SettingsFake {
+    pub fn recorded(&self) -> Vec<bb_tui::settings::SettingsMutation> {
+        self.mutations.lock().unwrap().clone()
+    }
+
+    fn apply(
+        &self,
+        mutation: &bb_tui::settings::SettingsMutation,
+    ) -> Result<bb_tui::settings::SettingsReply, String> {
+        use bb_tui::settings::{SettingsMutation, SettingsReply};
+        self.mutations.lock().unwrap().push(mutation.clone());
+        if let Some(error) = self.reject.lock().unwrap().clone() {
+            return Err(error);
+        }
+        Ok(match mutation {
+            SettingsMutation::UpdateGeneral { settings, .. } => {
+                let value = serde_json::Value::Object(settings.clone());
+                self.config.lock().unwrap().general_settings = value.clone();
+                SettingsReply::General(value)
+            }
+            SettingsMutation::SetProviderEnabled {
+                provider_id,
+                enabled,
+            } => {
+                let mut catalog = self.catalog.lock().unwrap();
+                for entry in catalog.iter_mut() {
+                    if &entry.id == provider_id {
+                        entry.enabled = *enabled;
+                    }
+                }
+                SettingsReply::Catalog(catalog.clone())
+            }
+            SettingsMutation::UnarchiveThread { thread_id }
+            | SettingsMutation::DeleteThread { thread_id, .. } => {
+                self.archived
+                    .lock()
+                    .unwrap()
+                    .retain(|entry| &entry.thread.id != thread_id);
+                SettingsReply::Done
+            }
+            SettingsMutation::SetPluginEnabled { plugin_id, enabled } => {
+                for plugin in self.plugins.lock().unwrap().iter_mut() {
+                    if &plugin.id == plugin_id {
+                        plugin.enabled = *enabled;
+                    }
+                }
+                SettingsReply::Done
+            }
+            SettingsMutation::UpdatePluginSetting {
+                plugin_id,
+                key,
+                value,
+                secret,
+            } => {
+                let mut all = self.plugin_settings.lock().unwrap();
+                let settings = all.entry(plugin_id.clone()).or_default();
+                let stored = if *secret {
+                    serde_json::json!({"set": !value.as_str().unwrap_or("").is_empty()})
+                } else {
+                    value.clone()
+                };
+                settings.values.insert(key.clone(), stored);
+                SettingsReply::PluginSettings(Box::new(settings.clone()))
+            }
+            _ => SettingsReply::Done,
+        })
+    }
+}
+
 pub struct MockApi {
     pub backend: Arc<FakeBackend>,
+    pub settings: SettingsFake,
     pub mutations: Mutex<Vec<Mutation>>,
     pub overrides: Vec<AppKeybindingOverride>,
     pub fail: bool,
@@ -279,6 +364,7 @@ impl MockApi {
     pub fn new(backend: Arc<FakeBackend>) -> Arc<Self> {
         Arc::new(Self {
             backend,
+            settings: SettingsFake::default(),
             mutations: Mutex::new(Vec::new()),
             overrides: Vec::new(),
             fail: false,
@@ -331,6 +417,107 @@ impl MockApi {
 }
 
 impl Api for MockApi {
+    fn system_config(&self) -> ApiFuture<bb_wire::system::SystemConfigResponse> {
+        let config = self.settings.config.lock().unwrap().clone();
+        Box::pin(async move { Ok(config) })
+    }
+
+    fn server_version(&self) -> ApiFuture<bb_wire::system::SystemVersionResponse> {
+        let version = self.settings.version.clone();
+        Box::pin(async move { Ok(version) })
+    }
+
+    fn provider_catalog(&self) -> ApiFuture<Vec<bb_wire::system::SystemProviderCatalogEntry>> {
+        let catalog = self.settings.catalog.lock().unwrap().clone();
+        Box::pin(async move { Ok(catalog) })
+    }
+
+    fn host_provider_clis(
+        &self,
+        host_id: String,
+    ) -> ApiFuture<bb_wire::environment::HostProviderCliStatusResponse> {
+        let status = self.settings.host_clis.get(&host_id).cloned();
+        Box::pin(async move { status.ok_or_else(|| "host offline".to_string()) })
+    }
+
+    fn list_threads(
+        &self,
+        query: bb_wire::thread::ThreadListQuery,
+    ) -> ApiFuture<Vec<ThreadListEntry>> {
+        self.settings
+            .thread_queries
+            .lock()
+            .unwrap()
+            .push(query.clone());
+        let offset = query.offset.unwrap_or(0) as usize;
+        let limit = query.limit.unwrap_or(50) as usize;
+        let threads: Vec<ThreadListEntry> = self
+            .settings
+            .archived
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|entry| {
+                query
+                    .project_id
+                    .as_ref()
+                    .is_none_or(|id| &entry.thread.project_id == id)
+                    && query
+                        .has_parent
+                        .is_none_or(|parent| entry.thread.parent_thread_id.is_some() == parent)
+            })
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect();
+        Box::pin(async move { Ok(threads) })
+    }
+
+    fn thread_child_summary(
+        &self,
+        thread_id: String,
+    ) -> ApiFuture<bb_wire::thread::ThreadChildSummaryResponse> {
+        let count = self
+            .settings
+            .child_counts
+            .get(&thread_id)
+            .copied()
+            .unwrap_or(0);
+        Box::pin(async move {
+            Ok(bb_wire::thread::ThreadChildSummaryResponse {
+                non_deleted_child_count: count,
+                unarchived_descendant_count: 0,
+            })
+        })
+    }
+
+    fn list_plugins(&self) -> ApiFuture<Vec<bb_wire::plugin::InstalledPlugin>> {
+        let plugins = self.settings.plugins.lock().unwrap().clone();
+        Box::pin(async move { Ok(plugins) })
+    }
+
+    fn plugin_settings(
+        &self,
+        plugin_id: String,
+    ) -> ApiFuture<bb_wire::plugin::PluginSettingsResponse> {
+        let settings = self
+            .settings
+            .plugin_settings
+            .lock()
+            .unwrap()
+            .get(&plugin_id)
+            .cloned();
+        Box::pin(async move { settings.ok_or_else(|| "plugin_not_found".to_string()) })
+    }
+
+    fn settings_mutation(
+        &self,
+        mutation: bb_tui::settings::SettingsMutation,
+    ) -> ApiFuture<bb_tui::settings::SettingsReply> {
+        let result = self.settings.apply(&mutation);
+        Box::pin(async move { result })
+    }
+
     fn list_terminals(
         &self,
         query: bb_wire::terminal::TerminalListQuery,
@@ -1068,6 +1255,32 @@ pub fn press_mod(
         state,
         Action::Key(crossterm::event::KeyEvent::new(code, modifiers)),
     )
+}
+
+pub async fn run_settings(
+    api: &MockApi,
+    state: &mut AppState,
+    effects: Vec<Effect>,
+) -> Vec<Effect> {
+    let mut pending = effects;
+    let mut rest = Vec::new();
+    for _ in 0..8 {
+        let mut next = Vec::new();
+        for effect in pending {
+            match effect {
+                Effect::Settings(request) => {
+                    let loaded = bb_tui::runtime::run_settings_request(api, request).await;
+                    next.extend(update(state, Action::SettingsLoaded(loaded)));
+                }
+                other => rest.push(other),
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        pending = next;
+    }
+    rest
 }
 
 pub fn without_composer_loads(effects: Vec<Effect>) -> Vec<Effect> {

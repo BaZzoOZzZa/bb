@@ -41,6 +41,11 @@ use bb_wire::thread::{ThreadSearchQuery, ThreadSearchResponse};
 
 use crate::new_thread::CreationConfig;
 use crate::palette::FileSource;
+use crate::settings::{SettingsMutation, SettingsReply};
+use bb_wire::environment::HostProviderCliStatusResponse;
+use bb_wire::plugin::{InstalledPlugin, PluginSettingsResponse};
+use bb_wire::system::{SystemConfigResponse, SystemProviderCatalogEntry, SystemVersionResponse};
+use bb_wire::thread::{ThreadChildSummaryResponse, ThreadListEntry, ThreadListQuery};
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
@@ -471,6 +476,42 @@ pub trait Api: Send + Sync + 'static {
     ) -> Result<TerminalLink, String> {
         Err("terminal connections are not available".into())
     }
+
+    fn system_config(&self) -> ApiFuture<SystemConfigResponse> {
+        unsupported("server settings")
+    }
+
+    fn server_version(&self) -> ApiFuture<SystemVersionResponse> {
+        unsupported("server version")
+    }
+
+    fn provider_catalog(&self) -> ApiFuture<Vec<SystemProviderCatalogEntry>> {
+        unsupported("provider catalog")
+    }
+
+    fn host_provider_clis(&self, _host_id: String) -> ApiFuture<HostProviderCliStatusResponse> {
+        unsupported("provider CLI status")
+    }
+
+    fn list_threads(&self, _query: ThreadListQuery) -> ApiFuture<Vec<ThreadListEntry>> {
+        unsupported("thread list")
+    }
+
+    fn thread_child_summary(&self, _thread_id: String) -> ApiFuture<ThreadChildSummaryResponse> {
+        unsupported("child thread summary")
+    }
+
+    fn list_plugins(&self) -> ApiFuture<Vec<InstalledPlugin>> {
+        unsupported("plugin list")
+    }
+
+    fn plugin_settings(&self, _plugin_id: String) -> ApiFuture<PluginSettingsResponse> {
+        unsupported("plugin settings")
+    }
+
+    fn settings_mutation(&self, _mutation: SettingsMutation) -> ApiFuture<SettingsReply> {
+        unsupported("settings changes")
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -513,6 +554,126 @@ pub fn creation_config_from(config: &bb_wire::system::SystemConfigResponse) -> C
             .and_then(JsonValue::as_bool)
             .unwrap_or(true),
     }
+}
+
+fn plugin_settings_result(
+    response: PluginSettingsResponse,
+) -> Result<PluginSettingsResponse, String> {
+    if response.ok {
+        Ok(response)
+    } else {
+        Err(response
+            .error
+            .as_ref()
+            .map(bb_wire::plugin::PluginErrorValue::message)
+            .unwrap_or_else(|| "the plugin rejected the settings".into()))
+    }
+}
+
+async fn run_settings_mutation(
+    client: &BbClient,
+    mutation: &SettingsMutation,
+) -> Result<SettingsReply, String> {
+    let error = |error: bb_client::ClientError| error.to_string();
+    Ok(match mutation {
+        SettingsMutation::UpdateGeneral { settings, .. } => SettingsReply::General(
+            client
+                .update_general_settings(settings)
+                .await
+                .map_err(error)?,
+        ),
+        SettingsMutation::SetProviderEnabled {
+            provider_id,
+            enabled,
+        } => SettingsReply::Catalog(
+            client
+                .set_provider_enabled(provider_id, *enabled)
+                .await
+                .map_err(error)?,
+        ),
+        SettingsMutation::RenameProject { project_id, name } => {
+            client
+                .update_project(
+                    project_id,
+                    &bb_wire::project::UpdateProjectRequest {
+                        name: Some(name.clone()),
+                    },
+                )
+                .await
+                .map_err(error)?;
+            SettingsReply::Done
+        }
+        SettingsMutation::DeleteProject { project_id } => {
+            client.delete_project(project_id).await.map_err(error)?;
+            SettingsReply::Done
+        }
+        SettingsMutation::RenameHost { host_id, name } => SettingsReply::Host(Box::new(
+            client
+                .update_host(
+                    host_id,
+                    &bb_wire::environment::UpdateHostRequest { name: name.clone() },
+                )
+                .await
+                .map_err(error)?,
+        )),
+        SettingsMutation::SetHostPermissionCeiling { host_id, mode } => {
+            SettingsReply::Host(Box::new(
+                client
+                    .update_host_permission_ceiling(
+                        host_id,
+                        &bb_wire::environment::UpdateHostPermissionCeilingRequest {
+                            max_permission_mode: *mode,
+                        },
+                    )
+                    .await
+                    .map_err(error)?,
+            ))
+        }
+        SettingsMutation::UnarchiveThread { thread_id } => {
+            client.unarchive_thread(thread_id).await.map_err(error)?;
+            SettingsReply::Done
+        }
+        SettingsMutation::DeleteThread {
+            thread_id,
+            child_threads_confirmed,
+        } => {
+            client
+                .delete_thread(
+                    thread_id,
+                    &bb_wire::thread::DeleteThreadRequest {
+                        child_threads_confirmed: *child_threads_confirmed,
+                    },
+                )
+                .await
+                .map_err(error)?;
+            SettingsReply::Done
+        }
+        SettingsMutation::SetPluginEnabled { plugin_id, enabled } => {
+            if *enabled {
+                client.enable_plugin(plugin_id).await.map_err(error)?;
+            } else {
+                client.disable_plugin(plugin_id).await.map_err(error)?;
+            }
+            SettingsReply::Done
+        }
+        SettingsMutation::UpdatePluginSetting {
+            plugin_id,
+            key,
+            value,
+            ..
+        } => {
+            let mut values = bb_wire::common::JsonObject::new();
+            values.insert(key.clone(), value.clone());
+            let response = client
+                .update_plugin_settings(
+                    plugin_id,
+                    &bb_wire::plugin::PluginSettingsUpdateRequest { values },
+                )
+                .await
+                .map_err(error)?;
+            SettingsReply::PluginSettings(Box::new(plugin_settings_result(response)?))
+        }
+    })
 }
 
 fn done<T>(_: T) -> MutationReply {
@@ -999,6 +1160,93 @@ impl Api for BbClient {
                 .await
                 .map_err(|error| error.to_string())
         })
+    }
+
+    fn system_config(&self) -> ApiFuture<SystemConfigResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .system_config()
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn server_version(&self) -> ApiFuture<SystemVersionResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .system_version(&bb_wire::system::SystemVersionQuery::default())
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn provider_catalog(&self) -> ApiFuture<Vec<SystemProviderCatalogEntry>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .system_provider_catalog()
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn host_provider_clis(&self, host_id: String) -> ApiFuture<HostProviderCliStatusResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .host_provider_cli_status(&host_id)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn list_threads(&self, query: ThreadListQuery) -> ApiFuture<Vec<ThreadListEntry>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .list_threads(&query)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn thread_child_summary(&self, thread_id: String) -> ApiFuture<ThreadChildSummaryResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .thread_child_summary(&thread_id)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn list_plugins(&self) -> ApiFuture<Vec<InstalledPlugin>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .list_plugins()
+                .await
+                .map(|response| response.plugins)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn plugin_settings(&self, plugin_id: String) -> ApiFuture<PluginSettingsResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            let response = client
+                .plugin_settings(&plugin_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            plugin_settings_result(response)
+        })
+    }
+
+    fn settings_mutation(&self, mutation: SettingsMutation) -> ApiFuture<SettingsReply> {
+        let client = self.clone();
+        Box::pin(async move { run_settings_mutation(&client, &mutation).await })
     }
 
     fn connect_terminal(&self, terminal_id: &str, since_seq: u64) -> Result<TerminalLink, String> {

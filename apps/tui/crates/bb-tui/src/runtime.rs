@@ -25,6 +25,7 @@ use crate::palette::{
 };
 use crate::panel::{PanelLoaded, PanelRequest};
 use crate::platform::{Platform, RawEvent};
+use crate::settings::{SettingsLoaded, SettingsRequest};
 use crate::terminal::{TerminalLoaded, TerminalRequest, TerminalScope};
 use crate::terminal_input::{DetachState, RESET_MODES};
 use crate::time::now_ms;
@@ -271,6 +272,14 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                 });
             }
             Effect::Terminal(request) => self.run_terminal(request),
+            Effect::Settings(request) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let loaded = run_settings_request(api.as_ref(), request).await;
+                    let _ = tx.send(Action::SettingsLoaded(loaded));
+                });
+            }
             Effect::Quit => {
                 for (_, (_, handle)) in self.terminal_links.drain() {
                     handle.close();
@@ -534,6 +543,56 @@ pub async fn run_palette_request<A: Api>(api: &A, request: PaletteRequest) -> Pa
                 .join(" ");
             let result = api.run_plugin_cli(plugin_id, request).await;
             PaletteLoaded::Cli { label, result }
+        }
+    }
+}
+
+pub async fn run_settings_request<A: Api>(api: &A, request: SettingsRequest) -> SettingsLoaded {
+    match request {
+        SettingsRequest::Config => SettingsLoaded::Config(api.system_config().await.map(Box::new)),
+        SettingsRequest::Version => {
+            SettingsLoaded::Version(api.server_version().await.map(Box::new))
+        }
+        SettingsRequest::Catalog => SettingsLoaded::Catalog(api.provider_catalog().await),
+        SettingsRequest::Models { provider_id } => {
+            let result = api
+                .execution_options(bb_wire::system::SystemExecutionOptionsQuery {
+                    provider_id: Some(provider_id.clone()),
+                    ..bb_wire::system::SystemExecutionOptionsQuery::default()
+                })
+                .await
+                .map(|options| options.models);
+            SettingsLoaded::Models {
+                provider_id,
+                result,
+            }
+        }
+        SettingsRequest::HostClis { host_id } => {
+            let result = api.host_provider_clis(host_id.clone()).await;
+            SettingsLoaded::HostClis { host_id, result }
+        }
+        SettingsRequest::ProjectDefaults { project_id } => {
+            let result = api
+                .project_default_execution_options(project_id.clone())
+                .await;
+            SettingsLoaded::ProjectDefaults { project_id, result }
+        }
+        SettingsRequest::Plugins => SettingsLoaded::Plugins(api.list_plugins().await),
+        SettingsRequest::PluginSettings { plugin_id } => {
+            let result = api.plugin_settings(plugin_id.clone()).await;
+            SettingsLoaded::PluginSettings { plugin_id, result }
+        }
+        SettingsRequest::Archived(query) => {
+            let result = api.list_threads(query.list_query()).await;
+            SettingsLoaded::Archived { query, result }
+        }
+        SettingsRequest::ChildSummary { thread_id } => {
+            let result = api.thread_child_summary(thread_id.clone()).await;
+            SettingsLoaded::ChildSummary { thread_id, result }
+        }
+        SettingsRequest::Mutate(mutation) => {
+            let result = api.settings_mutation(mutation.clone()).await;
+            SettingsLoaded::Mutated { mutation, result }
         }
     }
 }
