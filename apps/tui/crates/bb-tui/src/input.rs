@@ -28,6 +28,16 @@ impl LineInput {
         &self.text
     }
 
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn splice(&mut self, start: usize, text: &str) {
+        let start = start.min(self.cursor);
+        self.text.replace_range(start..self.cursor, text);
+        self.cursor = start + text.len();
+    }
+
     pub fn split_at_cursor(&self) -> (&str, &str) {
         self.text.split_at(self.cursor)
     }

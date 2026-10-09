@@ -137,6 +137,7 @@ pub enum Command {
     WindowResize(i8),
     Zen,
     ExLine,
+    ExRepeat,
     CloseWindowOrQuit,
     SendAndClose,
     QuitHint,
@@ -158,6 +159,7 @@ impl Command {
     pub const ALL: &'static [Command] = &[
         Command::PaletteOpen,
         Command::ExLine,
+        Command::ExRepeat,
         Command::QuickOpen,
         Command::SearchThreads,
         Command::SwitchProject,
@@ -330,6 +332,7 @@ impl Command {
             self,
             Self::MoveDown
                 | Self::MoveUp
+                | Self::ExRepeat
                 | Self::PageDown
                 | Self::PageUp
                 | Self::HalfPageDown
@@ -489,6 +492,7 @@ impl Command {
             Self::WindowResize(_) => "Narrow the side window".into(),
             Self::Zen => "Zen: only the focused pane".into(),
             Self::ExLine => "Ex command line".into(),
+            Self::ExRepeat => "Repeat the last ex command".into(),
             Self::CloseWindowOrQuit => "Close the window, quit on the last one".into(),
             Self::SendAndClose => "Send, then close the window".into(),
             Self::QuitHint => "Quit with SPC q q or :q".into(),

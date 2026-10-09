@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::api::Mutation;
 use crate::app::{AppState, Effect, Focus, Mode};
 use crate::evil::run_counted;
+use crate::ex_complete::Wild;
 use crate::input::{InputOutcome, LineInput};
 use crate::keymap::Command;
 use crate::palette::PaletteKind;
@@ -17,9 +18,117 @@ const MAX_HISTORY: usize = 100;
 pub struct ExLine {
     pub input: LineInput,
     pub history: Option<usize>,
+    pub history_prefix: String,
+    pub wild: Option<Wild>,
 }
 
-const NAMES: &[(&str, usize)] = &[
+pub struct OptionSpec {
+    pub name: &'static str,
+    pub short: &'static str,
+    pub boolean: bool,
+}
+
+pub const OPTIONS: &[OptionSpec] = &[
+    OptionSpec {
+        name: "hlsearch",
+        short: "hls",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "incsearch",
+        short: "is",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "ignorecase",
+        short: "ic",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "smartcase",
+        short: "scs",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "wrapscan",
+        short: "ws",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "clipboard",
+        short: "cb",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "submitkey",
+        short: "",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "whichkeydelay",
+        short: "",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "follow",
+        short: "",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "sidebar",
+        short: "",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "panel",
+        short: "",
+        boolean: true,
+    },
+];
+
+const UNSUPPORTED: &[&str] = &[
+    "number",
+    "nu",
+    "relativenumber",
+    "rnu",
+    "scrolloff",
+    "so",
+    "mouse",
+];
+
+fn option_spec(name: &str) -> Option<&'static OptionSpec> {
+    OPTIONS
+        .iter()
+        .find(|option| option.name == name || (!option.short.is_empty() && option.short == name))
+}
+
+const MUTATING: &[&str] = &[
+    "write",
+    "wq",
+    "xit",
+    "wall",
+    "bdelete",
+    "bundo",
+    "unarchive",
+    "pin",
+    "unpin",
+    "read",
+    "unread",
+    "stop",
+    "steer",
+    "commit",
+    "merge",
+    "ready",
+    "draft",
+];
+
+fn mutates(full: &str, args: &str) -> bool {
+    MUTATING.contains(&full)
+        || (full == "rename" && !args.is_empty())
+        || (full == "terminal" && matches!(args, "new" | "close"))
+}
+
+pub const NAMES: &[(&str, usize)] = &[
     ("quit", 1),
     ("qall", 2),
     ("cquit", 2),
@@ -222,98 +331,200 @@ impl AppState {
         effects
     }
 
+    fn option_value(&self, name: &str) -> String {
+        let flag = |on: bool| format!("{}{name}", if on { "" } else { "no" });
+        match name {
+            "hlsearch" => flag(self.views.hlsearch),
+            "incsearch" => flag(self.views.incsearch),
+            "ignorecase" => flag(self.views.case.ignorecase),
+            "smartcase" => flag(self.views.case.smartcase),
+            "wrapscan" => flag(self.views.wrapscan),
+            "clipboard" => format!(
+                "clipboard={}",
+                if self.registers.clipboard {
+                    "unnamedplus"
+                } else {
+                    ""
+                }
+            ),
+            "submitkey" => format!(
+                "submitkey={}",
+                match self.submit_key {
+                    crate::composer::SubmitKey::Enter => "enter",
+                    crate::composer::SubmitKey::ModifierEnter => "ctrl-enter",
+                }
+            ),
+            "whichkeydelay" => format!("whichkeydelay={}", self.keys.which_key_delay.as_millis()),
+            "follow" => flag(
+                self.timeline()
+                    .is_none_or(|timeline| timeline.scroll == crate::timeline::Scroll::Bottom),
+            ),
+            "sidebar" => flag(self.sidebar_visible),
+            "panel" => flag(self.panel_visible),
+            _ => String::new(),
+        }
+    }
+
     fn set_option(&mut self, args: &str) -> Vec<Effect> {
         let args = args.trim();
         if args.is_empty() || args == "all" {
-            let lines = vec![
-                format!("whichkeydelay={}", self.keys.which_key_delay.as_millis()),
-                format!(
-                    "clipboard={}",
-                    if self.registers.clipboard {
-                        "unnamedplus"
-                    } else {
-                        ""
-                    }
-                ),
-                format!(
-                    "submitkey={}",
-                    match self.submit_key {
-                        crate::composer::SubmitKey::Enter => "enter",
-                        crate::composer::SubmitKey::ModifierEnter => "ctrl-enter",
-                    }
-                ),
-                format!("{}sidebar", if self.sidebar_visible { "" } else { "no" }),
-                format!("{}wrapscan", if self.views.wrapscan { "" } else { "no" }),
-                format!(
-                    "{}hlsearch",
-                    if self
-                        .views
-                        .search
-                        .as_ref()
-                        .is_some_and(|search| search.highlight)
-                    {
-                        ""
-                    } else {
-                        "no"
-                    }
-                ),
-                format!("{}panel", if self.panel_visible { "" } else { "no" }),
-            ];
+            let names: Vec<&str> = if args.is_empty() {
+                OPTIONS
+                    .iter()
+                    .map(|option| option.name)
+                    .filter(|name| self.options_set.contains(*name))
+                    .collect()
+            } else {
+                OPTIONS.iter().map(|option| option.name).collect()
+            };
+            let mut lines = vec![if args.is_empty() {
+                "--- Options set this session ---".to_owned()
+            } else {
+                "--- Options ---".to_owned()
+            }];
+            lines.extend(
+                names
+                    .iter()
+                    .map(|name| format!("  {}", self.option_value(name))),
+            );
             self.show_text_pane("Options", lines);
             return Vec::new();
         }
-        let (name, value) = match args.split_once('=') {
-            Some((name, value)) => (name.trim(), Some(value.trim())),
-            None => (args, None),
-        };
-        let (name, flag) = if let Some(name) = name.strip_suffix('!') {
+        let mut effects = Vec::new();
+        for word in args.split_whitespace() {
+            match self.set_one(word) {
+                Ok(more) => effects.extend(more),
+                Err(error) => {
+                    self.keys.error(error);
+                    break;
+                }
+            }
+        }
+        effects
+    }
+
+    fn set_one(&mut self, word: &str) -> Result<Vec<Effect>, String> {
+        if let Some(name) = word.strip_suffix('?') {
+            let spec = self.known_option(name, word)?;
+            let value = self.option_value(spec.name);
+            self.keys.message(format!("  {value}"));
+            return Ok(Vec::new());
+        }
+        if let Some((name, value)) = word.split_once(['=', ':']) {
+            let spec = self.known_option(name, word)?;
+            if spec.boolean {
+                return Err(format!("E474: Invalid argument: {word}"));
+            }
+            self.options_set.insert(spec.name);
+            return self.set_value(spec.name, value, word);
+        }
+        let (name, flag) = if let Some(name) = word.strip_suffix('!') {
             (name, None)
-        } else if let Some(name) = name.strip_prefix("no") {
+        } else if let Some(name) = word
+            .strip_prefix("inv")
+            .filter(|name| option_spec(name).is_some())
+        {
+            (name, None)
+        } else if let Some(name) = word
+            .strip_prefix("no")
+            .filter(|name| option_spec(name).is_some())
+        {
             (name, Some(false))
         } else {
-            (name, Some(true))
+            (word, Some(true))
         };
-        match (name, value) {
-            ("whichkeydelay", Some(value)) => match value.parse::<u64>() {
-                Ok(ms) => self.keys.which_key_delay = Duration::from_millis(ms),
-                Err(_) => self.keys.error(format!("E521: Number required: {value}")),
-            },
-            ("clipboard", Some(value)) => self.registers.clipboard = !value.is_empty(),
-            ("submitkey", Some(value)) => match crate::composer::SubmitKey::parse(value) {
-                Some(key) => self.submit_key = key,
-                None => self.keys.error(format!("E474: Invalid argument: {value}")),
-            },
-            ("wrapscan" | "ws", None) => {
-                self.views.wrapscan = flag.unwrap_or(!self.views.wrapscan);
+        let spec = self.known_option(name, word)?;
+        if !spec.boolean {
+            if flag == Some(true) {
+                let value = self.option_value(spec.name);
+                self.keys.message(format!("  {value}"));
+                return Ok(Vec::new());
             }
-            ("hlsearch" | "hls", None) => {
-                let on = flag.unwrap_or(true);
+            return Err(format!("E474: Invalid argument: {word}"));
+        }
+        self.options_set.insert(spec.name);
+        Ok(self.set_flag(spec.name, flag))
+    }
+
+    fn known_option(&self, name: &str, word: &str) -> Result<&'static OptionSpec, String> {
+        if UNSUPPORTED.contains(&name) {
+            return Err(format!("E519: Option not supported: {word}"));
+        }
+        option_spec(name).ok_or_else(|| format!("E518: Unknown option: {word}"))
+    }
+
+    fn set_value(&mut self, name: &str, value: &str, word: &str) -> Result<Vec<Effect>, String> {
+        match name {
+            "whichkeydelay" => {
+                let ms = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("E521: Number required after =: {word}"))?;
+                self.keys.which_key_delay = Duration::from_millis(ms);
+            }
+            "clipboard" => {
+                self.registers.clipboard = match value {
+                    "" => false,
+                    "unnamedplus" | "unnamed" => true,
+                    _ => return Err(format!("E474: Invalid argument: {word}")),
+                };
+            }
+            "submitkey" => {
+                self.submit_key = crate::composer::SubmitKey::parse(value)
+                    .ok_or_else(|| format!("E474: Invalid argument: {word}"))?;
+            }
+            _ => return Err(format!("E474: Invalid argument: {word}")),
+        }
+        Ok(Vec::new())
+    }
+
+    fn set_flag(&mut self, name: &str, flag: Option<bool>) -> Vec<Effect> {
+        let toggle = |current: bool| flag.unwrap_or(!current);
+        match name {
+            "hlsearch" => {
+                let on = toggle(self.views.hlsearch);
+                self.views.hlsearch = on;
                 if let Some(search) = self.views.search.as_mut() {
                     search.highlight = on;
                 }
             }
-            ("sidebar", None) => {
-                self.sidebar_visible = flag.unwrap_or(!self.sidebar_visible);
+            "incsearch" => self.views.incsearch = toggle(self.views.incsearch),
+            "ignorecase" | "smartcase" => {
+                if name == "ignorecase" {
+                    self.views.case.ignorecase = toggle(self.views.case.ignorecase);
+                } else {
+                    self.views.case.smartcase = toggle(self.views.case.smartcase);
+                }
+                let case = self.views.case;
+                if let Some(search) = self.views.search.as_mut()
+                    && let Some(regex) = crate::rbuf::compile(&search.pattern, case)
+                {
+                    search.regex = regex;
+                }
+            }
+            "wrapscan" => self.views.wrapscan = toggle(self.views.wrapscan),
+            "sidebar" => {
+                self.sidebar_visible = toggle(self.sidebar_visible);
                 if !self.sidebar_visible && self.focus == Focus::Sidebar {
                     self.focus = Focus::Main;
                 }
             }
-            ("panel", None) => {
-                let visible = flag.unwrap_or(!self.panel_visible);
-                if visible != self.panel_visible {
+            "panel" => {
+                if toggle(self.panel_visible) != self.panel_visible {
                     return run_counted(self, Command::PanelToggle, None);
                 }
             }
-            ("follow", None) => {
-                let follow = flag.unwrap_or(true);
-                let following = self
+            "follow" => {
+                let Some(following) = self
                     .timeline()
-                    .is_some_and(|timeline| timeline.scroll == crate::timeline::Scroll::Bottom);
-                if follow != following {
+                    .map(|timeline| timeline.scroll == crate::timeline::Scroll::Bottom)
+                else {
+                    return Vec::new();
+                };
+                if toggle(following) != following {
                     return run_counted(self, Command::ToggleFollow, None);
                 }
             }
-            _ => self.keys.error(format!("E518: Unknown option: {args}")),
+            _ => {}
         }
         Vec::new()
     }
@@ -409,6 +620,83 @@ impl AppState {
         }
     }
 
+    fn pick_with(&mut self, command: Command, args: &str) -> Vec<Effect> {
+        let effects = run_counted(self, command, None);
+        if args.is_empty() {
+            return effects;
+        }
+        let Mode::Picker(picker) = &self.mode else {
+            return effects;
+        };
+        let lower = args.to_lowercase();
+        let found = picker
+            .items
+            .iter()
+            .position(|item| item.label.to_lowercase() == lower)
+            .or_else(|| {
+                picker
+                    .items
+                    .iter()
+                    .position(|item| item.label.to_lowercase().starts_with(&lower))
+            })
+            .or_else(|| {
+                picker
+                    .items
+                    .iter()
+                    .position(|item| item.label.to_lowercase().contains(&lower))
+            });
+        let Some(index) = found else {
+            self.keys.error(format!("E475: Invalid argument: {args}"));
+            return effects;
+        };
+        let mut picker = picker.clone();
+        picker.selected = index;
+        let mut effects = effects;
+        effects.extend(crate::compose::handle_picker_key(
+            self,
+            picker,
+            KeyEvent::from(KeyCode::Enter),
+        ));
+        effects
+    }
+
+    fn merge_with(&mut self, args: &str) -> Vec<Effect> {
+        let method = match args {
+            "" => None,
+            method => match ["squash", "merge", "rebase"]
+                .iter()
+                .position(|candidate| candidate.starts_with(method))
+            {
+                Some(index) => Some(index),
+                None => {
+                    self.keys.error(format!("E475: Invalid argument: {method}"));
+                    return Vec::new();
+                }
+            },
+        };
+        let effects = run_counted(self, Command::PullRequestMerge, None);
+        if let Some(method) = method
+            && let Some(confirm) = self.panel.confirm.as_mut()
+            && confirm.action == crate::panel::GitAction::Merge
+        {
+            confirm.method = method;
+        }
+        effects
+    }
+
+    pub(crate) fn repeat_ex(&mut self) -> Vec<Effect> {
+        match self.registers.get(Some(':')) {
+            Some(value) => {
+                let line = value.text.clone();
+                self.run_ex(&line)
+            }
+            None => {
+                self.keys.error("E30: No previous command line");
+                Vec::new()
+            }
+        }
+    }
+
     pub(crate) fn run_ex(&mut self, line: &str) -> Vec<Effect> {
         let line = line.trim().trim_start_matches(':').trim();
         if line.is_empty() {
@@ -451,6 +739,11 @@ impl AppState {
                 .error(format!("E492: Not an editor command: {line}"));
             return Vec::new();
         };
+        if self.read_only && mutates(full, args) {
+            self.keys
+                .error(format!("E45: Read-only mode: :{full} would change data"));
+            return Vec::new();
+        }
         let run = |state: &mut AppState, command| run_counted(state, command, None);
         match full {
             "quit" => run(self, Command::CloseWindowOrQuit),
@@ -527,7 +820,10 @@ impl AppState {
                 }
                 Vec::new()
             }
-            "help" => run(self, Command::Help),
+            "help" => {
+                self.open_help(args);
+                Vec::new()
+            }
             "set" => self.set_option(args),
             "messages" => run(self, Command::Messages),
             "registers" | "display" => {
@@ -604,9 +900,9 @@ impl AppState {
                 }
                 effects
             }
-            "model" => run(self, Command::ModelPicker),
-            "reasoning" => run(self, Command::ReasoningPicker),
-            "permission" => run(self, Command::PermissionPicker),
+            "model" => self.pick_with(Command::ModelPicker, args),
+            "reasoning" => self.pick_with(Command::ReasoningPicker, args),
+            "permission" => self.pick_with(Command::PermissionPicker, args),
             "stop" => run(self, Command::StopTurn),
             "steer" => {
                 if !args.is_empty()
@@ -621,7 +917,7 @@ impl AppState {
             "queue" => run(self, Command::QueueList),
             "answer" | "pending" => run(self, Command::NextPending),
             "commit" => run(self, Command::GitCommit),
-            "merge" => run(self, Command::PullRequestMerge),
+            "merge" => self.merge_with(args),
             "ready" => run(self, Command::PullRequestReady),
             "draft" => run(self, Command::PullRequestDraft),
             "reload" => run(self, Command::Reload),
@@ -634,60 +930,69 @@ impl AppState {
     }
 }
 
-fn complete(text: &str) -> Option<String> {
-    if text.contains(' ') || text.is_empty() {
-        return None;
-    }
-    NAMES
-        .iter()
-        .find(|(full, _)| full.starts_with(text) && *full != text)
-        .map(|(full, _)| (*full).to_owned())
-}
-
 pub(crate) fn handle_ex_key(state: &mut AppState, mut line: ExLine, key: KeyEvent) -> Vec<Effect> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let wild_items = line
+        .wild
+        .as_ref()
+        .is_some_and(|wild| !wild.items.is_empty());
+    let mut effects = Vec::new();
     match key.code {
         KeyCode::Char('g' | 'c') if ctrl => return Vec::new(),
         KeyCode::Backspace if line.input.text().is_empty() => return Vec::new(),
+        KeyCode::Tab => effects = crate::ex_complete::complete(state, &mut line, true),
+        KeyCode::BackTab => {
+            if !crate::ex_complete::cycle(&mut line, false) {
+                effects = crate::ex_complete::complete(state, &mut line, false);
+            }
+        }
+        KeyCode::Char('n' | 'p') if ctrl && wild_items => {
+            crate::ex_complete::cycle(&mut line, key.code == KeyCode::Char('n'));
+        }
         KeyCode::Up | KeyCode::Down => {
+            line.wild = None;
             step_history(state, &mut line, key.code == KeyCode::Up);
         }
         KeyCode::Char('p' | 'n') if ctrl => {
+            line.wild = None;
             step_history(state, &mut line, key.code == KeyCode::Char('p'));
         }
-        KeyCode::Tab => {
-            if let Some(full) = complete(line.input.text()) {
-                line.input = LineInput::new(full);
+        _ => {
+            line.wild = None;
+            match line.input.handle_key(key) {
+                InputOutcome::Submit => {
+                    let text = line.input.text().to_owned();
+                    return state.run_ex(&text);
+                }
+                InputOutcome::Cancel => return Vec::new(),
+                _ => line.history = None,
             }
         }
-        _ => match line.input.handle_key(key) {
-            InputOutcome::Submit => {
-                let text = line.input.text().to_owned();
-                return state.run_ex(&text);
-            }
-            InputOutcome::Cancel => return Vec::new(),
-            _ => line.history = None,
-        },
     }
     state.mode = Mode::Ex(line);
-    Vec::new()
+    effects
 }
 
 fn step_history(state: &AppState, line: &mut ExLine, older: bool) {
+    if line.history.is_none() {
+        if !older {
+            return;
+        }
+        line.history_prefix = line.input.text().to_owned();
+    }
+    let prefix = line.history_prefix.as_str();
+    let matches = |index: &usize| state.ex_history[*index].starts_with(prefix);
     let len = state.ex_history.len();
-    if len == 0 {
+    let next = match (line.history, older) {
+        (None, _) => (0..len).rev().find(matches),
+        (Some(index), true) => (0..index).rev().find(matches).or(Some(index)),
+        (Some(index), false) => (index + 1..len).find(matches),
+    };
+    if next.is_none() && line.history.is_none() {
         return;
     }
-    let next = match (line.history, older) {
-        (None, true) => Some(len - 1),
-        (None, false) => None,
-        (Some(0), true) => Some(0),
-        (Some(index), true) => Some(index - 1),
-        (Some(index), false) if index + 1 < len => Some(index + 1),
-        (Some(_), false) => None,
-    };
     line.history = next;
-    line.input = LineInput::new(next.map_or("", |index| state.ex_history[index].as_str()));
+    line.input = LineInput::new(next.map_or(prefix, |index| state.ex_history[index].as_str()));
 }
 
 #[cfg(test)]
@@ -706,6 +1011,5 @@ mod tests {
         assert_eq!(resolve_name("ren"), Some("rename"));
         assert_eq!(resolve_name("re"), None);
         assert_eq!(resolve_name("zzz"), None);
-        assert_eq!(complete("sett"), Some("settings".to_owned()));
     }
 }

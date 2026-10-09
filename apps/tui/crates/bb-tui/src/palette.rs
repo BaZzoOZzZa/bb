@@ -1250,7 +1250,7 @@ impl AppState {
             .or_else(|| self.selected_thread_id().map(str::to_owned))
     }
 
-    fn file_source(&self) -> Option<FileSource> {
+    pub(crate) fn file_source(&self) -> Option<FileSource> {
         if let Some(thread_id) = self.palette_target_thread() {
             let detail = self.snapshot.thread(&thread_id);
             let entry = self.sidebar_entry(&thread_id);
@@ -1315,7 +1315,7 @@ impl AppState {
         project_display_label(sidebar, project_id)
     }
 
-    fn next_palette_generation(&mut self) -> u64 {
+    pub(crate) fn next_palette_generation(&mut self) -> u64 {
         self.palette_generation += 1;
         self.palette_generation
     }
@@ -1697,6 +1697,19 @@ impl AppState {
                 self.refresh_palette_items();
             }
             PaletteLoaded::Paths { query, result } => {
+                if matches!(self.mode, crate::app::Mode::Ex(_)) {
+                    let paths = result.as_ref().map_err(Clone::clone).map(|response| {
+                        let mut entries: Vec<_> = response.paths.iter().collect();
+                        entries.sort_by(|a, b| b.score.total_cmp(&a.score));
+                        entries
+                            .into_iter()
+                            .map(|entry| entry.path.clone())
+                            .collect()
+                    });
+                    if crate::ex_complete::files_loaded(self, generation, &query, paths) {
+                        return Vec::new();
+                    }
+                }
                 if generation != self.palette_generation {
                     return Vec::new();
                 }

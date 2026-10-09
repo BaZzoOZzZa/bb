@@ -195,6 +195,9 @@ pub struct Views {
     pub preview: Option<Regex>,
     pub history: Vec<String>,
     pub wrapscan: bool,
+    pub hlsearch: bool,
+    pub incsearch: bool,
+    pub case: Case,
     pub widths: RefCell<HashMap<Buf, usize>>,
     last_visual: HashMap<BufId, (Anchor, Anchor, bool)>,
     marks: HashMap<BufId, HashMap<char, Anchor>>,
@@ -212,6 +215,9 @@ impl Default for Views {
             preview: None,
             history: Vec::new(),
             wrapscan: true,
+            hlsearch: true,
+            incsearch: true,
+            case: Case::default(),
             widths: RefCell::new(HashMap::new()),
             last_visual: HashMap::new(),
             marks: HashMap::new(),
@@ -303,7 +309,22 @@ impl Doc {
     }
 }
 
-pub fn compile(pattern: &str) -> Option<Regex> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Case {
+    pub ignorecase: bool,
+    pub smartcase: bool,
+}
+
+impl Default for Case {
+    fn default() -> Self {
+        Self {
+            ignorecase: true,
+            smartcase: true,
+        }
+    }
+}
+
+pub fn compile(pattern: &str, case: Case) -> Option<Regex> {
     let mut text = pattern.to_owned();
     let mut insensitive = None;
     if text.contains("\\c") {
@@ -317,7 +338,9 @@ pub fn compile(pattern: &str) -> Option<Regex> {
     if text.is_empty() {
         return None;
     }
-    let insensitive = insensitive.unwrap_or_else(|| !text.chars().any(char::is_uppercase));
+    let insensitive = insensitive.unwrap_or_else(|| {
+        case.ignorecase && !(case.smartcase && text.chars().any(char::is_uppercase))
+    });
     RegexBuilder::new(&text)
         .case_insensitive(insensitive)
         .build()
@@ -1630,8 +1653,9 @@ fn run_search(
             }
         }
     }
+    let hlsearch = state.views.hlsearch;
     if let Some(search) = state.views.search.as_mut() {
-        search.highlight = true;
+        search.highlight = hlsearch;
     }
     let current = cursor(state, buf, &doc);
     push_jump(state, buf, current.0, current.1);
@@ -1678,7 +1702,7 @@ fn word_at(doc: &Doc, line: usize, col: usize) -> Option<(String, usize)> {
 }
 
 fn set_search(state: &mut AppState, pattern: String, forward: bool) -> bool {
-    let Some(regex) = compile(&pattern) else {
+    let Some(regex) = compile(&pattern, state.views.case) else {
         return false;
     };
     if !state
@@ -1703,7 +1727,7 @@ fn set_search(state: &mut AppState, pattern: String, forward: bool) -> bool {
         pattern,
         regex,
         forward,
-        highlight: true,
+        highlight: state.views.hlsearch,
     });
     true
 }
@@ -1773,7 +1797,11 @@ pub(crate) fn handle_search_key(
 
 fn preview_search(state: &mut AppState, line: &SearchLine) -> Vec<Effect> {
     let origin = line.origin;
-    let regex = compile(line.input.text());
+    if !state.views.incsearch {
+        state.views.preview = None;
+        return Vec::new();
+    }
+    let regex = compile(line.input.text(), state.views.case);
     state.views.preview = regex.clone();
     let mut effects = restore(state, origin);
     if let Some(regex) = regex
@@ -2391,18 +2419,30 @@ mod tests {
 
     #[test]
     fn smart_case_follows_uppercase_and_overrides() {
-        assert!(compile("foo").unwrap().is_match("FOO"));
-        assert!(!compile("Foo").unwrap().is_match("foo"));
-        assert!(compile("Foo\\c").unwrap().is_match("foo"));
-        assert!(!compile("\\Cfoo").unwrap().is_match("FOO"));
-        assert!(compile("a(b").unwrap().is_match("xa(b"));
-        assert!(compile("").is_none());
+        let smart = Case::default();
+        assert!(compile("foo", smart).unwrap().is_match("FOO"));
+        assert!(!compile("Foo", smart).unwrap().is_match("foo"));
+        assert!(compile("Foo\\c", smart).unwrap().is_match("foo"));
+        assert!(!compile("\\Cfoo", smart).unwrap().is_match("FOO"));
+        assert!(compile("a(b", smart).unwrap().is_match("xa(b"));
+        assert!(compile("", smart).is_none());
+        let ignore = Case {
+            ignorecase: true,
+            smartcase: false,
+        };
+        assert!(compile("Foo", ignore).unwrap().is_match("FOO"));
+        let exact = Case {
+            ignorecase: false,
+            smartcase: true,
+        };
+        assert!(!compile("foo", exact).unwrap().is_match("FOO"));
+        assert!(compile("foo\\c", exact).unwrap().is_match("FOO"));
     }
 
     #[test]
     fn find_match_wraps_in_both_directions() {
         let doc = doc(&["one foo", "two", "foo three foo"]);
-        let regex = compile("foo").unwrap();
+        let regex = compile("foo", Case::default()).unwrap();
         assert_eq!(
             find_match(&doc, &regex, 0, 4, true, true),
             Some(((2, 0), false))

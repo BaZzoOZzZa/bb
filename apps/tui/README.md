@@ -233,7 +233,8 @@ fullscreen.
 Use it to look at a production server safely or to demo. Everything that
 reads still works: the sidebar, timelines, diffs, file previews, search,
 settings, automations, terminals (watched, not typed into) and
-notifications. These are refused with a toast and nothing is sent:
+notifications. These are refused with a toast (ex commands with `E45` in
+the echo line) and nothing is sent:
 
 - opening a thread does not mark it read; rename, archive, pin, read toggles
 - sending, steering, queueing, stopping, editing queued messages
@@ -316,22 +317,35 @@ keys. In short:
   `C-w v` opens a split, `C-w q` closes a window, `C-w o` maximizes, `C-w =`
   restores, `C-w x`/`r`/`H`/`L` rearrange panes, `C-w <`/`>` resize the side
   window. Counts work: `2 C-w w` focuses pane 2.
-- **Ex line.** `:` opens it in the echo line (`TAB` completes, `↑`/`↓`
-  walk the history): `:q`, `:qa`, `:w`, `:w!`, `:x`, `:wa`, `:e [path]`,
-  `:b {thread|N}`, `:bn`, `:bp`, `:b#`, `:bd`, `:bu`, `:unarchive`,
-  `:sp`/`:vs [thread]`, `:new`/`:vnew`/`:enew [prompt]`, `:close`, `:only`,
-  `:rename {title}`, `:pin`, `:unpin`, `:read`, `:unread`, `:set`,
-  `:messages`, `:registers`, `:marks`, `:delm {marks}`, `:delm!`, `:noh`,
-  `:{N}`, `:palette`, `:find`, `:search`,
-  `:project`, `:filter`, `:diff`, `:panel [tab]`, `:sidebar`,
-  `:terminal [new|attach|close]`, `:settings [section]`,
-  `:automations [new]`, `:notifications [clear]`, `:attach [path]`,
-  `:attachments`, `:model`, `:reasoning`, `:permission`, `:stop`,
-  `:steer [text]`, `:queue`, `:answer`, `:commit`, `:merge`, `:ready`,
-  `:draft`, `:reload`.
+- **Ex line.** `:` opens it in the echo line; see section 13 of the spec
+  for every command and `:set` option.
+  - `TAB` completes the command name, then its argument: thread titles
+    (`:b`, `:sp`, `:vs`, `:bd`, `:pin`, …), workspace files (`:e`, `:find`,
+    searched on the server like quick open), projects, settings sections,
+    `:set` options and values, `:help` topics, panel tabs, merge methods
+    and the model / reasoning / permission choices. With several matches
+    `TAB` first inserts their common prefix, then a completion popup above
+    the echo line lists them; `TAB` / `S-TAB` (or `C-n` / `C-p` while the
+    popup is open) cycle and come back to what you typed.
+  - `↑` / `↓` and `C-p` / `C-n` walk the ex history, keeping only entries
+    that start with what is already typed.
+  - `@:` repeats the last ex command (`3@:` three times).
+  - Errors appear in red in the echo line (`E492: Not an editor command`,
+    `E518: Unknown option`, `E149: Sorry, no help for …`) and are kept in
+    `:messages`.
+  - Commands that would change data (`:w`, `:wq`, `:x`, `:wa`, `:bd`, `:bu`,
+    `:unarchive`, `:pin`, `:unpin`, `:read`, `:unread`, `:rename {title}`,
+    `:stop`, `:steer`, `:commit`, `:merge`, `:ready`, `:draft`,
+    `:term new|close`) are refused with `E45` in `--read-only` mode.
+  - Arguments do what the spec says: `:model sonnet`, `:reasoning high` and
+    `:permission` pick directly, `:merge rebase` preselects the method in the
+    confirmation, `:help {topic}` opens the spec at a section, key or ex
+    command (`:help sidebar`, `:help gx`, `:help :bd`, `:help 'hlsearch'`).
 - **Quitting** needs `SPC q q`, `:qa`, `:q` on the last window, `ZZ` or `ZQ`;
   `q` and `C-c` never quit.
-- **Help.** `SPC h b b` (or `F1`) lists the bindings of the focused buffer,
+- **Help.** `:help` shows [docs/keymap-evil.md](docs/keymap-evil.md) in a
+  scrollable evil buffer (search it with `/`), `:help {topic}` jumps to a
+  topic. `SPC h b b` (or `F1`) lists the bindings of the focused buffer,
   `SPC h ?` the whole keymap, `SPC h k` describes the next key sequence,
   `SPC h e` shows the message history. The command palette shows each
   command's first key sequence, and Settings → Keyboard lists every sequence.

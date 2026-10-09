@@ -18,6 +18,8 @@ pub mod drafts;
 pub mod edit;
 pub mod evil;
 pub mod ex;
+pub mod ex_complete;
+pub mod ex_help;
 pub mod execution;
 pub mod fuzzy;
 pub mod git_diff;

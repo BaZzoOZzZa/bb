@@ -156,6 +156,15 @@ fn render_frame(state: &AppState, frame: &mut Frame) {
     }
     render_status(state, frame, status);
     render_echo(state, frame, echo);
+    if let Mode::Ex(line) = &state.mode
+        && let Some(wild) = &line.wild
+    {
+        render_wild(
+            wild,
+            frame,
+            Rect::new(area.x, area.y, area.width, echo.y - area.y),
+        );
+    }
     render_toasts(state, frame, body);
     if let Mode::OpenPicker { targets, selected } = &state.mode {
         render_open_picker(targets, *selected, frame, area);
@@ -1046,6 +1055,57 @@ fn render_status(state: &AppState, frame: &mut Frame, area: Rect) {
     pad_to(&mut spans, used, width.saturating_sub(right_width));
     spans.extend(right);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+const WILD_ROWS: usize = 10;
+
+fn render_wild(wild: &crate::ex_complete::Wild, frame: &mut Frame, above: Rect) {
+    let width = usize::from(above.width.saturating_sub(2));
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(note) = &wild.note {
+        lines.push(Line::from(Span::styled(
+            truncate(note, width),
+            Style::new().fg(Color::Yellow),
+        )));
+    }
+    let total = wild.items.len();
+    let rows = WILD_ROWS.min(total);
+    let first = wild
+        .selected
+        .map_or(0, |selected| (selected + 1).saturating_sub(rows));
+    for (index, item) in wild.items.iter().enumerate().skip(first).take(rows) {
+        let style = if wild.selected == Some(index) {
+            Style::new().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::new()
+        };
+        lines.push(Line::from(Span::styled(truncate(item, width), style)));
+    }
+    if total > rows {
+        let position = wild.selected.map_or(0, |selected| selected + 1);
+        lines.push(Line::from(Span::styled(
+            truncate(&format!("[{position}/{total}]"), width),
+            Style::new().fg(Color::DarkGray),
+        )));
+    }
+    let height = (lines.len() as u16 + 2).min(above.height);
+    if height < 3 {
+        return;
+    }
+    let rect = Rect::new(above.x, above.bottom() - height, above.width, height);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(Color::DarkGray))
+                .title(Span::styled(
+                    " completion ",
+                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                )),
+        ),
+        rect,
+    );
 }
 
 fn render_echo(state: &AppState, frame: &mut Frame, area: Rect) {

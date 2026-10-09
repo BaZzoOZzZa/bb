@@ -302,6 +302,7 @@ pub struct AppState {
     pub last_palette: Option<(PaletteKind, String, usize)>,
     pub messages: Vec<String>,
     pub ex_history: Vec<String>,
+    pub options_set: std::collections::BTreeSet<&'static str>,
     pub split_new_thread: bool,
     pub theme: crate::theme::Theme,
     pub mouse_areas: crate::mouse::MouseAreas,
@@ -371,6 +372,7 @@ impl AppState {
             last_palette: None,
             messages: Vec::new(),
             ex_history: Vec::new(),
+            options_set: std::collections::BTreeSet::new(),
             split_new_thread: false,
             theme: crate::theme::Theme::default(),
             mouse_areas: crate::mouse::MouseAreas::default(),
@@ -467,16 +469,20 @@ impl AppState {
         )
     }
 
+    pub(crate) fn record_message(&mut self, message: String) {
+        self.messages.push(message);
+        if self.messages.len() > MAX_MESSAGES {
+            self.messages.remove(0);
+        }
+    }
+
     pub fn toast(&mut self, message: impl Into<String>, level: ToastLevel) {
         let ttl = match level {
             ToastLevel::Info => INFO_TOAST_TTL,
             ToastLevel::Attention | ToastLevel::Error => ERROR_TOAST_TTL,
         };
         let message = message.into();
-        self.messages.push(message.clone());
-        if self.messages.len() > MAX_MESSAGES {
-            self.messages.remove(0);
-        }
+        self.record_message(message.clone());
         self.toasts.push(Toast {
             message,
             level,
@@ -963,6 +969,10 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     let before = state.current_window();
     state.keys.echo = None;
     let mut effects = dispatch_key(state, key);
+    if let Some(echo) = state.keys.echo.as_ref().filter(|echo| echo.error) {
+        let text = echo.text.clone();
+        state.record_message(text);
+    }
     note_finished_insert(state);
     crate::rbuf::sync_focus(state);
     let after = state.current_window();
@@ -1763,6 +1773,7 @@ const SETTINGS_KEEP: &[Command] = &[
     Command::PanelNextTab,
     Command::PanelPreviousTab,
     Command::ExLine,
+    Command::ExRepeat,
     Command::QuitHint,
     Command::CloseWindowOrQuit,
     Command::PaneClose,
@@ -1780,6 +1791,7 @@ const AUTOMATIONS_KEEP: &[Command] = &[
     Command::Reload,
     Command::Back,
     Command::ExLine,
+    Command::ExRepeat,
     Command::QuitHint,
     Command::CloseWindowOrQuit,
     Command::PaneClose,
@@ -1797,6 +1809,7 @@ const PANE_KEEP: &[Command] = &[
     Command::Quit,
     Command::Back,
     Command::ExLine,
+    Command::ExRepeat,
     Command::QuitHint,
     Command::CloseWindowOrQuit,
     Command::PaneClose,
@@ -2223,6 +2236,7 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         }
         Command::Send | Command::Steer => return send_draft(state, command == Command::Steer),
         Command::ExLine => state.open_ex(),
+        Command::ExRepeat => return state.repeat_ex(),
         Command::CloseWindowOrQuit => {
             if state.can_close_window() {
                 return state.close_window();

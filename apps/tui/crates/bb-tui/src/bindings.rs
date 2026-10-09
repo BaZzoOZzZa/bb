@@ -452,6 +452,7 @@ fn global(map: &mut Keymap) {
     use Command::*;
     let g = Scope::Global;
     map.bind(g, ":", cmd(ExLine));
+    map.bind(g, "@ :", cmd(ExRepeat));
     map.bind(g, "C-g", cmd(Back));
     map.bind(g, "q", cmd(QuitHint));
     map.bind(g, "C-h", cmd(WindowFocus(Direction::Left)));

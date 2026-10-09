@@ -744,13 +744,32 @@ recents and plugin commands.
 ## 13. Ex commands
 
 `:` opens the ex line in the echo area. `TAB` completes command names and
-arguments (thread titles for `:b`, workspace paths for `:e`, sections for
-`:settings`, options for `:set`), `↑`/`↓` and `C-p`/`C-n` walk the ex
-history, the minibuffer editing keys of section 12 apply, `RET` runs, `ESC`
-aborts. An unknown command prints `E492: Not an editor command: <name>`.
+arguments (thread titles for `:b`, `:sp`, `:vs`, `:bd`, `:unarchive`,
+`:pin`, `:unpin`, `:read`, `:unread`; workspace paths for `:e` and `:find`,
+searched on the server like quick open; project names for `:project`;
+sections for `:settings`; options and their values for `:set`; topics and
+`:{command}` for `:help`; tabs for `:panel`; `new`/`attach`/`close` for
+`:terminal`; methods for `:merge`; the picker choices for `:model`,
+`:reasoning` and `:permission`). A single match is inserted; with several,
+the first `TAB` inserts their common prefix when it is longer than the typed
+text, otherwise the first match, and a completion popup above the echo line
+lists them (Emacs minibuffer completion, vim `wildmenu`). `TAB` / `S-TAB`,
+and `C-n` / `C-p` while the popup is open, cycle through the matches and
+back to the typed text. `↑`/`↓` and `C-p`/`C-n` walk the ex history,
+keeping only entries that start with the text typed before the first step
+(vim's prefix history). The minibuffer editing keys of section 12 apply,
+`RET` runs, `ESC` aborts. An unknown command prints `E492: Not an editor
+command: <name>`. Errors are shown in red in the echo area and kept in the
+message history (`:messages`, `SPC h e`), as Emacs keeps the echo area in
+`*Messages*`.
 Commands accept their shortest unique abbreviation shown in brackets. `!`
-after a command is its forced variant. Mutating commands are refused in
-`--read-only` mode. `@:` repeats the last ex command.
+after a command is its forced variant. Mutating commands (`:w`, `:wq`,
+`:x`, `:wa`, `:bd`, `:bu`, `:unarchive`, `:pin`, `:unpin`, `:read`,
+`:unread`, `:rename {title}`, `:stop`, `:steer`, `:commit`, `:merge`,
+`:ready`, `:draft`, `:term new`, `:term close`) are refused in
+`--read-only` mode with `E45: Read-only mode: :{command} would change
+data`. `@:` repeats the last ex command, `{N}@:` N times; without one it
+prints `E30: No previous command line`.
 
 | Command | Action |
 |---|---|
@@ -780,7 +799,7 @@ after a command is its forced variant. Mutating commands are refused in
 | `:ren[ame] {title}` | Rename the focused thread |
 | `:pin`, `:unpin`, `:read`, `:unread` | Thread flags |
 | `:noh[lsearch]` | Clear the search highlight |
-| `:h[elp] [topic]` | Help: `:help` overview, `:help {key}` describes a key, `:help :{cmd}` an ex command, `:help {view}` a view's keys |
+| `:h[elp] [topic]` | Open this document in a read-only evil buffer: `:help` at the top, `:help {N}` at section N, `:help {view}` at a section (`sidebar`, `timeline`, `composer`, `search`, `marks`, `registers`, `ex`, `set`, `which-key`, …), `:help {key}` at the row of a key (`gx`, `C-w`, `SPC b`), `:help :{cmd}` at an ex command, `:help '{option}'` at an option; `E149: Sorry, no help for {topic}` otherwise |
 | `:set {option}`, `:set no{option}`, `:set {option}!`, `:set {option}?`, `:set {option}={value}` | Options below; `:set` lists changed options |
 | `:se[t] all` | Every option |
 | `:mes[sages]` | Message history |
@@ -830,7 +849,15 @@ after a command is its forced variant. Mutating commands are refused in
 
 Options set with `:set` last for the session; the settings file (`[evil]`
 table: `which_key_delay_ms`, `clipboard`, `relative_number`, `scrolloff`) sets
-their startup values.
+their startup values. `:set` takes several options at once (`:set noic
+scs`), `inv{option}` toggles like `{option}!`, `{option}?` and a bare
+non-boolean option print the value, and `:set` without arguments lists the
+options set this session. Errors: `E518: Unknown option`, `E519: Option not
+supported` (`number`, `relativenumber`, `scrolloff` and `mouse` until they
+are built), `E474: Invalid argument`, `E521: Number required after =`.
+`ignorecase` / `smartcase` apply to the current pattern immediately,
+`noincsearch` stops moving and highlighting while typing a search, and
+`nohlsearch` keeps later searches unhighlighted.
 
 ## 14. Right panel, terminals and special views
 
@@ -1244,10 +1271,15 @@ Built:
   clicked character.
 - Minibuffers: the vertico keys of section 12 except `C-;`, `C-r` and
   `M-p`/`M-n`; `SPC '`.
-- Ex commands of section 13 except `:marks`, `:delm`, `:h {topic}`, `@:`,
-  `:wq` ranges; `:set` for `whichkeydelay`, `clipboard`, `submitkey`,
-  `sidebar`, `panel`, `follow`; the `[evil]` settings table with
+- Ex commands of section 13; `:set` for `hlsearch`, `incsearch`,
+  `ignorecase`, `smartcase`, `wrapscan`, `whichkeydelay`, `clipboard`,
+  `submitkey`, `sidebar`, `panel`, `follow`; the `[evil]` settings table with
   `which_key_delay_ms` and `clipboard`.
+- The ex line (fourth step): completion of command names and arguments
+  with the completion popup, file completion through the server's path
+  search, prefix-filtered history, `@:`, `E45` refusals in `--read-only`
+  mode, `:help {topic}` over this document, errors kept in `:messages`,
+  direct arguments for `:model`, `:reasoning`, `:permission` and `:merge`.
 - Right panel, terminal, notifications, settings and automations keys of
   section 14, mapped onto the existing view actions.
 
@@ -1265,6 +1297,9 @@ Not built yet:
   click-to-position in the new-thread prompt.
 - Which-key listings for registers and marks; `C-;` embark actions; minibuffer
   history (`M-p`/`M-n`).
+- Ex ranges (`:1,3`, `{N}:`), `:set {option}&`, the `number`,
+  `relativenumber`, `scrolloff` and `mouse` options (they answer `E519`),
+  `C-r {reg}` in the ex line.
 - Cursor shape by state (DECSCUSR), relative line numbers (`SPC t l`,
   `:set rnu`), `scrolloff`, mouse drag selection in the timeline and the
   panel.
@@ -1285,3 +1320,17 @@ Deviations of the third step, by design:
 - Output panes: `yy` yanks the line under the cursor and `gy` the whole
   output (or the previewed file path), `q`/`RET`/`ESC` close.
 
+
+Deviations of the fourth step, by design:
+
+- `:files` is listed twice in section 13; it opens the thread list, and
+  `:find` / `:fi` open quick open.
+- `:set` without arguments lists the options set with `:set` this session
+  rather than options that differ from their defaults, because the startup
+  values of `submitkey`, `sidebar`, `panel` and `follow` come from the
+  settings file and the layout.
+- File completion for `:e` and `:find` needs at least one typed character:
+  the server's path search takes a query, so `TAB` on an empty argument
+  prints a hint in the completion popup instead.
+- `:help` opens this document rather than a separate overview; `SPC h b b`,
+  `F1` and `SPC h ?` keep listing the live bindings.
