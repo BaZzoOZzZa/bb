@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::keymap::{Act, Command, Direction, KeyChord, Keymap, Scope, ScreenPos};
+use crate::keymap::{Act, Command, Direction, JumpKind, KeyChord, Keymap, Scope, ScreenPos};
+use crate::rbuf::{Batch, ViewOp};
 use crate::vi::{CharAct, EditOp, InsertAt, Motion, Object, Operator, Target};
 
 fn cmd(command: Command) -> Act {
@@ -13,6 +14,10 @@ fn key(token: &str) -> Act {
 
 fn edit(op: EditOp) -> Act {
     Act::Cmd(Command::Edit(op))
+}
+
+fn view(op: ViewOp) -> Act {
+    Act::Cmd(Command::View(op))
 }
 
 pub(crate) fn install(map: &mut Keymap) {
@@ -29,6 +34,384 @@ pub(crate) fn install(map: &mut Keymap) {
     new_thread(map);
     panel(map);
     views(map);
+    read_only(map, Scope::Sidebar, false);
+    sidebar_overrides(map);
+    read_only(map, Scope::Timeline, true);
+    timeline_overrides(map);
+    for scope in [
+        Scope::PanelDiff,
+        Scope::PanelFile,
+        Scope::PanelTerminal,
+        Scope::Pane,
+    ] {
+        read_only(map, scope, true);
+    }
+    read_only_overrides(map);
+    view_visual(map);
+}
+
+fn vertical() -> Vec<(&'static str, ViewOp)> {
+    use crate::rbuf::ViewOp::*;
+    vec![
+        ("j", Move(Motion::Down)),
+        ("↓", Move(Motion::Down)),
+        ("k", Move(Motion::Up)),
+        ("↑", Move(Motion::Up)),
+        ("g j", Move(Motion::Down)),
+        ("g k", Move(Motion::Up)),
+        ("g g", Move(Motion::FirstLine)),
+        ("G", Move(Motion::LastLine)),
+        ("Home", Move(Motion::FirstLine)),
+        ("End", Move(Motion::LastLine)),
+        (
+            "C-d",
+            Page {
+                down: true,
+                half: true,
+            },
+        ),
+        (
+            "C-u",
+            Page {
+                down: false,
+                half: true,
+            },
+        ),
+        (
+            "C-f",
+            Page {
+                down: true,
+                half: false,
+            },
+        ),
+        (
+            "C-b",
+            Page {
+                down: false,
+                half: false,
+            },
+        ),
+        (
+            "PgDn",
+            Page {
+                down: true,
+                half: false,
+            },
+        ),
+        (
+            "PgUp",
+            Page {
+                down: false,
+                half: false,
+            },
+        ),
+        ("C-e", Scroll(1)),
+        ("C-y", Scroll(-1)),
+        ("z z", Align(ScreenPos::Middle)),
+        ("z .", Align(ScreenPos::Middle)),
+        ("z t", Align(ScreenPos::Top)),
+        ("z RET", Align(ScreenPos::Top)),
+        ("z b", Align(ScreenPos::Bottom)),
+        ("z -", Align(ScreenPos::Bottom)),
+        ("H", Screen(ScreenPos::Top)),
+        ("M", Screen(ScreenPos::Middle)),
+        ("L", Screen(ScreenPos::Bottom)),
+        ("/", Search { forward: true }),
+        ("?", Search { forward: false }),
+        ("n", SearchNext { reverse: false }),
+        ("N", SearchNext { reverse: true }),
+        (
+            "*",
+            SearchWord {
+                forward: true,
+                whole: true,
+            },
+        ),
+        (
+            "#",
+            SearchWord {
+                forward: false,
+                whole: true,
+            },
+        ),
+        (
+            "g *",
+            SearchWord {
+                forward: true,
+                whole: false,
+            },
+        ),
+        (
+            "g #",
+            SearchWord {
+                forward: false,
+                whole: false,
+            },
+        ),
+    ]
+}
+
+fn read_only(map: &mut Keymap, scope: Scope, columns: bool) {
+    if columns {
+        for (keys, motion) in motions() {
+            map.bind(scope, keys, view(ViewOp::Move(motion)));
+            map.bind(
+                scope,
+                &format!("y {keys}"),
+                view(ViewOp::Yank(Target::Motion(motion))),
+            );
+        }
+        for (keys, forward, till) in finds() {
+            map.bind(scope, keys, Act::Char(CharAct::Find { forward, till }));
+            map.bind(
+                scope,
+                &format!("y {keys}"),
+                Act::Char(CharAct::ApplyFind {
+                    op: Operator::Yank,
+                    forward,
+                    till,
+                }),
+            );
+        }
+        for (keys, object) in objects() {
+            map.bind(
+                scope,
+                &format!("y i {keys}"),
+                view(ViewOp::Yank(Target::Inner(object))),
+            );
+            map.bind(
+                scope,
+                &format!("y a {keys}"),
+                view(ViewOp::Yank(Target::Around(object))),
+            );
+        }
+        map.group(scope, "y i", "+inner");
+        map.group(scope, "y a", "+around");
+        map.bind(
+            scope,
+            "Y",
+            view(ViewOp::Yank(Target::Motion(Motion::LineEnd))),
+        );
+    } else {
+        map.bind(scope, "Y", view(ViewOp::Yank(Target::Line)));
+    }
+    for (keys, op) in vertical() {
+        map.bind(scope, keys, view(op));
+    }
+    for keys in ["j", "k", "g g", "G"] {
+        let motion = match keys {
+            "j" => Motion::Down,
+            "k" => Motion::Up,
+            "g g" => Motion::FirstLine,
+            _ => Motion::LastLine,
+        };
+        map.bind(
+            scope,
+            &format!("y {keys}"),
+            view(ViewOp::Yank(Target::Motion(motion))),
+        );
+    }
+    map.bind(scope, "y y", view(ViewOp::Yank(Target::Line)));
+    map.bind(scope, "v", view(ViewOp::Visual { line: !columns }));
+    map.bind(scope, "V", view(ViewOp::Visual { line: true }));
+    map.bind(scope, "g v", view(ViewOp::Reselect));
+    map.bind(scope, "C-o", view(ViewOp::JumpOlder));
+    map.bind(scope, "C-i", view(ViewOp::JumpNewer));
+    map.bind(scope, "m", Act::Char(CharAct::SetMark));
+    map.bind(scope, "'", Act::Char(CharAct::Mark { line: true }));
+    map.bind(scope, "`", Act::Char(CharAct::Mark { line: false }));
+    map.bind(
+        scope,
+        "y '",
+        Act::Char(CharAct::ApplyMark {
+            op: Operator::Yank,
+            line: true,
+        }),
+    );
+    map.bind(
+        scope,
+        "y `",
+        Act::Char(CharAct::ApplyMark {
+            op: Operator::Yank,
+            line: false,
+        }),
+    );
+    map.group(scope, "y", "+yank");
+}
+
+fn sidebar_overrides(map: &mut Keymap) {
+    use Command::*;
+    let s = Scope::Sidebar;
+    let entries: &[(&str, Command)] = &[
+        ("TAB", ToggleGroup),
+        ("z a", ToggleGroup),
+        ("z o", Expand),
+        ("z O", Expand),
+        ("z c", Collapse),
+        ("z C", Collapse),
+        ("z R", FoldAll(true)),
+        ("z M", FoldAll(false)),
+        ("y y", YankTitle),
+        ("g y", YankId),
+    ];
+    for (keys, command) in entries {
+        map.bind(s, keys, cmd(*command));
+    }
+}
+
+fn timeline_overrides(map: &mut Keymap) {
+    use Command::*;
+    let t = Scope::Timeline;
+    let entries: &[(&str, Command)] = &[
+        ("{", MoveUp),
+        ("}", MoveDown),
+        ("RET", Open),
+        ("TAB", ToggleGroup),
+        ("z a", ToggleGroup),
+        ("z o", Expand),
+        ("z O", Expand),
+        ("z c", Collapse),
+        ("z C", Collapse),
+        ("z R", FoldAll(true)),
+        ("z M", FoldAll(false)),
+        ("g r", Reload),
+        ("] m", NextMessage),
+        ("[ m", PreviousMessage),
+        ("] ]", TimelineJump(JumpKind::Turn, true)),
+        ("[ [", TimelineJump(JumpKind::Turn, false)),
+        ("] e", TimelineJump(JumpKind::Error, true)),
+        ("[ e", TimelineJump(JumpKind::Error, false)),
+        ("g y", Copy),
+        ("g x", OpenExternal),
+        ("g f", PreviewAtCursor),
+        ("i", ComposerInsert(InsertAt::After)),
+        ("a", ComposerInsert(InsertAt::After)),
+        ("A", ComposerInsert(InsertAt::LineEnd)),
+        ("o", ComposerInsert(InsertAt::Below)),
+        ("O", ComposerInsert(InsertAt::Above)),
+        ("I", ComposerInsert(InsertAt::LineStart)),
+        ("g i", ComposerInsert(InsertAt::Last)),
+    ];
+    for (keys, command) in entries {
+        map.bind(t, keys, cmd(*command));
+    }
+    map.bind(t, "y i m", view(ViewOp::YankRow { around: false }));
+    map.bind(t, "y a m", view(ViewOp::YankRow { around: true }));
+}
+
+fn read_only_overrides(map: &mut Keymap) {
+    passthrough(
+        map,
+        Scope::PanelDiff,
+        &[
+            ("RET", "RET", "Fold / unfold the file, load the diff"),
+            ("TAB", "RET", "Fold / unfold the file"),
+            ("z a", "RET", "Fold / unfold the file"),
+            ("] c", "n", "Next hunk"),
+            ("[ c", "N", "Previous hunk"),
+            ("] f", "]", "Next file"),
+            ("[ f", "[", "Previous file"),
+            ("s", "s", "Next scope"),
+            ("S", "S", "Previous scope"),
+            ("g f", "p", "Preview the file at the cursor line"),
+            ("e", "e", "Open the file in $EDITOR"),
+        ],
+    );
+    map.bind_desc(
+        Scope::PanelDiff,
+        "g y",
+        cmd(Command::FileYankPath),
+        "Yank the file path",
+    );
+    map.bind(Scope::PanelDiff, "z R", cmd(Command::FoldAll(true)));
+    map.bind(Scope::PanelDiff, "z M", cmd(Command::FoldAll(false)));
+    for scope in [Scope::PanelDiff, Scope::PanelFile, Scope::Pane] {
+        map.bind_desc(scope, "z h", key("h"), "Scroll left");
+        map.bind_desc(scope, "z l", key("l"), "Scroll right");
+    }
+    passthrough(
+        map,
+        Scope::PanelFile,
+        &[
+            ("e", "e", "Open the file in $EDITOR"),
+            ("g y", "y", "Yank the path"),
+        ],
+    );
+    passthrough(
+        map,
+        Scope::PanelTerminal,
+        &[
+            ("RET", "i", "Type into the terminal"),
+            ("i", "i", "Type into the terminal"),
+            ("a", "i", "Type into the terminal"),
+            ("I", "i", "Type into the terminal"),
+            ("A", "i", "Type into the terminal"),
+            ("] t", "]", "Next terminal"),
+            ("[ t", "[", "Previous terminal"),
+            ("o", "n", "Start a new terminal"),
+            ("d d", "x", "Close the terminal"),
+            ("x", "x", "Close the terminal"),
+        ],
+    );
+    passthrough(
+        map,
+        Scope::Pane,
+        &[
+            ("g y", "y", "Yank the output or path"),
+            ("g x", "o", "Open the previewed file"),
+            ("q", "ESC", "Close"),
+            ("RET", "ESC", "Close"),
+        ],
+    );
+}
+
+fn view_visual(map: &mut Keymap) {
+    let v = Scope::ViewVisual;
+    for (keys, motion) in motions() {
+        map.bind(v, keys, view(ViewOp::Move(motion)));
+    }
+    for (keys, forward, till) in finds() {
+        map.bind(v, keys, Act::Char(CharAct::Find { forward, till }));
+    }
+    for (keys, op) in vertical() {
+        map.bind(v, keys, view(op));
+    }
+    for (keys, object) in objects() {
+        map.bind(
+            v,
+            &format!("i {keys}"),
+            view(ViewOp::VisualObject(Target::Inner(object))),
+        );
+        map.bind(
+            v,
+            &format!("a {keys}"),
+            view(ViewOp::VisualObject(Target::Around(object))),
+        );
+    }
+    map.bind(v, "i m", view(ViewOp::VisualRow { around: false }));
+    map.bind(v, "a m", view(ViewOp::VisualRow { around: true }));
+    map.group(v, "i", "+inner");
+    map.group(v, "a", "+around");
+    let entries: &[(&str, ViewOp)] = &[
+        ("y", ViewOp::VisualYank { line: false }),
+        ("Y", ViewOp::VisualYank { line: true }),
+        ("o", ViewOp::VisualSwap),
+        ("O", ViewOp::VisualSwap),
+        ("v", ViewOp::Visual { line: false }),
+        ("V", ViewOp::Visual { line: true }),
+        ("d", ViewOp::Batch(Batch::Archive)),
+        ("x", ViewOp::Batch(Batch::Archive)),
+        ("Del", ViewOp::Batch(Batch::Archive)),
+        ("!", ViewOp::Batch(Batch::Read)),
+        ("+", ViewOp::Batch(Batch::Pin)),
+    ];
+    for (keys, op) in entries {
+        map.bind(v, keys, view(*op));
+    }
+    map.bind(v, "\"", Act::Char(CharAct::Register));
+    map.bind(v, "m", Act::Char(CharAct::SetMark));
+    map.bind(v, "'", Act::Char(CharAct::Mark { line: true }));
+    map.bind(v, "`", Act::Char(CharAct::Mark { line: false }));
 }
 
 fn direct_chords(map: &mut Keymap) {

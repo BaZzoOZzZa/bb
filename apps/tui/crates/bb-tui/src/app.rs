@@ -70,6 +70,7 @@ pub enum Mode {
         input: LineInput,
     },
     Ex(crate::ex::ExLine),
+    Search(crate::rbuf::SearchLine),
     OpenPicker {
         targets: Vec<String>,
         selected: usize,
@@ -292,6 +293,7 @@ pub struct AppState {
     pub split_maximized: bool,
     pub keys: crate::evil::KeyState,
     pub registers: crate::evil::Registers,
+    pub views: crate::rbuf::Views,
     pub prev_window: Option<crate::window::WindowId>,
     pub zoom: Option<crate::window::Zoom>,
     pub sidebar_width_delta: i16,
@@ -360,6 +362,7 @@ impl AppState {
             split_maximized: false,
             keys: crate::evil::KeyState::default(),
             registers: crate::evil::Registers::default(),
+            views: crate::rbuf::Views::default(),
             prev_window: None,
             zoom: None,
             sidebar_width_delta: 0,
@@ -419,7 +422,7 @@ impl AppState {
             .collect()
     }
 
-    fn with_timeline(
+    pub(crate) fn with_timeline(
         &mut self,
         run: impl FnOnce(&mut TimelineView) -> Vec<LoadRequest>,
     ) -> Vec<Effect> {
@@ -961,6 +964,7 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     state.keys.echo = None;
     let mut effects = dispatch_key(state, key);
     note_finished_insert(state);
+    crate::rbuf::sync_focus(state);
     let after = state.current_window();
     if after != before {
         state.prev_window = Some(before);
@@ -994,6 +998,14 @@ fn composer_scopes(composer: &Composer) -> Vec<Scope> {
 }
 
 pub(crate) fn normal_scopes(state: &AppState) -> Vec<Scope> {
+    let mut scopes = base_scopes(state);
+    if crate::rbuf::visual_active(state).is_some() {
+        scopes.insert(0, Scope::ViewVisual);
+    }
+    scopes
+}
+
+fn base_scopes(state: &AppState) -> Vec<Scope> {
     if state.result_pane.is_some() {
         return vec![Scope::Pane];
     }
@@ -1046,11 +1058,18 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         };
         return crate::ex::handle_ex_key(state, line, key);
     }
+    if let Mode::Search(_) = state.mode {
+        let Mode::Search(line) = std::mem::replace(&mut state.mode, Mode::Normal) else {
+            return Vec::new();
+        };
+        return crate::rbuf::handle_search_key(state, line, key);
+    }
     if state.palette.is_some() {
         return handle_palette_key(state, key);
     }
     if state.result_pane.is_some() {
-        return crate::evil::normal_key(state, key, &[Scope::Pane]);
+        let scopes = normal_scopes(state);
+        return crate::evil::normal_key(state, key, &scopes);
     }
     if let Some(view) = &state.automations
         && state.mode == Mode::Normal
@@ -1085,7 +1104,7 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         Mode::Filter(_) | Mode::Rename { .. } | Mode::AttachPrompt { .. } => {
             return mode_key(state, key);
         }
-        Mode::Normal | Mode::Ex(_) => {}
+        Mode::Normal | Mode::Ex(_) | Mode::Search(_) => {}
     }
     if state.terminal_input_active() {
         return crate::terminal::handle_terminal_input(state, key);
@@ -1107,11 +1126,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             interaction_key(state, key)
         }
         Focus::Composer => composer_key(state, key),
-        Focus::Sidebar if state.sidebar_visible => {
-            crate::evil::normal_key(state, key, &[Scope::Sidebar])
-        }
-        Focus::Main if state.open_thread.is_some() => {
-            crate::evil::normal_key(state, key, &[Scope::Timeline])
+        Focus::Sidebar | Focus::Main => {
+            let scopes = normal_scopes(state);
+            crate::evil::normal_key(state, key, &scopes)
         }
         _ => crate::evil::normal_key(state, key, &[]),
     }
@@ -1322,6 +1339,9 @@ fn keyboard_quit(state: &mut AppState) -> Vec<Effect> {
     state.keys.reset();
     state.keys.describe = false;
     if describing {
+        return Vec::new();
+    }
+    if crate::rbuf::escape(state) {
         return Vec::new();
     }
     let escape = KeyEvent::from(KeyCode::Esc);
@@ -1547,8 +1567,27 @@ fn timeline_command(state: &mut AppState, command: Command) -> Option<Vec<Effect
         Command::ViewJump(position) => {
             state.with_timeline(|timeline| timeline.select_in_view(position))
         }
-        Command::NextMessage => state.with_timeline(|timeline| timeline.jump_message(true)),
-        Command::PreviousMessage => state.with_timeline(|timeline| timeline.jump_message(false)),
+        Command::NextMessage | Command::PreviousMessage => {
+            crate::rbuf::note_jump(state);
+            let forward = command == Command::NextMessage;
+            state.with_timeline(|timeline| timeline.jump_message(forward))
+        }
+        Command::TimelineJump(kind, forward) => {
+            crate::rbuf::note_jump(state);
+            let found = state
+                .timeline_mut()
+                .and_then(|timeline| timeline.jump_kind(kind, forward));
+            match found {
+                Some(loads) => state.load_effects(loads),
+                None => {
+                    state.keys.message(match kind {
+                        crate::keymap::JumpKind::Turn => "No more turns",
+                        crate::keymap::JumpKind::Error => "No more errors",
+                    });
+                    Vec::new()
+                }
+            }
+        }
         _ => return None,
     };
     Some(effects)
@@ -1624,15 +1663,32 @@ fn bindings_pane(state: &mut AppState, scopes: &[Scope], title: &str) {
         let shown: Vec<_> = bindings
             .into_iter()
             .filter(|binding| {
-                !matches!(*scope, Scope::Composer | Scope::Visual)
-                    || binding.keys.len() == 1
+                !matches!(
+                    *scope,
+                    Scope::Composer
+                        | Scope::Visual
+                        | Scope::ViewVisual
+                        | Scope::Sidebar
+                        | Scope::Timeline
+                        | Scope::PanelDiff
+                        | Scope::PanelFile
+                        | Scope::PanelTerminal
+                        | Scope::Pane
+                ) || binding.keys.len() == 1
+                    || binding.keys.len() == 2
+                        && binding.keys[0] == KeyChord::ch('y')
+                        && binding.keys[1] == KeyChord::ch('y')
                     || !matches!(
                         binding.act,
                         crate::keymap::Act::Cmd(Command::Edit(crate::vi::EditOp::Apply(..)))
                             | crate::keymap::Act::Cmd(Command::Edit(
                                 crate::vi::EditOp::VisualObject(..)
                             ))
+                            | crate::keymap::Act::Cmd(Command::View(
+                                crate::rbuf::ViewOp::Yank(_) | crate::rbuf::ViewOp::VisualObject(_)
+                            ))
                             | crate::keymap::Act::Char(crate::vi::CharAct::ApplyFind { .. })
+                            | crate::keymap::Act::Char(crate::vi::CharAct::ApplyMark { .. })
                     )
             })
             .collect();
@@ -1650,6 +1706,20 @@ fn bindings_pane(state: &mut AppState, scopes: &[Scope], title: &str) {
             lines.push(vec![
                 Span::styled(format!("{:<18}", "d c y > < gu gU g~"), key_style),
                 Span::raw(" operators: then a motion, a text object (iw aw i\" a( ip …) or the same key for a line"),
+            ]);
+        }
+        if matches!(
+            *scope,
+            Scope::Sidebar
+                | Scope::Timeline
+                | Scope::PanelDiff
+                | Scope::PanelFile
+                | Scope::PanelTerminal
+                | Scope::Pane
+        ) {
+            lines.push(vec![
+                Span::styled(format!("{:<18}", "y"), key_style),
+                Span::raw(" yank rendered text: then a motion, a text object (iw i\" ip i` im …) or y for a line"),
             ]);
         }
         for binding in shown {
@@ -2013,6 +2083,20 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         Command::StatusPanel => return state.set_panel_tab(crate::panel::PanelTab::Info),
         Command::DiffToggle => return state.toggle_diff_panel(),
         Command::DiffHunk(forward) => return state.diff_hunk(forward),
+        Command::FileYankPath
+            if state.focus == Focus::Panel
+                && state.panel.tab == crate::panel::PanelTab::Diff
+                && state.panel.document().is_some() =>
+        {
+            let path = state.panel.document().and_then(|document| {
+                let file = document.cursor_file()?;
+                Some(document.files[file].entry.path.clone())
+            });
+            match path {
+                Some(path) => return copy_effect(state, path),
+                None => state.keys.error("No file at the cursor"),
+            }
+        }
         Command::FileYankPath => match state.previewed_path() {
             Some(path) => return copy_effect(state, path),
             None => state.keys.error("No previewed file"),
@@ -2076,11 +2160,25 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             Some(text) => return copy_effect(state, text),
             None => state.toast("Select a row to yank (j/k)", ToastLevel::Info),
         },
+        Command::YankTimeline
+            if state.focus == Focus::Panel
+                && state.panel_visible
+                && state.panel.tab == crate::panel::PanelTab::Terminal =>
+        {
+            return state.copy_terminal_screen();
+        }
         Command::YankTimeline => match state.timeline().map(TimelineView::all_text) {
             Some(text) if !text.is_empty() => return copy_effect(state, text),
             _ => state.keys.error("Nothing to yank"),
         },
-        Command::OpenExternal => return open_targets(state),
+        Command::OpenExternal => {
+            if let Some(token) = crate::rbuf::token_at_cursor(state)
+                && (token.starts_with("http://") || token.starts_with("https://"))
+            {
+                return vec![Effect::OpenExternal(token)];
+            }
+            return open_targets(state);
+        }
         Command::ToggleFollow => {
             let following = state
                 .timeline()
@@ -2146,6 +2244,25 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             state.show_text_pane("Messages", lines);
         }
         Command::Edit(op) => return crate::edit::apply_edit(state, op, None),
+        Command::View(op) => return crate::rbuf::apply(state, op, None),
+        Command::PreviewAtCursor => match crate::rbuf::token_at_cursor(state) {
+            Some(token) => {
+                let path = token
+                    .split(':')
+                    .next()
+                    .unwrap_or(&token)
+                    .trim_start_matches("file://")
+                    .to_owned();
+                let mut effects = Vec::new();
+                if state.panel.environment_id.is_none() {
+                    state.panel_visible = true;
+                    effects.extend(state.sync_panel());
+                }
+                effects.extend(state.preview_path(&path));
+                return effects;
+            }
+            None => state.keys.error("E446: No file name under cursor"),
+        },
         Command::MoveDown
         | Command::MoveUp
         | Command::MoveTop
@@ -2178,6 +2295,7 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         | Command::QueueList
         | Command::AttachFile
         | Command::Attachments
+        | Command::TimelineJump(..)
         | Command::ToggleSubmitMode => {}
     }
     Vec::new()

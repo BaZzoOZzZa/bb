@@ -271,7 +271,7 @@ pub fn slice_spans(spans: &[Span<'static>], skip: usize, width: usize) -> Vec<Sp
     out
 }
 
-pub fn render_pane(pane: &ResultPane, frame: &mut Frame, area: Rect) {
+pub fn render_pane(state: &crate::app::AppState, pane: &ResultPane, frame: &mut Frame, area: Rect) {
     let rect = Rect {
         x: area.x + 1.min(area.width),
         y: area.y + 1.min(area.height),
@@ -314,6 +314,27 @@ pub fn render_pane(pane: &ResultPane, frame: &mut Frame, area: Rect) {
                 .map(|spans| Line::from(slice_spans(spans, pane.column, width)))
                 .collect();
             frame.render_widget(Paragraph::new(rendered), body);
+            crate::rbuf::note_width(state, crate::rbuf::Buf::Pane, width);
+            let paint = crate::rbuf::paint(state, crate::rbuf::Buf::Pane);
+            let buffer = frame.buffer_mut();
+            for (row, (index, spans)) in lines
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(height)
+                .enumerate()
+            {
+                let rect = Rect {
+                    y: body.y + row as u16,
+                    height: 1,
+                    ..body
+                };
+                if paint.cursor_line() == Some(index) {
+                    buffer.set_style(rect, crate::rbuf::CURSOR_LINE);
+                }
+                let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+                paint.overlay(buffer, index, &text, rect, pane.column, true);
+            }
         }
     }
     let position = if total == 0 {
@@ -330,11 +351,11 @@ pub fn render_pane(pane: &ResultPane, frame: &mut Frame, area: Rect) {
         .footer
         .clone()
         .unwrap_or_else(|| (String::new(), muted()));
-    let mut keys = String::from("j/k scroll · h/l pan · y copy");
+    let mut keys = String::from("j/k move · / search · yy yank · gy copy all");
     if pane.open_target.is_some() {
-        keys.push_str(" · o open");
+        keys.push_str(" · gx open");
     }
-    keys.push_str(" · Esc close");
+    keys.push_str(" · q close");
     let left = if footer.is_empty() {
         vec![Span::styled(keys, muted())]
     } else {
@@ -362,9 +383,10 @@ pub fn render_pane(pane: &ResultPane, frame: &mut Frame, area: Rect) {
 pub fn hints(palette: Option<&Palette>, pane: Option<&ResultPane>) -> Option<String> {
     if let Some(pane) = pane {
         return Some(if pane.open_target.is_some() {
-            "j/k scroll · h/l pan · y copy · o open · Esc close".into()
+            "j/k move · / search · v/V select · yy yank line · gy copy all · gx open · q close"
+                .into()
         } else {
-            "j/k scroll · h/l pan · y copy · Esc close".into()
+            "j/k move · / search · v/V select · yy yank line · gy copy all · q close".into()
         });
     }
     let palette = palette?;

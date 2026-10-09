@@ -807,3 +807,30 @@ async fn runtime_streams_a_real_terminal_socket_with_acks_input_reconnect_and_fu
     );
     assert_eq!(api.terminal_queries.lock().unwrap().len(), 2);
 }
+
+#[test]
+fn terminal_scrollback_is_searchable_and_yankable_in_normal_state() {
+    let mut state = connected_state(false);
+    let lines: String = (1..=60).map(|n| format!("line {n}\r\n")).collect();
+    out(&mut state, "term_1", 1, 0, lines.as_bytes());
+    render_lines(&state, 120, 30);
+    key(&mut state, KeyCode::Char('\\'), KeyModifiers::CONTROL);
+    seq_keys(&mut state, "g g");
+    assert!(state.terminals.active_view().unwrap().scrollback() > 0);
+    let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('y'))));
+    assert!(effects.is_empty());
+    let effects = keys(&mut state, "y");
+    assert_eq!(effects, [Effect::Copy("line 1\n".into())]);
+    keys(&mut state, "/ l i n e SPC 3 0 RET");
+    let effects = keys(&mut state, "y y");
+    assert_eq!(effects, [Effect::Copy("line 30\n".into())]);
+    let effects = keys(&mut state, "SPC b y");
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Copy(text) if text.contains("line"))),
+        "{effects:?}"
+    );
+    seq_keys(&mut state, "G");
+    assert_eq!(state.terminals.active_view().unwrap().scrollback(), 0);
+}

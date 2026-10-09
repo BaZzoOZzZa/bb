@@ -157,6 +157,13 @@ struct SettledCache {
 
 type TurnRowsCache = HashMap<TurnDetailsKey, (Arc<Vec<TimelineRow>>, Vec<Arc<ViewRow>>)>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineCursor {
+    pub key: String,
+    pub offset: usize,
+    pub col: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ThreadActivity {
     pub label: Option<String>,
@@ -171,6 +178,8 @@ pub struct TimelineView {
     pub expanded: HashMap<String, bool>,
     pub unseen: bool,
     pub viewport: Cell<(usize, usize)>,
+    pub cursor: Option<LineCursor>,
+    pub cursor_follow: bool,
     snapshot: Arc<StoreSnapshot>,
     activity: ThreadActivity,
     source: Option<Arc<TimelineEntry>>,
@@ -739,6 +748,20 @@ impl TimelineView {
         }
         if self.scroll == Scroll::Bottom {
             self.unseen = false;
+            if self.cursor_follow
+                && self
+                    .cursor
+                    .as_ref()
+                    .is_some_and(|cursor| self.selected.as_ref() == Some(&cursor.key))
+                && let Some(last) = self.items.last()
+            {
+                self.selected = Some(last.key.clone());
+                self.cursor = Some(LineCursor {
+                    key: last.key.clone(),
+                    offset: usize::MAX,
+                    col: 0,
+                });
+            }
         }
         loads.retain(|load| self.requested.insert(load.dedupe_key()));
         loads.extend(self.auto_load_older());
@@ -753,6 +776,17 @@ impl TimelineView {
             }
             let (parent, _) = key.rsplit_once('/')?;
             key = parent;
+        }
+    }
+
+    pub fn resolve_item(&self, key: &str) -> Option<usize> {
+        self.resolve_key(key)
+    }
+
+    pub fn item_header_lines(&self, index: usize) -> usize {
+        match &self.items[index].kind {
+            ItemKind::Row(row) => usize::from(!matches!(*row.row, ViewRow::Conversation(_))),
+            _ => 1,
         }
     }
 
@@ -1135,13 +1169,7 @@ impl TimelineView {
 
     fn row_glyph(&self, row: &ViewRow, spinner: &'static str) -> Span<'static> {
         let pending = Style::new().fg(Color::Yellow);
-        let status = match row {
-            ViewRow::Work(work) => work.status(),
-            ViewRow::Summary(summary) => summary.status,
-            ViewRow::Turn(turn) => turn.row.status,
-            ViewRow::System(system) => system.status.unwrap_or(TimelineRowStatus::Completed),
-            _ => TimelineRowStatus::Completed,
-        };
+        let status = row_status(row);
         if status == TimelineRowStatus::Pending {
             return Span::styled(spinner, pending);
         }
@@ -1273,7 +1301,7 @@ impl TimelineView {
         placements
     }
 
-    fn set_position(&mut self, index: usize, skip: usize) {
+    pub(crate) fn set_position(&mut self, index: usize, skip: usize) {
         let (width, height) = self.viewport_size();
         if self.items.is_empty() || !self.fills_from(index, skip, width, height) || {
             let bottom = self.bottom_top(width, height);
@@ -1433,22 +1461,44 @@ impl TimelineView {
         self.auto_load_older()
     }
 
-    pub fn item_at_line(&self, line: usize) -> Option<usize> {
+    pub fn click_at(&mut self, line: usize, x: usize, frame: Frame) -> Option<usize> {
         let (width, height) = self.viewport_size();
         let mut top = 0;
         for placement in self.layout(width, height) {
             if line < top + placement.take {
+                let offset = placement.skip + line - top;
+                let text: String = self
+                    .item_lines(placement.index, width, frame)
+                    .get(offset)
+                    .map(|line| {
+                        line.spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mut used = 0;
+                let mut col = 0;
+                for ch in text.chars() {
+                    used += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if used > x {
+                        break;
+                    }
+                    col += 1;
+                }
+                let key = self.items[placement.index].key.clone();
+                self.selected = Some(key.clone());
+                self.cursor = Some(LineCursor {
+                    key,
+                    offset,
+                    col: col.min(text.chars().count().saturating_sub(1)),
+                });
+                self.cursor_follow = false;
                 return Some(placement.index);
             }
             top += placement.take;
         }
         None
-    }
-
-    pub fn select_at_line(&mut self, line: usize) -> Option<usize> {
-        let index = self.item_at_line(line)?;
-        self.selected = Some(self.items[index].key.clone());
-        Some(index)
     }
 
     pub fn select_edge(&mut self, top: bool) -> Vec<LoadRequest> {
@@ -1490,6 +1540,27 @@ impl TimelineView {
             None if forward => self.select_edge(false),
             None => self.select_edge(true),
         }
+    }
+
+    pub fn jump_kind(
+        &mut self,
+        kind: crate::keymap::JumpKind,
+        forward: bool,
+    ) -> Option<Vec<LoadRequest>> {
+        let start = self.selected_index();
+        let found = if forward {
+            let from = start.map_or(0, |index| index + 1);
+            (from..self.items.len()).find(|index| item_is(&self.items[*index], kind))
+        } else {
+            let to = start.unwrap_or(self.items.len());
+            (0..to)
+                .rev()
+                .find(|index| item_is(&self.items[*index], kind))
+        }?;
+        self.selected = Some(self.items[found].key.clone());
+        let gap = usize::from(self.items[found].gap);
+        self.set_position(found, gap);
+        Some(self.auto_load_older())
     }
 
     pub fn set_expanded(&mut self, expand: Option<bool>) -> Vec<LoadRequest> {
@@ -1694,6 +1765,91 @@ impl TimelineView {
         targets
     }
 
+    pub fn item_starts(&self, width: usize) -> (Vec<usize>, usize) {
+        let mut starts = Vec::with_capacity(self.items.len());
+        let mut total = 0;
+        for index in 0..self.items.len() {
+            starts.push(total);
+            total += self.item_height(index, width);
+        }
+        (starts, total)
+    }
+
+    pub fn plain_lines(&self, frame: Frame) -> Vec<String> {
+        let (width, _) = self.viewport_size();
+        let mut lines = Vec::new();
+        for index in 0..self.items.len() {
+            let height = self.item_height(index, width);
+            let mut rendered: Vec<String> = self
+                .item_lines(index, width, frame)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect();
+            rendered.resize(height, String::new());
+            lines.extend(rendered);
+        }
+        lines
+    }
+
+    pub fn top_line(&self, starts: &[usize]) -> usize {
+        let (width, height) = self.viewport_size();
+        let (index, skip) = self.top_position(width, height);
+        starts.get(index).map_or(0, |start| start + skip)
+    }
+
+    pub fn cursor_position(&self, starts: &[usize], total: usize) -> Option<(usize, usize)> {
+        let index = self.selected_index()?;
+        let (width, _) = self.viewport_size();
+        let height = self.item_height(index, width).max(1);
+        let gap = usize::from(self.items[index].gap);
+        let (offset, col) = match &self.cursor {
+            Some(cursor) if cursor.key == self.items[index].key => (cursor.offset, cursor.col),
+            _ => (gap, 0),
+        };
+        let line = (starts[index] + offset.min(height - 1)).min(total.saturating_sub(1));
+        Some((line, col))
+    }
+
+    pub fn place_cursor(&mut self, starts: &[usize], total: usize, line: usize, col: usize) {
+        if self.items.is_empty() {
+            return;
+        }
+        let line = line.min(total.saturating_sub(1));
+        let index = starts.partition_point(|start| *start <= line).max(1) - 1;
+        let key = self.items[index].key.clone();
+        self.selected = Some(key.clone());
+        self.cursor = Some(LineCursor {
+            key,
+            offset: line - starts[index],
+            col,
+        });
+        let (_, height) = self.viewport_size();
+        let top = self.top_line(starts);
+        if line < top {
+            self.scroll_to_line(starts, line);
+        } else if line >= top + height {
+            self.scroll_to_line(starts, line + 1 - height);
+        }
+        self.cursor_follow = line + 1 >= total;
+        if self.cursor_follow {
+            self.scroll = Scroll::Bottom;
+            self.unseen = false;
+        }
+    }
+
+    pub fn scroll_to_line(&mut self, starts: &[usize], line: usize) {
+        if self.items.is_empty() {
+            return;
+        }
+        let index = starts.partition_point(|start| *start <= line).max(1) - 1;
+        self.set_position(index, line - starts[index]);
+    }
+
     pub fn cached_rows(&self) -> usize {
         self.cache.borrow().len()
     }
@@ -1702,6 +1858,37 @@ impl TimelineView {
         self.items
             .iter()
             .any(|item| matches!(item.kind, ItemKind::Row(_)))
+    }
+}
+
+fn row_status(row: &ViewRow) -> TimelineRowStatus {
+    match row {
+        ViewRow::Work(work) => work.status(),
+        ViewRow::Summary(summary) => summary.status,
+        ViewRow::Turn(turn) => turn.row.status,
+        ViewRow::System(system) => system.status.unwrap_or(TimelineRowStatus::Completed),
+        _ => TimelineRowStatus::Completed,
+    }
+}
+
+fn item_is(item: &Item, kind: crate::keymap::JumpKind) -> bool {
+    match kind {
+        crate::keymap::JumpKind::Turn => {
+            item.depth == 0
+                && matches!(&item.kind, ItemKind::Row(row) if match &*row.row {
+                    ViewRow::Turn(_) => true,
+                    ViewRow::Conversation(conversation) => conversation.role == ConversationRole::User,
+                    _ => false,
+                })
+        }
+        crate::keymap::JumpKind::Error => match &item.kind {
+            ItemKind::Row(row) => {
+                row_status(&row.row) == TimelineRowStatus::Error
+                    || matches!(&*row.row, ViewRow::System(system) if system.system_kind == SystemRowKind::Error)
+            }
+            ItemKind::Notice { error, .. } => *error,
+            _ => false,
+        },
     }
 }
 

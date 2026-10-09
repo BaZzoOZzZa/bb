@@ -79,6 +79,7 @@ pub struct FilePreview {
     pub body: Load<Vec<Vec<Span<'static>>>>,
     pub note: Option<String>,
     pub scroll: usize,
+    pub cursor: usize,
     pub column: usize,
     pub viewport: Cell<usize>,
     pub positioned: bool,
@@ -101,7 +102,10 @@ impl FilePreview {
         self.positioned = true;
         if let Some(line) = self.line {
             let half = self.viewport.get() / 2;
-            self.scroll = (line as usize).saturating_sub(1).saturating_sub(half);
+            self.cursor = (line as usize)
+                .saturating_sub(1)
+                .min(self.line_count().saturating_sub(1));
+            self.scroll = self.cursor.saturating_sub(half);
             self.scroll_by(0);
         }
     }
@@ -332,7 +336,7 @@ impl RightPanel {
         self.diff.loaded()
     }
 
-    fn document_mut(&mut self) -> Option<&mut DiffDocument> {
+    pub(crate) fn document_mut(&mut self) -> Option<&mut DiffDocument> {
         match &mut self.diff {
             Load::Loaded(document) => Some(document),
             _ => None,
@@ -691,7 +695,7 @@ impl AppState {
         })]
     }
 
-    fn diff_loads(&mut self) -> Vec<Effect> {
+    pub(crate) fn diff_loads(&mut self) -> Vec<Effect> {
         let Some(environment_id) = self.panel.environment_id.clone() else {
             return Vec::new();
         };
@@ -1076,6 +1080,7 @@ impl AppState {
             body: Load::Loading,
             note: None,
             scroll: 0,
+            cursor: 0,
             column: 0,
             viewport: Cell::new(20),
             positioned: false,

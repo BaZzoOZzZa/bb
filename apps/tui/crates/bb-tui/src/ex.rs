@@ -51,6 +51,8 @@ const NAMES: &[(&str, usize)] = &[
     ("read", 4),
     ("unread", 6),
     ("nohlsearch", 3),
+    ("marks", 4),
+    ("delmarks", 4),
     ("help", 1),
     ("set", 2),
     ("messages", 3),
@@ -241,6 +243,20 @@ impl AppState {
                     }
                 ),
                 format!("{}sidebar", if self.sidebar_visible { "" } else { "no" }),
+                format!("{}wrapscan", if self.views.wrapscan { "" } else { "no" }),
+                format!(
+                    "{}hlsearch",
+                    if self
+                        .views
+                        .search
+                        .as_ref()
+                        .is_some_and(|search| search.highlight)
+                    {
+                        ""
+                    } else {
+                        "no"
+                    }
+                ),
                 format!("{}panel", if self.panel_visible { "" } else { "no" }),
             ];
             self.show_text_pane("Options", lines);
@@ -267,6 +283,15 @@ impl AppState {
                 Some(key) => self.submit_key = key,
                 None => self.keys.error(format!("E474: Invalid argument: {value}")),
             },
+            ("wrapscan" | "ws", None) => {
+                self.views.wrapscan = flag.unwrap_or(!self.views.wrapscan);
+            }
+            ("hlsearch" | "hls", None) => {
+                let on = flag.unwrap_or(true);
+                if let Some(search) = self.views.search.as_mut() {
+                    search.highlight = on;
+                }
+            }
             ("sidebar", None) => {
                 self.sidebar_visible = flag.unwrap_or(!self.sidebar_visible);
                 if !self.sidebar_visible && self.focus == Focus::Sidebar {
@@ -485,7 +510,23 @@ impl AppState {
             "unpin" => self.flag_mutation(args, |thread_id| Mutation::Unpin { thread_id }),
             "read" => self.flag_mutation(args, |thread_id| Mutation::MarkRead { thread_id }),
             "unread" => self.flag_mutation(args, |thread_id| Mutation::MarkUnread { thread_id }),
-            "nohlsearch" => Vec::new(),
+            "nohlsearch" => {
+                crate::rbuf::nohlsearch(self);
+                Vec::new()
+            }
+            "marks" => {
+                let lines = crate::rbuf::marks_listing(self);
+                self.show_text_pane("Marks", lines);
+                Vec::new()
+            }
+            "delmarks" => {
+                if !bang && args.is_empty() {
+                    self.keys.error("E471: Argument required");
+                } else {
+                    crate::rbuf::delete_marks(self, args, bang);
+                }
+                Vec::new()
+            }
             "help" => run(self, Command::Help),
             "set" => self.set_option(args),
             "messages" => run(self, Command::Messages),

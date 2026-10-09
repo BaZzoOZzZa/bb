@@ -41,6 +41,7 @@ pub mod panel;
 pub mod panel_ui;
 pub mod platform;
 pub mod prompt;
+pub mod rbuf;
 pub mod runtime;
 pub mod settings;
 pub mod settings_form;

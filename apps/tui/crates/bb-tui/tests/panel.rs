@@ -851,3 +851,56 @@ fn a_wide_panel_hides_the_sidebar_instead_of_crushing_the_timeline() {
     let focused = render_lines(&state, 100, 30);
     assert!(focused[0].contains("Threads"), "{}", focused.join("\n"));
 }
+
+#[test]
+fn diff_and_file_tabs_are_evil_line_buffers() {
+    let mut state = open_with_environment(Some("main"));
+    open_diff(&mut state);
+    diff_loaded(
+        &mut state,
+        all_main(),
+        vec![file_entry("src/main.rs", 2, DiffFileLoadMode::Auto)],
+        vec![patch("src/main.rs")],
+    );
+    render_lines(&state, 160, 30);
+    keys(&mut state, "] c j");
+    let effects = keys(&mut state, "y y");
+    assert_eq!(effects, [Effect::Copy("let a = 1;\n".into())]);
+    let effects = keys(&mut state, "w y i w");
+    assert_eq!(effects, [Effect::Copy("a".into())]);
+    let effects = keys(&mut state, "g y");
+    assert_eq!(effects, [Effect::Copy("src/main.rs".into())]);
+    keys(&mut state, "/ b SPC = SPC 3 RET");
+    let effects = keys(&mut state, "y y");
+    assert_eq!(effects, [Effect::Copy("let b = 3;\n".into())]);
+
+    keys(&mut state, "g f");
+    let content: String = (1..=60)
+        .map(|line| format!("let v{line} = {line};\n"))
+        .collect();
+    update(
+        &mut state,
+        Action::PanelLoaded(PanelLoaded::File {
+            environment_id: ENV.into(),
+            path: "src/main.rs".into(),
+            result: Ok(EnvironmentDiffFileResponse {
+                path: "/work/alpha/src/main.rs".into(),
+                content,
+                content_encoding: ContentEncoding::Utf8,
+                mime_type: None,
+                size_bytes: 900,
+            }),
+        }),
+    );
+    render_lines(&state, 160, 30);
+    let effects = keys(&mut state, "y y");
+    assert_eq!(effects, [Effect::Copy("let v11 = 11;\n".into())]);
+    keys(&mut state, "/ v 4 2 RET");
+    let effects = keys(&mut state, "V j y");
+    assert_eq!(
+        effects,
+        [Effect::Copy("let v42 = 42;\nlet v43 = 43;\n".into())]
+    );
+    let preview = state.panel.preview.as_ref().expect("preview");
+    assert!(preview.scroll <= 42 && preview.scroll + 30 > 42);
+}

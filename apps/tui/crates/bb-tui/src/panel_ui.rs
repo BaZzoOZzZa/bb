@@ -12,6 +12,7 @@ use crate::palette_ui::slice_spans;
 use crate::panel::{
     GitAction, GitConfirm, InfoEntry, MERGE_METHODS, PanelTab, StatusView, change_style,
 };
+use crate::rbuf::Buf;
 
 const MUTED: Style = Style::new().fg(Color::DarkGray);
 const CURSOR: Style = Style::new().bg(Color::DarkGray);
@@ -76,7 +77,7 @@ pub fn render_panel(state: &AppState, frame: &mut Frame, area: Rect) {
     match state.panel.tab {
         PanelTab::Info => render_info(state, frame, inner, focused),
         PanelTab::Diff => render_diff(state, frame, inner, focused),
-        PanelTab::File => render_file(state, frame, inner),
+        PanelTab::File => render_file(state, frame, inner, focused),
         PanelTab::Terminal => crate::terminal_ui::render_terminal(state, frame, inner, focused),
     }
 }
@@ -230,6 +231,31 @@ fn scope_line(state: &AppState, document: Option<&DiffDocument>) -> Line<'static
     Line::from(spans)
 }
 
+pub(crate) fn diff_row_text(document: &DiffDocument, index: usize) -> (String, usize, bool) {
+    let plain = |spans: &[Span<'static>]| -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    };
+    match document.row(index) {
+        Some(DiffRow::Header(file)) => (plain(&header_line(document, file, 10_000)), 0, false),
+        Some(DiffRow::Line(file, line)) => {
+            let number_width = document.number_width(file);
+            match document.line(file, line) {
+                Some(diff_line) if diff_line.kind == LineKind::Hunk => {
+                    (diff_line.text(), number_width * 2 + 2, true)
+                }
+                Some(diff_line) => (diff_line.text(), number_width * 2 + 4, true),
+                None => (String::new(), 0, false),
+            }
+        }
+        Some(DiffRow::Notice(file)) => (
+            format!("    {}", document.files[file].notice().unwrap_or_default()),
+            0,
+            false,
+        ),
+        None => (String::new(), 0, false),
+    }
+}
+
 fn header_line(document: &DiffDocument, file: usize, width: usize) -> Vec<Span<'static>> {
     let diff_file = &document.files[file];
     let marker = if diff_file.collapsed { "▸ " } else { "▾ " };
@@ -330,7 +356,8 @@ fn render_diff(state: &AppState, frame: &mut Frame, area: Rect, focused: bool) {
     let [scope_area, rows_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(body);
     frame.render_widget(Paragraph::new(scope_line(state, document)), scope_area);
-    let hint = "s scope · Enter fold/load · n/N hunk · [/] file · a fold all · p preview · e edit";
+    let hint =
+        "s scope · RET fold/load · ]c/[c hunk · ]f/[f file · zR/zM all · gf preview · e edit";
     let hint = match action_hint(state) {
         Some(actions) => format!("{actions} · {hint}"),
         None => hint.to_owned(),
@@ -384,9 +411,27 @@ fn render_diff(state: &AppState, frame: &mut Frame, area: Rect, focused: bool) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), rows_area);
+    let gutter = document
+        .cursor_file()
+        .map_or(0, |file| document.number_width(file) * 2 + 4);
+    crate::rbuf::note_width(state, Buf::Diff, width.saturating_sub(gutter));
+    let paint = crate::rbuf::paint(state, Buf::Diff);
+    let buffer = frame.buffer_mut();
+    for (row, index) in (scroll..(scroll + height).min(total)).enumerate() {
+        let (text, prefix, panned) = diff_row_text(document, index);
+        let prefix = prefix.min(width) as u16;
+        let rect = Rect {
+            x: rows_area.x + prefix,
+            y: rows_area.y + row as u16,
+            width: rows_area.width - prefix,
+            height: 1,
+        };
+        let hscroll = if panned { document.column } else { 0 };
+        paint.overlay(buffer, index, &text, rect, hscroll, focused);
+    }
 }
 
-fn render_file(state: &AppState, frame: &mut Frame, area: Rect) {
+fn render_file(state: &AppState, frame: &mut Frame, area: Rect, focused: bool) {
     let Some(preview) = &state.panel.preview else {
         frame.render_widget(
             Paragraph::new("No file open. Press p on a changed file in Info or Diff.").style(MUTED),
@@ -412,7 +457,7 @@ fn render_file(state: &AppState, frame: &mut Frame, area: Rect) {
         ))),
         title_area,
     );
-    let mut hint = "j/k scroll · zh/zl pan · e edit · gy yank path · q back".to_owned();
+    let mut hint = "j/k move · / search · zh/zl pan · e edit · gy yank path · q back".to_owned();
     if let Some(note) = &preview.note {
         hint = format!("{note} · {hint}");
     }
@@ -456,6 +501,38 @@ fn render_file(state: &AppState, frame: &mut Frame, area: Rect) {
                 })
                 .collect();
             frame.render_widget(Paragraph::new(rendered), text_area);
+            crate::rbuf::note_width(state, Buf::File, code_width);
+            let paint = crate::rbuf::paint(state, Buf::File);
+            let buffer = frame.buffer_mut();
+            for (row, (index, spans)) in lines
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(height)
+                .enumerate()
+            {
+                let y = text_area.y + row as u16;
+                if focused && paint.cursor_line() == Some(index) {
+                    buffer.set_style(
+                        Rect {
+                            x: text_area.x,
+                            y,
+                            width: text_area.width,
+                            height: 1,
+                        },
+                        crate::rbuf::CURSOR_LINE,
+                    );
+                }
+                let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
+                let gutter = (number_width + 1).min(width) as u16;
+                let rect = Rect {
+                    x: text_area.x + gutter,
+                    y,
+                    width: text_area.width - gutter,
+                    height: 1,
+                };
+                paint.overlay(buffer, index, &text, rect, preview.column, focused);
+            }
         }
     }
 }
@@ -525,11 +602,11 @@ pub fn hints(state: &AppState) -> String {
             "j/k move · RET open diff/link · gf preview · e edit · yy yank · gt/gT tab · C-w o maximize · q leave".into()
         }
         PanelTab::Diff => {
-            "s/S scope · ]c/[c hunk · ]f/[f file · RET fold/load · zR/zM all · zh/zl pan · gf preview · e edit · gr reload · q leave".into()
+            "s/S scope · ]c/[c hunk · ]f/[f file · RET fold · / search · v/V select · y yank · gf preview · e edit · q leave".into()
         }
-        PanelTab::File => "j/k scroll · zh/zl pan · e edit in $EDITOR · gy yank path · q back".into(),
+        PanelTab::File => "j/k move · / search · v/V select · y yank · zh/zl pan · e edit · gy yank path · q back".into(),
         PanelTab::Terminal => {
-            "i type · o new · dd close · ]t/[t switch · SPC o f fullscreen · j/k/PgUp scroll · yy yank · q leave".into()
+            "i type · o new · dd close · ]t/[t switch · SPC o f fullscreen · j/k/C-u scrollback · / search · yy yank · q leave".into()
         }
     }
 }

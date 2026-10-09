@@ -293,6 +293,18 @@ keys. In short:
   bar (`<N>` normal, `<I>` insert, `<V>`/`<L>` visual, `<O>` operator
   pending, `<E>` ex line), left of it the pending keys (`2d`, `SPC b`), the
   buffer name and the position.
+- **Read-only buffers.** The sidebar, the timeline, the Diff and File tabs,
+  the terminal scrollback (normal state) and output panes (help, registers,
+  plugin output) are evil buffers over their rendered text with a line and
+  column cursor (the sidebar has lines only). Motions and counts (`h j k l w
+  b e 0 ^ $ f t ; , % gg G {N}G H M L`), scrolling (`C-d C-u C-f C-b C-e C-y
+  zz zt zb`), incremental search (`/ ? n N * # g* g#`, smart-case regular
+  expressions, matches highlighted until `:noh` or `ESC`), visual and
+  visual-line selection (`v V gv o`), yanking (`yy`, `Y`, `y{motion}`,
+  `y{text object}`, visual `y`) into the registers and the clipboard (OSC
+  52), marks (`m{a-z}`, `'{a-z}`, `` `{a-z} ``, `''`, timeline-only global
+  marks `m{A-Z}`), the jump list (`C-o`, `C-i` where the terminal reports it)
+  and folds (`TAB za zo zc zR zM`) work as in vim.
 - **Leader.** `SPC` starts a key sequence (`M-SPC` from any state, including
   insert, transients and minibuffers). When no key follows for 300 ms the
   which-key popup lists the continuations; `C-n`/`C-p` page it, `Bksp` goes
@@ -309,7 +321,8 @@ keys. In short:
   `:b {thread|N}`, `:bn`, `:bp`, `:b#`, `:bd`, `:bu`, `:unarchive`,
   `:sp`/`:vs [thread]`, `:new`/`:vnew`/`:enew [prompt]`, `:close`, `:only`,
   `:rename {title}`, `:pin`, `:unpin`, `:read`, `:unread`, `:set`,
-  `:messages`, `:registers`, `:{N}`, `:palette`, `:find`, `:search`,
+  `:messages`, `:registers`, `:marks`, `:delm {marks}`, `:delm!`, `:noh`,
+  `:{N}`, `:palette`, `:find`, `:search`,
   `:project`, `:filter`, `:diff`, `:panel [tab]`, `:sidebar`,
   `:terminal [new|attach|close]`, `:settings [section]`,
   `:automations [new]`, `:notifications [clear]`, `:attach [path]`,
@@ -336,6 +349,9 @@ Common keys:
 | `SPC '` | Reopen the last minibuffer with its query | |
 | `j`/`k`, `gg`/`G`, `{N}G`, `C-d`/`C-u`, `C-f`/`C-b` | Move, top / bottom, line N, half page, page | |
 | `C-e`/`C-y`, `zz`/`zt`/`zb`, `H`/`M`/`L` | Scroll a line, cursor line to the middle / top / bottom, window top / middle / bottom | |
+| `/`, `?`, `n`/`N`, `*`/`#`, `:noh` | Search forward / backward, next / previous match, word under the cursor, clear the highlight | |
+| `v`, `V`, `y`, `yy`, `y{motion}` | Visual / visual-line selection, yank the selection, the line, a motion | |
+| `m{a-z}`, `'{a-z}`, `''`, `C-o`/`C-i` | Set a mark, jump to it, jump back, jump list | |
 | `RET`, `TAB`, `za`, `zo`/`zc`, `zR`/`zM` | Open / toggle, fold, unfold, all folds | |
 | `]b`/`[b`, `SPC b n`/`SPC b p` | Open next / previous thread | `thread.next`, `thread.previous` |
 | `` SPC ` `` | Alternate thread | |
@@ -396,13 +412,18 @@ tool and diff content are fetched when expanded.
 
 | Keys | Action |
 |---|---|
-| `j`/`k`, `{`/`}`, `gg`/`G`, `{N}G` | Select row, first / last row (`G` resumes following), row N |
-| `C-f`/`C-b`, `C-d`/`C-u`, `C-e`/`C-y` | Scroll a page, half a page, a line |
-| `zz`, `zt`, `zb`, `H`/`M`/`L` | Selected row to the middle / top / bottom, select the top / middle / bottom row |
+| `j`/`k`, `h`/`l`, `w`/`b`/`e`, `0`/`^`/`$`, `f`/`t` | Move the cursor over the rendered lines and characters; the row under the cursor is the selected row |
+| `{`/`}`, `gg`/`G`, `{N}G` | Previous / next row, first / last line (`G` resumes following; the cursor then stays on the newest line), line N |
+| `C-f`/`C-b`, `C-d`/`C-u`, `C-e`/`C-y` | Scroll a page, half a page, a line; the cursor moves with the view |
+| `zz`, `zt`, `zb`, `H`/`M`/`L` | Cursor line to the middle / top / bottom, cursor to the top / middle / bottom line |
 | `RET`, `TAB`, `za`, `zo`, `zc`, `zR`, `zM` | Toggle, expand, collapse (or go to the parent), expand / collapse all |
-| `]m`/`[m` | Next / previous user message |
+| `]m`/`[m`, `]]`/`[[`, `]e`/`[e` | Next / previous user message, turn, error or failed row |
+| `/`, `?`, `n`/`N`, `*`/`#` | Search the rendered text of the loaded rows (collapsed rows by their title) |
+| `v`, `V`, `y`, `yy`, `Y`, `y{motion}`, ``yi` ``, ``ya` ``, `yim`, `yam` | Select and yank rendered text; `` i` `` is the code block under the cursor (`` a` `` adds the fences), `im`/`am` the row body / the row with its header |
+| `m{a-z}`, `m{A-Z}`, `'{a-z}`, `'{A-Z}`, `''`, `C-o`/`C-i` | Marks (anchored to the row, so they survive reloads; uppercase marks open their thread), jump back, jump list |
 | `gy` | Yank the row's source (message Markdown, command, tool input, patch) to the registers and the clipboard (OSC 52) |
-| `gx` | Open the row's link or file with `xdg-open` / `open` (picker if several) |
+| `gx` | Open the URL under the cursor, else the row's link or file with `xdg-open` / `open` (picker if several) |
+| `gf` | Preview the file named under the cursor in the right panel |
 | `i`, `a`, `A`, `o`, `O`, `I`, `gi` | Focus the composer in insert state (at the end of the draft; `I` at its start, `gi` where insert was left) |
 | `SPC b y` | Yank the loaded timeline as plain text |
 | `SPC t f` | Follow new output / stop following |
@@ -702,8 +723,9 @@ highlighting.
 
 | Keys (Diff) | Action |
 |---|---|
-| `j`/`k`, `PgUp`/`PgDn`, `C-d`/`C-u`, `C-f`/`C-b`, `gg`/`G` | Move (with counts) |
-| `zh`/`zl`, `0` | Scroll sideways, back to the first column |
+| `j`/`k`, `h`/`l`, `w`/`b`/`e`, `0`/`$`, `PgUp`/`PgDn`, `C-d`/`C-u`, `C-f`/`C-b`, `gg`/`G` | Move the line and column cursor (with counts); the view pans to keep the cursor visible |
+| `zh`/`zl` | Scroll sideways |
+| `/`, `?`, `n`/`N`, `v`/`V` + `y` | Search, select and yank the code text |
 | `RET`, `TAB`, `za` | Fold / unfold the file, load an on-demand diff |
 | `]c`/`[c`, `SPC g ]`/`SPC g [` | Next / previous hunk |
 | `]f`/`[f` | Next / previous file |
@@ -711,11 +733,13 @@ highlighting.
 | `s`/`S` | Next / previous scope |
 | `gf` | Preview the file at the selected line (`GET /environments/:id/diff/file`, new side; old side for deleted files) |
 | `e` | Open the file at the selected line in `$VISUAL`/`$EDITOR` |
-| `yy` | Yank the line or the path |
+| `yy`, `gy` | Yank the line, the file path |
 
 **File** shows the previewed file with line numbers and highlighting (first
-512 KiB; binary files are described, not shown; `j`/`k` scroll, `zh`/`zl`
-scroll sideways, `gy` or `SPC f y` yank the path). `e` or `SPC f e` opens it
+512 KiB; binary files are described, not shown). It is a read-only evil
+buffer: the cursor starts on the previewed line, motions, search, visual
+selection and yanks work, `zh`/`zl` scroll sideways, `gy` or `SPC f y` yank
+the path. `e` or `SPC f e` opens it
 in the editor:
 the TUI leaves the alternate screen, runs `$VISUAL`, `$EDITOR` or `vi` with
 `+line` (or `--goto path:line` for VS Code-style editors) and redraws when the
@@ -753,12 +777,13 @@ The program's window title (OSC 0/2) names the tab.
 | `C-\` | Normal state: stop typing into the terminal (focus stays on the panel) |
 | `S-PgUp`/`S-PgDn` | Scroll back while typing; any key returns to the live screen |
 | `i`, `a`, `I`, `A`, `RET` | Type into the terminal again |
-| `j`/`k`, `PgUp`/`PgDn`, `C-u`/`C-d`, `gg`/`G` | Scroll back / to the live screen |
+| motions, `PgUp`/`PgDn`, `C-u`/`C-d`, `gg`/`G` | Move a cursor through the scrollback (the view follows); `G` returns to the live screen |
+| `/`, `?`, `n`/`N`, `v`/`V` + `y` | Search the scrollback, select and yank |
 | `]t`/`[t` | Next / previous terminal |
 | `o`, `SPC o T`, `:terminal new` | Start a terminal in the thread (`POST /terminals`, thread target, the panel's size) |
 | `dd`, `x`, `:terminal close` | Close the terminal after confirmation (`POST /terminals/:id/close`, `mode: "force"`) |
 | `SPC o f`, `:terminal attach` | Attach fullscreen |
-| `yy` | Yank the visible screen |
+| `yy`, `SPC b y` | Yank the line, the visible screen |
 
 Flow control follows the web client: the output of each chunk is
 acknowledged (`ack` with `nextSeq`) only after the emulator has parsed it, and

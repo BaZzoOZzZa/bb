@@ -213,6 +213,11 @@ pub(crate) fn char_act(
     ch: char,
     count: Option<usize>,
 ) -> Vec<Effect> {
+    if crate::rbuf::takes_char(act)
+        && let Some(buf) = crate::rbuf::focused(state)
+    {
+        return crate::rbuf::char_act(state, buf, act, ch, count);
+    }
     match act {
         CharAct::Find { forward, till } => apply_edit(
             state,

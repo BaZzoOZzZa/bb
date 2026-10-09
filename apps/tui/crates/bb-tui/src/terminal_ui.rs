@@ -84,6 +84,43 @@ pub fn render_screen(view: &TerminalView, buf: &mut Buffer, area: Rect) -> Optio
     (row < height && cursor_col < width).then_some((area.x + cursor_col, area.y + row))
 }
 
+fn paint_history(state: &AppState, view: &TerminalView, buf: &mut Buffer, area: Rect) {
+    let paint = crate::rbuf::paint(state, crate::rbuf::Buf::Terminal);
+    let screen = view.screen.screen();
+    let (rows, cols) = screen.size();
+    let max = view.max_scrollback();
+    let top = max - screen.scrollback().min(max);
+    let (cursor_row, _) = screen.cursor_position();
+    let row_offset = if screen.scrollback() > 0 || rows <= area.height {
+        0
+    } else {
+        (cursor_row + 1).saturating_sub(area.height)
+    };
+    let height = area.height.min(rows.saturating_sub(row_offset));
+    let width = area.width.min(cols);
+    for y in 0..height {
+        let mut text = String::new();
+        for x in 0..cols {
+            let Some(cell) = screen.cell(row_offset + y, x) else {
+                continue;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let contents = cell.contents();
+            text.push_str(if contents.is_empty() { " " } else { contents });
+        }
+        let line = top + usize::from(row_offset + y);
+        let rect = Rect {
+            x: area.x,
+            y: area.y + y,
+            width,
+            height: 1,
+        };
+        paint.overlay(buf, line, text.trim_end(), rect, 0, true);
+    }
+}
+
 fn status_mark(view: Option<&TerminalView>, running: bool) -> (&'static str, Style) {
     match view.map(|view| view.connection) {
         _ if !running => ("○", MUTED),
@@ -210,6 +247,9 @@ pub fn render_terminal(state: &AppState, frame: &mut Frame, area: Rect, focused:
         return;
     };
     let cursor = render_screen(view, frame.buffer_mut(), body);
+    if focused && crate::rbuf::focused(state) == Some(crate::rbuf::Buf::Terminal) {
+        paint_history(state, view, frame.buffer_mut(), body);
+    }
     if let Some((x, y)) = cursor {
         if focused && state.terminal_input_active() {
             frame.set_cursor_position((x, y));

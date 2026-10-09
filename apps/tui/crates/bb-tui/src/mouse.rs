@@ -98,7 +98,14 @@ pub(crate) fn handle_mouse(state: &mut AppState, event: MouseEvent) -> Vec<Effec
     }
     if overlay_open(state) {
         return match delta {
-            Some(_) if matches!(state.mode, Mode::Ex(_)) => Vec::new(),
+            Some(_) if matches!(state.mode, Mode::Ex(_) | Mode::Search(_)) => Vec::new(),
+            Some(delta) if crate::rbuf::focused(state) == Some(crate::rbuf::Buf::Pane) => {
+                crate::rbuf::apply(
+                    state,
+                    crate::rbuf::ViewOp::Scroll(delta.signum() as i8),
+                    Some(delta.unsigned_abs()),
+                )
+            }
             Some(delta) => wheel_keys(state, delta.signum()),
             None => Vec::new(),
         };
@@ -231,10 +238,18 @@ fn pane_mouse(
         return effects;
     }
     state.focus = Focus::Main;
+    let frame = crate::timeline::Frame {
+        now_ms: state.now_ms,
+        tick: state.frame,
+    };
     if contains(pane.timeline, pane.timeline.x, row)
         && let Some(timeline) = state.timelines.get_mut(&pane.thread_id)
     {
-        timeline.select_at_line(usize::from(row - pane.timeline.y));
+        timeline.click_at(
+            usize::from(row - pane.timeline.y),
+            usize::from(column.saturating_sub(pane.timeline.x + 1)),
+            frame,
+        );
     }
     effects
 }

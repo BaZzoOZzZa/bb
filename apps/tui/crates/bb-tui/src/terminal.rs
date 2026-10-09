@@ -269,6 +269,36 @@ impl TerminalView {
         self.screen.screen_mut().set_scrollback(offset);
     }
 
+    pub fn max_scrollback(&self) -> usize {
+        let mut screen = self.screen.screen().clone();
+        screen.set_scrollback(usize::MAX);
+        screen.scrollback()
+    }
+
+    pub fn history_lines(&self) -> (Vec<String>, usize) {
+        let mut screen = self.screen.screen().clone();
+        let (rows, cols) = screen.size();
+        let rows = usize::from(rows.max(1));
+        screen.set_scrollback(usize::MAX);
+        let max = screen.scrollback();
+        let mut lines = vec![String::new(); max + rows];
+        let mut offset = max;
+        loop {
+            screen.set_scrollback(offset);
+            let start = max - offset;
+            for (index, row) in screen.rows(0, cols).enumerate().take(rows) {
+                if let Some(slot) = lines.get_mut(start + index) {
+                    *slot = row;
+                }
+            }
+            if offset == 0 {
+                break;
+            }
+            offset = offset.saturating_sub(rows);
+        }
+        (lines, max)
+    }
+
     pub fn set_size(&mut self, cols: u16, rows: u16) {
         let (cols, rows) = clamp_size(cols, rows);
         if self.screen.screen().size() != (rows, cols) {
@@ -926,7 +956,7 @@ impl AppState {
         )
     }
 
-    fn copy_terminal_screen(&mut self) -> Vec<Effect> {
+    pub(crate) fn copy_terminal_screen(&mut self) -> Vec<Effect> {
         match self.terminals.active_view() {
             Some(view) => {
                 let text = view.screen.screen().contents();

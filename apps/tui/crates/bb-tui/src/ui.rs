@@ -171,7 +171,7 @@ fn render_frame(state: &AppState, frame: &mut Frame) {
         crate::palette_ui::render_palette(palette, frame, body);
     }
     if let Some(pane) = &state.result_pane {
-        crate::palette_ui::render_pane(pane, frame, body);
+        crate::palette_ui::render_pane(state, pane, frame, body);
     }
     if let Some(confirm) = &state.panel.confirm {
         crate::panel_ui::render_confirm(confirm, frame, body);
@@ -308,6 +308,7 @@ fn render_sidebar(state: &AppState, frame: &mut Frame, area: Rect) {
     state.mouse_areas.sidebar.set(Some((list_area, offset)));
 
     let width = usize::from(list_area.width);
+    let sidebar_paint = crate::rbuf::paint(state, crate::rbuf::Buf::Sidebar);
     for (line_index, (index, row)) in state
         .rows
         .iter()
@@ -352,7 +353,22 @@ fn render_sidebar(state: &AppState, frame: &mut Frame, area: Rect) {
         } else if state.open_thread.as_deref() == row.thread().map(|thread| thread.id.as_str()) {
             style = Style::new().add_modifier(Modifier::UNDERLINED);
         }
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         frame.render_widget(Paragraph::new(line).style(style), rect);
+        let paint = &sidebar_paint;
+        if selected {
+            crate::rbuf::Paint {
+                selection: None,
+                ..paint.clone()
+            }
+            .overlay(frame.buffer_mut(), index, &text, rect, 0, false);
+        } else {
+            paint.overlay(frame.buffer_mut(), index, &text, rect, 0, false);
+        }
         if let (Some(input), SidebarRow::Thread(thread)) = (renaming, row) {
             let x = rect.x + (thread.depth * 2 + 3 + input.cursor_width()) as u16;
             if x < rect.right() {
@@ -714,6 +730,15 @@ fn render_timeline(
     } else {
         muted
     };
+    let paint = if state.open_thread.as_deref() == Some(thread_id) {
+        crate::rbuf::paint(state, crate::rbuf::Buf::Timeline)
+    } else {
+        crate::rbuf::Paint {
+            cursor: None,
+            selection: None,
+            regex: crate::rbuf::paint(state, crate::rbuf::Buf::Timeline).regex,
+        }
+    };
     let mut y = area.y;
     for placement in placements {
         let lines = timeline.item_lines(placement.index, width, clock);
@@ -725,22 +750,27 @@ fn render_timeline(
             .skip(placement.skip)
             .take(placement.take)
         {
+            let global = crate::rbuf::row_line(placement.index, line_index);
             let marked = is_selected && line_index >= gap;
             let gutter = if marked { "▌" } else { " " };
             let buffer = frame.buffer_mut();
             buffer.set_string(area.x, y, gutter, gutter_style);
             buffer.set_line(area.x + 1, y, &line, area.width - 1);
-            if marked && focused && line_index == gap {
-                buffer.set_style(
-                    Rect {
-                        x: area.x + 1,
-                        y,
-                        width: area.width - 1,
-                        height: 1,
-                    },
-                    Style::new().bg(Color::Indexed(236)),
-                );
+            let rect = Rect {
+                x: area.x + 1,
+                y,
+                width: area.width - 1,
+                height: 1,
+            };
+            if focused && paint.cursor_line() == Some(global) {
+                buffer.set_style(rect, crate::rbuf::CURSOR_LINE);
             }
+            let text: String = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            paint.overlay(buffer, global, &text, rect, 0, focused);
             y += 1;
         }
     }
@@ -793,7 +823,7 @@ fn hints(state: &AppState) -> String {
         return crate::settings::settings_hints(view);
     }
     match &state.mode {
-        Mode::Ex(_) => String::new(),
+        Mode::Ex(_) | Mode::Search(_) => String::new(),
         Mode::Filter(_) => "type to filter · RET keep · ESC clear".into(),
         Mode::Rename { .. } => "RET save · ESC cancel".into(),
         Mode::OpenPicker { .. } => "1-9/RET open · j/k move · ESC cancel".into(),
@@ -824,11 +854,11 @@ fn hints(state: &AppState) -> String {
         }
         Mode::Normal if state.focus == Focus::Composer => composer_hints(state),
         Mode::Normal if state.focus == Focus::Main && state.open_thread.is_some() => {
-            "j/k rows · RET toggle · ]m/[m messages · gy yank · gx open · i write · SPC leader"
+            "j/k lines · {/} rows · RET toggle · / search · v select · y yank · i write · SPC leader"
                 .into()
         }
         Mode::Normal if state.focus == Focus::Sidebar => {
-            "j/k move · RET open · go focus · R rename · dd archive · g/ filter · SPC leader".into()
+            "j/k move · RET open · go focus · / search · V select · dd archive · SPC leader".into()
         }
         Mode::Normal => "SPC leader · : ex · SPC h b b keys · SPC q q quit".into(),
     }
@@ -1022,6 +1052,16 @@ fn render_echo(state: &AppState, frame: &mut Frame, area: Rect) {
     let width = usize::from(area.width);
     if let Mode::Ex(line) = &state.mode {
         let text = format!(":{}", line.input.text());
+        frame.render_widget(Paragraph::new(truncate(&text, width)), area);
+        let x = area.x + 1 + line.input.cursor_width() as u16;
+        if x < area.right() {
+            frame.set_cursor_position((x, area.y));
+        }
+        return;
+    }
+    if let Mode::Search(line) = &state.mode {
+        let prefix = if line.forward { '/' } else { '?' };
+        let text = format!("{prefix}{}", line.input.text());
         frame.render_widget(Paragraph::new(truncate(&text, width)), area);
         let x = area.x + 1 + line.input.cursor_width() as u16;
         if x < area.right() {

@@ -330,8 +330,11 @@ impl Tag {
 }
 
 pub fn tag(state: &AppState) -> Tag {
-    if matches!(state.mode, Mode::Ex(_)) {
+    if matches!(state.mode, Mode::Ex(_) | Mode::Search(_)) {
         return Tag::Command;
+    }
+    if let Some(line) = crate::rbuf::visual_active(state) {
+        return if line { Tag::VisualLine } else { Tag::Visual };
     }
     if state.palette.is_some()
         || matches!(
@@ -360,6 +363,9 @@ pub fn tag(state: &AppState) -> Tag {
             crate::composer::EditMode::Normal if operator => Tag::Operator,
             crate::composer::EditMode::Normal => Tag::Normal,
         };
+    }
+    if crate::rbuf::focused(state).is_some() && operator_pending(&state.keys.pending) {
+        return Tag::Operator;
     }
     Tag::Normal
 }
@@ -534,6 +540,9 @@ pub(crate) fn run_counted(
 ) -> Vec<Effect> {
     if let Command::Edit(op) = command {
         return crate::edit::apply_edit(state, op, count);
+    }
+    if let Command::View(op) = command {
+        return crate::rbuf::apply(state, op, count);
     }
     state.keys.register = None;
     if let Some(effects) = crate::app::counted_command(state, command, count) {

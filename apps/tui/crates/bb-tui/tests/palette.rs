@@ -364,8 +364,12 @@ fn quick_open_searches_environment_files_and_previews_them() {
         vec![Effect::OpenExternal("/work/repo/src/main.rs".into())]
     );
     assert_eq!(
-        keys(&mut state, "y y"),
+        keys(&mut state, "g y"),
         vec![Effect::Copy("src/main.rs".into())]
+    );
+    assert_eq!(
+        keys(&mut state, "y y"),
+        vec![Effect::Copy("fn main() {\n".into())]
     );
     press(&mut state, KeyCode::Esc);
     assert!(state.result_pane.is_none());
@@ -444,7 +448,7 @@ fn plugin_cli_commands_run_with_arguments_and_show_output() {
     assert!(screen.contains("warning: token expires soon"), "{screen}");
     assert!(screen.contains("exit 2"), "{screen}");
     assert_eq!(
-        keys(&mut state, "y y"),
+        keys(&mut state, "g y"),
         vec![Effect::Copy("signed in as \u{1b}[1mada\u{1b}[0m\n".into())]
     );
 }

@@ -420,7 +420,8 @@ Search is incremental (the view moves to the first match while typing) and
 smart-case (case-insensitive unless the pattern has an uppercase letter;
 `\c`/`\C` force it). Patterns are regular expressions (the `regex` crate
 syntax, very-magic like evil's default). All matches in the visible rows are
-highlighted until `:noh`, `ESC` or a new search. Search wraps around with
+highlighted until `:noh`, `ESC` or a new search (`:set nohlsearch` hides,
+`:set hlsearch` shows them again). Search wraps around with
 `search hit BOTTOM, continuing at TOP`; `:set nowrapscan` disables wrapping.
 In the timeline search covers the rendered text of loaded rows: expanded rows
 fully, collapsed rows by their title line. A match inside a collapsed row's
@@ -1223,6 +1224,24 @@ Built:
   registers, bracketed paste as one change in every state and into `"+`,
   insert `C-a` (first non-blank), `C-v` (literal next key) and `TAB` (a tab),
   mouse click-to-position and drag selection in the thread composer.
+- Read-only evil buffers (third step): the sidebar, the timeline, the Diff
+  and File tabs, the terminal scrollback in normal state and output panes
+  (help, registers, marks, plugin output) share one engine over their
+  rendered text. Built: the line and column cursor (the sidebar has lines
+  only), the motions of section 7 with counts, `C-d C-u C-f C-b C-e C-y zz
+  zt zb z. z- z RET H M L`, incremental smart-case regex search `/ ? n N * #
+  g* g#` with highlighting, wrap messages, `[i/N]` in the echo area, search
+  history, the `"/` register, `:noh`, `:set [no]wrapscan`, `:set
+  [no]hlsearch`; visual and visual-line selection (`v V gv o`, text objects
+  in visual state) and yanks (`yy Y y{motion} y{object} y'{mark}`, visual
+  `y`/`Y`) into the registers and `"+` (OSC 52); local marks, `''`, the
+  jump list (`C-o C-i`), session-only global marks in the timeline,
+  `:marks`, `:delm`; the timeline extras `]] [[ ]e [e gf`, `gx` on a URL
+  under the cursor, `` yi` `` / `` ya` `` on rendered code blocks, `yim`
+  / `yam`, `vim` / `vam`; sidebar visual-line batches (`d x Del ! + y`) and
+  search that opens collapsed groups; diff `gy`; terminal `yy` (the line)
+  and `SPC b y` (the screen); a mouse click puts the timeline cursor at the
+  clicked character.
 - Minibuffers: the vertico keys of section 12 except `C-;`, `C-r` and
   `M-p`/`M-n`; `SPC '`.
 - Ex commands of section 13 except `:marks`, `:delm`, `:h {topic}`, `@:`,
@@ -1234,20 +1253,35 @@ Built:
 
 Not built yet:
 
-- Search (`/ ? n N * #`, `g*`, `:noh` highlight), marks outside the composer,
-  global marks and the jump list (`C-o`, `C-i`), `:marks`, `:delm`.
-- The timeline line-and-column cursor: `h l w b e 0 $`, visual selection over
-  rendered text, `yy`/`y{motion}`, text objects, `]]`/`[[`, `]e`/`[e`, `gf`;
-  sidebar visual-line batches.
+- Search, marks and the jump list in the composer, persisting global marks
+  to `$XDG_STATE_HOME/bb-tui/marks.json` (they live for the session),
+  `:marks` as a picker (it is a read-only listing pane), `zj`/`zk`, search
+  inside the deferred content of collapsed timeline rows, revealing matches
+  inside collapsed parent threads of the sidebar (only collapsed groups
+  open).
+- Evil buffers for the Info tab, notifications, settings and automations
+  lists (they keep their list keys).
 - Composer `gj`/`gk` by display line (they move by logical line), mouse
   click-to-position in the new-thread prompt.
 - Which-key listings for registers and marks; `C-;` embark actions; minibuffer
   history (`M-p`/`M-n`).
 - Cursor shape by state (DECSCUSR), relative line numbers (`SPC t l`,
-  `:set rnu`), `scrolloff`, mouse drag selection in the timeline.
+  `:set rnu`), `scrolloff`, mouse drag selection in the timeline and the
+  panel.
 - Leader entries `SPC f r`, `SPC h x`, `SPC s s/b/i/r/c`, `SPC t h`,
   `SPC g o P`; `SPC ,` searches all projects instead of the focused one.
-- Diff `gy` (path only), terminal `yy` (the line; it yanks the screen),
-  `SPC b y` in the terminal tab, notification visual delete, request panel
-  `x` toggle, automation form `:w`/`C-c C-c` (it keeps `C-s`).
+- Notification visual delete, request panel `x` toggle, automation form
+  `:w`/`C-c C-c` (it keeps `C-s`).
+
+Deviations of the third step, by design:
+
+- Line-only buffers (the sidebar) search by line: `n` moves to the next line
+  with a match, `[i/N]` counts lines, and `v` starts visual-line state.
+- `*` and `#` follow smart-case like `/` instead of plain `ignorecase`.
+- The first `ESC` in a read-only buffer with a search highlight or a visual
+  selection only clears it; the next `ESC` does what section 4 lists.
+- Search in the sidebar opens every collapsed group that holds a match when
+  the search is submitted, not only the group of the match it lands on.
+- Output panes: `yy` yanks the line under the cursor and `gy` the whole
+  output (or the previewed file path), `q`/`RET`/`ESC` close.
 

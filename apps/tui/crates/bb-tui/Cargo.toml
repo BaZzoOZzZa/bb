@@ -43,6 +43,7 @@ serde_json.workspace = true
 base64.workspace = true
 dirs.workspace = true
 vt100.workspace = true
+regex.workspace = true
 clap.workspace = true
 toml_edit.workspace = true
 keyring = { workspace = true, optional = true }

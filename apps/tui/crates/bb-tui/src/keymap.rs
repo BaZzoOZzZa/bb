@@ -143,6 +143,15 @@ pub enum Command {
     DescribeKey,
     Messages,
     Edit(EditOp),
+    View(crate::rbuf::ViewOp),
+    TimelineJump(JumpKind, bool),
+    PreviewAtCursor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JumpKind {
+    Turn,
+    Error,
 }
 
 impl Command {
@@ -343,6 +352,7 @@ impl Command {
                 | Self::CycleReasoning
                 | Self::CycleReasoningBackward
                 | Self::DiffHunk(_)
+                | Self::TimelineJump(..)
         )
     }
 
@@ -485,6 +495,12 @@ impl Command {
             Self::DescribeKey => "Describe key".into(),
             Self::Messages => "Message history".into(),
             Self::Edit(op) => op.description(),
+            Self::View(op) => op.description(),
+            Self::TimelineJump(JumpKind::Turn, true) => "Next turn".into(),
+            Self::TimelineJump(JumpKind::Turn, false) => "Previous turn".into(),
+            Self::TimelineJump(JumpKind::Error, true) => "Next error".into(),
+            Self::TimelineJump(JumpKind::Error, false) => "Previous error".into(),
+            Self::PreviewAtCursor => "Preview the file under the cursor".into(),
         }
     }
 }
@@ -725,6 +741,7 @@ pub enum Scope {
     Automations,
     Pane,
     NewThread,
+    ViewVisual,
 }
 
 impl Scope {
@@ -734,6 +751,7 @@ impl Scope {
         Scope::Timeline,
         Scope::Composer,
         Scope::Visual,
+        Scope::ViewVisual,
         Scope::Insert,
         Scope::NewThread,
         Scope::Panel,
@@ -765,6 +783,7 @@ impl Scope {
             Self::Automations => "automations",
             Self::Pane => "output pane",
             Self::NewThread => "new thread form",
+            Self::ViewVisual => "visual (read-only buffers)",
         }
     }
 
