@@ -628,3 +628,165 @@ async fn renders_live_new_thread_form_read_only() {
         assert!(state.new_thread_form().is_none());
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only"]
+async fn renders_live_palette_read_only() {
+    use bb_tui::app::Effect;
+    use bb_tui::palette::{PaletteKind, PaletteRequest};
+    use bb_tui::runtime::run_palette_request;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let store = Store::spawn(
+        Arc::new(client.clone()),
+        NoRealtime,
+        None,
+        StoreConfig::default(),
+    );
+    let _interest = store.watch_sidebar();
+    let mut rx = store.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if rx.borrow_and_update().sidebar.data.is_some() {
+                break;
+            }
+            rx.changed().await.expect("store");
+        }
+    })
+    .await
+    .expect("sidebar loaded");
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    state.read_only = true;
+    update(&mut state, Action::Snapshot(store.snapshot()));
+
+    async fn drive(state: &mut AppState, client: &BbClient, effects: Vec<Effect>) {
+        let mut pending = effects;
+        while !pending.is_empty() {
+            for effect in std::mem::take(&mut pending) {
+                if let Effect::Palette {
+                    generation,
+                    request,
+                } = effect
+                {
+                    assert!(
+                        !matches!(request, PaletteRequest::RunCli { .. }),
+                        "live test must never run plugin commands"
+                    );
+                    let loaded = run_palette_request(client, request).await;
+                    pending.extend(update(state, Action::PaletteLoaded { generation, loaded }));
+                }
+            }
+        }
+    }
+    async fn keys(state: &mut AppState, client: &BbClient, events: Vec<KeyEvent>) {
+        for event in events {
+            let effects = update(state, Action::Key(event));
+            drive(state, client, effects).await;
+        }
+    }
+    fn text(value: &str) -> Vec<KeyEvent> {
+        value
+            .chars()
+            .map(|ch| KeyEvent::from(KeyCode::Char(ch)))
+            .collect()
+    }
+    fn print(state: &AppState, label: &str) {
+        if std::env::var_os("BB_TUI_LIVE_PRINT").is_none() {
+            return;
+        }
+        println!("--- {label}");
+        for line in render_lines(state, 120, 30) {
+            println!("{line}");
+        }
+    }
+    let ctrl = |ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+    let esc = KeyEvent::from(KeyCode::Esc);
+
+    keys(&mut state, &client, vec![ctrl('k')]).await;
+    let plugin_items = state
+        .palette
+        .as_ref()
+        .expect("palette")
+        .items
+        .iter()
+        .filter(|item| item.group == "Plugin commands")
+        .count();
+    println!("plugin commands: {plugin_items}");
+    print(&state, "commands");
+    keys(&mut state, &client, vec![esc]).await;
+
+    let word = state
+        .snapshot
+        .sidebar_threads()
+        .filter_map(|entry| entry.thread.title.clone())
+        .flat_map(|title| {
+            title
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .find(|word| word.chars().count() >= 4 && word.chars().all(char::is_alphanumeric))
+        .unwrap_or_else(|| "test".into());
+    keys(
+        &mut state,
+        &client,
+        vec![KeyEvent::from(KeyCode::Char('f'))],
+    )
+    .await;
+    keys(&mut state, &client, text(&word)).await;
+    let palette = state.palette.as_ref().expect("threads palette");
+    assert_eq!(palette.kind, PaletteKind::Threads);
+    assert!(
+        palette.threads.error.is_none(),
+        "{:?}",
+        palette.threads.error
+    );
+    println!("thread search {word:?}: {} rows", palette.items.len());
+    print(&state, "threads");
+    keys(&mut state, &client, vec![esc]).await;
+
+    let with_environment = state.rows.iter().position(|row| {
+        row.thread().is_some_and(|thread| {
+            state
+                .sidebar_entry(&thread.id)
+                .is_some_and(|entry| entry.thread.environment_id.is_some())
+        })
+    });
+    let Some(index) = with_environment else {
+        println!("no thread with an environment; skipping quick open");
+        return;
+    };
+    state.selected = index;
+    state.focus = bb_tui::app::Focus::Sidebar;
+    keys(&mut state, &client, vec![ctrl('p')]).await;
+    keys(&mut state, &client, text("md")).await;
+    let palette = state.palette.as_ref().expect("files palette");
+    assert!(palette.source.is_some());
+    println!(
+        "file search: {} rows, error {:?}",
+        palette.items.len(),
+        palette.paths.error
+    );
+    print(&state, "files");
+    if !palette.items.is_empty() {
+        keys(&mut state, &client, vec![KeyEvent::from(KeyCode::Enter)]).await;
+        let pane = state.result_pane.as_ref().expect("pane");
+        println!("preview {}: {} lines", pane.title, pane.line_count());
+        assert!(!matches!(pane.body, bb_tui::palette::PaneBody::Loading));
+        print(&state, "preview");
+        keys(&mut state, &client, vec![esc]).await;
+    }
+}

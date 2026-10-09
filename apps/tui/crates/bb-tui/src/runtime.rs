@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,11 +10,16 @@ use ratatui::Terminal;
 use ratatui::backend::Backend as TerminalBackend;
 use tokio::sync::mpsc;
 
+use bb_wire::project::WorkspacePathsQuery;
 use bb_wire::system::SystemEnvironmentProvidersQuery;
+use bb_wire::thread::ThreadSearchQuery;
 
 use crate::api::Api;
 use crate::app::{Action, AppState, Effect, ToastLevel, update};
 use crate::new_thread::{NewThreadLoaded, NewThreadRequest};
+use crate::palette::{
+    FILE_SEARCH_LIMIT, PaletteLoaded, PaletteRequest, THREAD_SEARCH_LIMIT_PER_GROUP,
+};
 use crate::platform::Platform;
 use crate::time::now_ms;
 use crate::ui;
@@ -27,6 +33,7 @@ pub struct EffectRunner<A: Api, P: Platform> {
     tx: mpsc::UnboundedSender<Action>,
     _sidebar: Interest,
     thread: Option<(String, Interest)>,
+    palette_tasks: HashMap<&'static str, tokio::task::JoinHandle<()>>,
 }
 
 impl<A: Api, P: Platform> EffectRunner<A, P> {
@@ -44,6 +51,7 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
             tx,
             _sidebar: sidebar,
             thread: None,
+            palette_tasks: HashMap::new(),
         }
     }
 
@@ -149,6 +157,32 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                     let _ = tx.send(Action::NewThreadLoaded { generation, loaded });
                 });
             }
+            Effect::Palette {
+                generation,
+                request,
+            } => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                let slot = request.slot();
+                let delay = request.debounce();
+                let task = tokio::spawn(async move {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    let loaded = run_palette_request(api.as_ref(), request).await;
+                    let _ = tx.send(Action::PaletteLoaded { generation, loaded });
+                });
+                if let Some(slot) = slot
+                    && let Some(previous) = self.palette_tasks.insert(slot, task)
+                {
+                    previous.abort();
+                }
+            }
+            Effect::SavePaletteRecents(recents) => {
+                if let Err(error) = self.platform.save_palette_recents(&recents) {
+                    tracing::debug!(%error, "failed to save palette recents");
+                }
+            }
             Effect::Quit => {}
         }
     }
@@ -198,6 +232,51 @@ pub async fn run_new_thread_request<A: Api>(api: &A, request: NewThreadRequest) 
     }
 }
 
+pub async fn run_palette_request<A: Api>(api: &A, request: PaletteRequest) -> PaletteLoaded {
+    match request {
+        PaletteRequest::Contributions => {
+            PaletteLoaded::Contributions(api.plugin_contributions().await)
+        }
+        PaletteRequest::SearchThreads { query } => {
+            let result = api
+                .search_threads(ThreadSearchQuery {
+                    query: query.clone(),
+                    limit_per_group: Some(THREAD_SEARCH_LIMIT_PER_GROUP),
+                })
+                .await;
+            PaletteLoaded::Threads { query, result }
+        }
+        PaletteRequest::Paths { source, query } => {
+            let result = api
+                .workspace_paths(
+                    source,
+                    WorkspacePathsQuery {
+                        host_id: None,
+                        environment_id: None,
+                        query: Some(query.clone()),
+                        limit: Some(FILE_SEARCH_LIMIT),
+                        include_files: true,
+                        include_directories: false,
+                    },
+                )
+                .await;
+            PaletteLoaded::Paths { query, result }
+        }
+        PaletteRequest::File { source, path } => {
+            let result = api.workspace_file(source, path.clone()).await;
+            PaletteLoaded::File { path, result }
+        }
+        PaletteRequest::RunCli { plugin_id, request } => {
+            let label = std::iter::once(plugin_id.clone())
+                .chain(request.argv.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let result = api.run_plugin_cli(plugin_id, request).await;
+            PaletteLoaded::Cli { label, result }
+        }
+    }
+}
+
 pub fn terminal_action(event: std::io::Result<Event>) -> Option<Action> {
     match event {
         Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => Some(Action::Key(key)),
@@ -229,6 +308,7 @@ where
 {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut snapshots = store.subscribe();
+    state.palette_recents = platform.load_palette_recents();
     let mut runner = EffectRunner::new(store, api, platform, tx);
     runner.load_keymap();
     let initial = snapshots.borrow_and_update().clone();

@@ -119,6 +119,12 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     if let Some(form) = state.new_thread_form() {
         crate::new_thread_ui::render_form_picker(form, frame, area);
     }
+    if let Some(palette) = &state.palette {
+        crate::palette_ui::render_palette(palette, frame, body);
+    }
+    if let Some(pane) = &state.result_pane {
+        crate::palette_ui::render_pane(pane, frame, body);
+    }
 }
 
 fn render_open_picker(targets: &[String], selected: usize, frame: &mut Frame, area: Rect) {
@@ -650,6 +656,10 @@ fn first_label(state: &AppState, command: Command) -> String {
 }
 
 fn hints(state: &AppState) -> String {
+    if let Some(hint) = crate::palette_ui::hints(state.palette.as_ref(), state.result_pane.as_ref())
+    {
+        return hint;
+    }
     let key = |command| first_label(state, command);
     match &state.mode {
         Mode::Filter(_) => "type to filter · Enter keep · Esc clear".into(),
@@ -690,13 +700,14 @@ fn hints(state: &AppState) -> String {
             key(Command::MoveBottom),
         ),
         Mode::Normal => format!(
-            "{}/{} move · {} open · {} filter · {} help · {} quit",
+            "{}/{} move · {} open · {} filter · {} help · {} quit · {} commands",
             key(Command::MoveDown),
             key(Command::MoveUp),
             key(Command::Open),
             key(Command::Filter),
             key(Command::Help),
             key(Command::Quit),
+            key(Command::PaletteOpen),
         ),
     }
 }

@@ -52,10 +52,18 @@ pub enum Command {
     NextPending,
     NewThread,
     NewThreadInEnvironment,
+    PaletteOpen,
+    QuickOpen,
+    SearchThreads,
+    SwitchProject,
 }
 
 impl Command {
     pub const ALL: &'static [Command] = &[
+        Command::PaletteOpen,
+        Command::QuickOpen,
+        Command::SearchThreads,
+        Command::SwitchProject,
         Command::MoveDown,
         Command::MoveUp,
         Command::MoveTop,
@@ -119,7 +127,9 @@ impl Command {
             Self::NewThread => "thread.new",
             Self::FocusNext => "pane.focus.next",
             Self::FocusPrevious => "pane.focus.previous",
-            Self::Filter => "thread.search",
+            Self::PaletteOpen => "palette.open",
+            Self::QuickOpen => "file.quickOpen",
+            Self::SearchThreads => "thread.search",
             Self::Rename => "thread.rename",
             Self::Archive => "thread.archive",
             Self::ThreadNext => "thread.next",
@@ -202,6 +212,10 @@ impl Command {
             Self::NextPending => "Answer the next waiting request".into(),
             Self::NewThread => "New thread".into(),
             Self::NewThreadInEnvironment => "New thread in this thread's environment".into(),
+            Self::PaletteOpen => "Command palette".into(),
+            Self::QuickOpen => "Quick open a file of this thread's workspace".into(),
+            Self::SearchThreads => "Search threads (titles and messages)".into(),
+            Self::SwitchProject => "Switch project".into(),
         }
     }
 }
@@ -389,6 +403,11 @@ impl Default for Keymap {
             (KeyChord::alt('w'), Command::NextPending),
             (KeyChord::ch('n'), Command::NewThread),
             (KeyChord::ch('N'), Command::NewThreadInEnvironment),
+            (KeyChord::ctrl('k'), Command::PaletteOpen),
+            (KeyChord::ch(':'), Command::PaletteOpen),
+            (KeyChord::ctrl('p'), Command::QuickOpen),
+            (KeyChord::ch('f'), Command::SearchThreads),
+            (KeyChord::ch('P'), Command::SwitchProject),
             (KeyChord::alt('m'), Command::ModelPicker),
             (KeyChord::alt('e'), Command::ReasoningPicker),
             (KeyChord::alt('p'), Command::PermissionPicker),
@@ -546,7 +565,7 @@ mod tests {
                 platform: None,
             },
             AppKeybindingOverride {
-                command: "palette.open".into(),
+                command: "browser.find".into(),
                 shortcut: Some(shortcut("z")),
                 platform: None,
             },

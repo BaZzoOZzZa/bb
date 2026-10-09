@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use base64::Engine;
@@ -14,22 +15,60 @@ pub trait Platform: Send + Sync + 'static {
     fn load_draft(&self, thread_id: &str) -> Option<String>;
 
     fn save_draft(&self, thread_id: &str, raw: Option<&str>) -> Result<(), String>;
+
+    fn load_palette_recents(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn save_palette_recents(&self, _recents: &[String]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SystemPlatform {
     drafts: Option<DraftDir>,
+    recents: Option<PathBuf>,
 }
 
 impl SystemPlatform {
     pub fn new() -> Self {
         Self {
             drafts: default_dir().map(DraftDir::new),
+            recents: recents_path(),
         }
     }
 
     pub fn with_drafts(drafts: Option<DraftDir>) -> Self {
-        Self { drafts }
+        Self {
+            drafts,
+            recents: None,
+        }
+    }
+
+    pub fn with_recents(mut self, recents: Option<PathBuf>) -> Self {
+        self.recents = recents;
+        self
+    }
+}
+
+pub fn recents_path() -> Option<PathBuf> {
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .map(|base| base.join("bb-tui").join("palette-recents.json"))
+}
+
+pub fn parse_recents(raw: &str) -> Vec<String> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::Array(values)) => values
+            .into_iter()
+            .filter_map(|value| match value {
+                serde_json::Value::String(id) => Some(id),
+                _ => None,
+            })
+            .take(crate::palette::RECENTS_LIMIT)
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -99,6 +138,25 @@ impl Platform for SystemPlatform {
             None => Ok(()),
         }
     }
+
+    fn load_palette_recents(&self) -> Vec<String> {
+        self.recents
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|raw| parse_recents(&raw))
+            .unwrap_or_default()
+    }
+
+    fn save_palette_recents(&self, recents: &[String]) -> Result<(), String> {
+        let Some(path) = &self.recents else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let raw = serde_json::to_string(recents).map_err(|error| error.to_string())?;
+        std::fs::write(path, raw).map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +166,23 @@ mod tests {
     #[test]
     fn osc52_encodes_utf8_as_base64() {
         assert_eq!(osc52_sequence("hi ✓"), "\u{1b}]52;c;aGkg4pyT\u{7}");
+    }
+
+    #[test]
+    fn palette_recents_round_trip_and_ignore_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("recents.json");
+        let platform = SystemPlatform::with_drafts(None).with_recents(Some(path.clone()));
+        assert!(platform.load_palette_recents().is_empty());
+        platform
+            .save_palette_recents(&["app:thread.new".into(), "tui:Quit".into()])
+            .unwrap();
+        assert_eq!(
+            platform.load_palette_recents(),
+            ["app:thread.new", "tui:Quit"]
+        );
+        assert_eq!(parse_recents("{\"a\":1}"), Vec::<String>::new());
+        assert_eq!(parse_recents("[1, \"x\"]"), ["x"]);
     }
 
     #[test]

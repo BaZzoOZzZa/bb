@@ -11,13 +11,16 @@ use bb_store::{
 use bb_tui::api::{Api, ApiFuture, Mutation, MutationReply};
 use bb_tui::app::{Action, AppState, Effect, ServerInfo, update};
 use bb_tui::new_thread::CreationConfig;
+use bb_tui::palette::FileSource;
 use bb_tui::platform::Platform;
 use bb_tui::ui;
 use bb_wire::environment::{CreateThreadEnvironmentArgs, Host};
 use bb_wire::interaction::PendingInteraction;
+use bb_wire::plugin::{PluginCliContribution, PluginCliRequest, PluginCliResult};
 use bb_wire::project::{
     Project, ProjectBranchesQuery, ProjectBranchesResponse, ProjectKind,
-    ProjectWithThreadsResponse, SidebarBootstrapResponse,
+    ProjectWithThreadsResponse, SidebarBootstrapResponse, WorkspacePathEntry,
+    WorkspacePathListResponse, WorkspacePathsQuery,
 };
 use bb_wire::prompt::{
     ProjectExecutionDefaults, PromptHistoryEntry, ResolvedThreadExecutionOptions,
@@ -27,7 +30,10 @@ use bb_wire::system::{
     AppKeybindingOverride, SystemAttentionResponse, SystemEnvironmentProvider,
     SystemEnvironmentProvidersQuery, SystemExecutionOptionsQuery, SystemExecutionOptionsResponse,
 };
-use bb_wire::thread::{CreateThreadRequest, ThreadListEntry, ThreadResponse, ThreadStatus};
+use bb_wire::thread::{
+    CreateThreadRequest, ThreadListEntry, ThreadResponse, ThreadSearchQuery, ThreadSearchResponse,
+    ThreadStatus,
+};
 use bb_wire::timeline::{
     ConversationRole, ConversationRow, ThreadTimelineQuery, ThreadTimelineResponse, TimelineRow,
     TimelineRowBase, TimelineRowStatus, TimelineWorkRow, TurnRow, TurnSummaryDetailsQuery,
@@ -234,6 +240,14 @@ pub struct MockApi {
     pub branch_queries: Mutex<Vec<(String, ProjectBranchesQuery)>>,
     pub provider_queries: Mutex<Vec<SystemEnvironmentProvidersQuery>>,
     pub created: Mutex<Vec<CreateThreadRequest>>,
+    pub contributions: Vec<PluginCliContribution>,
+    pub search_results: HashMap<String, ThreadSearchResponse>,
+    pub search_queries: Mutex<Vec<ThreadSearchQuery>>,
+    pub paths: Vec<WorkspacePathEntry>,
+    pub path_queries: Mutex<Vec<(FileSource, WorkspacePathsQuery)>>,
+    pub files: HashMap<String, Vec<u8>>,
+    pub cli_runs: Mutex<Vec<(String, PluginCliRequest)>>,
+    pub cli_result: PluginCliResult,
 }
 
 impl MockApi {
@@ -258,6 +272,14 @@ impl MockApi {
             branch_queries: Mutex::new(Vec::new()),
             provider_queries: Mutex::new(Vec::new()),
             created: Mutex::new(Vec::new()),
+            contributions: Vec::new(),
+            search_results: HashMap::new(),
+            search_queries: Mutex::new(Vec::new()),
+            paths: Vec::new(),
+            path_queries: Mutex::new(Vec::new()),
+            files: HashMap::new(),
+            cli_runs: Mutex::new(Vec::new()),
+            cli_result: PluginCliResult::default(),
         })
     }
 
@@ -402,9 +424,62 @@ impl Api for MockApi {
         };
         Box::pin(async move { Ok(response) })
     }
+
+    fn plugin_contributions(&self) -> ApiFuture<Vec<PluginCliContribution>> {
+        let contributions = self.contributions.clone();
+        Box::pin(async move { Ok(contributions) })
+    }
+
+    fn search_threads(&self, query: ThreadSearchQuery) -> ApiFuture<ThreadSearchResponse> {
+        self.search_queries.lock().unwrap().push(query.clone());
+        let response = self
+            .search_results
+            .get(&query.query)
+            .cloned()
+            .unwrap_or_default();
+        Box::pin(async move { Ok(response) })
+    }
+
+    fn workspace_paths(
+        &self,
+        source: FileSource,
+        query: WorkspacePathsQuery,
+    ) -> ApiFuture<WorkspacePathListResponse> {
+        let response = self.palette_paths(&query);
+        self.path_queries.lock().unwrap().push((source, query));
+        Box::pin(async move { Ok(response) })
+    }
+
+    fn workspace_file(&self, _source: FileSource, path: String) -> ApiFuture<Vec<u8>> {
+        let file = self.files.get(&path).cloned();
+        Box::pin(async move { file.ok_or_else(|| format!("{path}: not found")) })
+    }
+
+    fn run_plugin_cli(
+        &self,
+        plugin_id: String,
+        request: PluginCliRequest,
+    ) -> ApiFuture<PluginCliResult> {
+        self.cli_runs.lock().unwrap().push((plugin_id, request));
+        let result = self.cli_result.clone();
+        Box::pin(async move { Ok(result) })
+    }
 }
 
 impl MockApi {
+    fn palette_paths(&self, query: &WorkspacePathsQuery) -> WorkspacePathListResponse {
+        let needle = query.query.clone().unwrap_or_default().to_lowercase();
+        WorkspacePathListResponse {
+            paths: self
+                .paths
+                .iter()
+                .filter(|entry| entry.path.to_lowercase().contains(&needle))
+                .cloned()
+                .collect(),
+            ..WorkspacePathListResponse::default()
+        }
+    }
+
     fn composer_reply(&self, mutation: &Mutation) -> MutationReply {
         let mut queued = self.backend.queued.lock().unwrap();
         let list = queued.entry(mutation.thread_id().to_owned()).or_default();

@@ -551,3 +551,104 @@ async fn event_loop_creates_a_thread_from_the_new_thread_form_and_opens_it() {
     let screen = buffer_lines(&terminal).join("\n");
     assert!(screen.contains("Created thread"), "{screen}");
 }
+
+#[tokio::test]
+async fn palette_debounces_thread_search_and_runs_plugin_commands_through_api() {
+    let backend = FakeBackend::new(sample_sidebar());
+    let mut api = MockApi::new(backend.clone());
+    {
+        let api = Arc::get_mut(&mut api).unwrap();
+        api.contributions = vec![bb_wire::plugin::PluginCliContribution {
+            plugin_id: "keep-awake".into(),
+            name: "keep-awake".into(),
+            summary: "Configure idle-sleep prevention".into(),
+            commands: vec![bb_wire::plugin::PluginCliCommandInfo {
+                name: "status".into(),
+                summary: "Show status".into(),
+                usage: "bb keep-awake status [--json]".into(),
+            }],
+            renders_help: true,
+        }];
+        api.cli_result = bb_wire::plugin::PluginCliResult {
+            exit_code: 0,
+            stdout: "keep-awake: enabled\n".into(),
+            ..Default::default()
+        };
+    }
+    let store = Store::spawn(backend.clone(), NoRealtime, None, StoreConfig::default());
+    let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
+    let events = Box::pin(stream::poll_fn(move |cx| rx.poll_recv(cx)));
+    let state = AppState::new(
+        ServerInfo {
+            url: "http://fake/".into(),
+            profile: None,
+        },
+        Instant::now(),
+        NOW_MS,
+    );
+    let task_store = store.clone();
+    let task_api = api.clone();
+    let handle = tokio::spawn(async move {
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut state = state;
+        run(
+            &mut terminal,
+            &mut state,
+            task_store,
+            task_api,
+            Arc::new(support::MockPlatform::default()),
+            events,
+        )
+        .await
+        .expect("run");
+        (terminal, state)
+    });
+    wait_for(&store, |snapshot| snapshot.sidebar.data.is_some()).await;
+
+    key(&tx, KeyCode::Char('f'));
+    for ch in "flaky".chars() {
+        key(&tx, KeyCode::Char(ch));
+    }
+    let search_api = api.clone();
+    wait_until(move || !search_api.search_queries.lock().unwrap().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let queries: Vec<String> = api
+        .search_queries
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|query| query.query.clone())
+        .collect();
+    assert_eq!(queries, ["flaky"]);
+    key(&tx, KeyCode::Esc);
+
+    tx.send(Action::Key(KeyEvent::new(
+        KeyCode::Char('k'),
+        crossterm::event::KeyModifiers::CONTROL,
+    )))
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for ch in "keep status".chars() {
+        key(&tx, KeyCode::Char(ch));
+    }
+    key(&tx, KeyCode::Enter);
+    key(&tx, KeyCode::Enter);
+    let cli_api = api.clone();
+    wait_until(move || !cli_api.cli_runs.lock().unwrap().is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    key(&tx, KeyCode::Char('j'));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    tx.send(Action::Resize).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    key(&tx, KeyCode::Esc);
+    key(&tx, KeyCode::Char('q'));
+    let (_terminal, state) = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("loop exits")
+        .expect("join");
+    let runs = api.cli_runs.lock().unwrap().clone();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].0, "keep-awake");
+    assert_eq!(runs[0].1.argv, ["status"]);
+    assert!(state.result_pane.is_none());
+}

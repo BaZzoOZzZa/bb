@@ -157,6 +157,54 @@ Not built yet: reusing an existing git worktree by path, the service-tier
 picker, guided machine setup, plugin input controls other than the git
 worktree and project checkout ones, and remembering choices between sessions.
 
+## Command palette and search
+
+`C-k` (or `:`) opens the command palette, `C-p` quick-opens a file, `f`
+searches threads and `P` switches project. `C-k` and `C-p` also work from the
+composer, the request panel and the new-thread form. The palette keys follow
+the web app's `APP_COMMAND_IDS` (`palette.open`, `file.quickOpen`,
+`thread.search`), so keybinding overrides from the server settings rebind them
+too; `/` stays the in-place sidebar filter.
+
+| Mode | What it lists | Enter |
+|---|---|---|
+| Commands | every TUI command with its bound keys, grouped like the web palette, then the plugin CLI commands from `GET /plugins/contributions` | run the command; a plugin command first asks for its arguments |
+| Threads | with an empty query the 20 most recently updated threads; otherwise local fuzzy title and project-name matches merged with `GET /threads/search` (title and message matches, an `Archived` group, excerpts around the match) | open the thread |
+| Projects | sidebar projects | reveal and expand the project in the sidebar |
+| Files | `GET /environments/:id/paths` for the open (or selected) thread's environment, else `GET /projects/:id/paths` | preview the file (`GET …/files/:path`) with syntax highlighting |
+
+Type to filter; `↑`/`↓`, `Tab`/`S-Tab` or `C-n`/`C-p` move, `PgUp`/`PgDn`
+page, `Esc` closes, and `Backspace` on an empty query returns to the command
+list. `C-k` in another mode switches to the command list and closes the
+palette when it is already there. Ranking ports
+`packages/fuzzy-match` on top of nucleo: commands match their title (and their
+group as an alias), ties go to recently run commands and then to the list
+order; with an empty query the eight recently run commands come first.
+Recents are stored in `$XDG_STATE_HOME/bb-tui/palette-recents.json`. Thread
+search waits 150 ms and file search 120 ms after the last keystroke and cancels
+the previous request; while file results are in flight the previous results are
+re-ranked locally.
+
+A plugin command opens an argument line prefilled with its subcommand (taken
+from the command's usage, e.g. `bb thread-list prefs list`); quotes and
+backslashes work like a shell. Enter runs `POST /plugins/:id/cli` with the
+open thread and its project as context, and the output (stdout, then stderr in
+yellow, with the exit code) is shown in a scrollable result pane. File
+previews use the same pane.
+
+| Keys (result pane) | Action |
+|---|---|
+| `j`/`k`, `PgUp`/`PgDn`/`Space`, `C-d`/`C-u`, `g`/`G` | Scroll |
+| `h`/`l`, `0` | Scroll sideways, back to the first column |
+| `y` | Copy the command's stdout, or the file's path |
+| `o` | Open the previewed file with `xdg-open` / `open` (when its workspace path is known) |
+| `Esc`, `q`, `Enter` | Close |
+
+`--read-only` refuses to run plugin commands; searching and previews only read.
+Not built yet: the web palette's settings and plugin-page entries, the
+archived-thread recents list, sorting threads by date, the thread-view
+submenu, and passing a working directory to plugin commands.
+
 ## Server connection (`bb-client`)
 
 The server URL is resolved in this order: `--server-url`, `BB_SERVER_URL`,
@@ -180,6 +228,9 @@ cargo test -p bb-client --test live -- --ignored --nocapture
 cargo test -p bb-tui --test live -- --ignored --nocapture
 ```
 
+`renders_live_palette_read_only` loads the plugin commands, runs a thread
+search for a word from a sidebar title, searches files of a thread's
+environment and previews the first match; it never runs plugin commands.
 `renders_live_pending_interactions_read_only` parses every listed thread's
 pending interactions and renders the request panel of each waiting thread.
 `renders_live_composer_read_only` parses the execution options, default

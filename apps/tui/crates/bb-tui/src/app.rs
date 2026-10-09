@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bb_store::{ConnectionState, ResourceKey, StoreSnapshot, TurnDetailsKey};
+use bb_wire::plugin::PluginCliContribution;
 use bb_wire::prompt::{PromptHistoryEntry, ResolvedThreadExecutionOptions};
 use bb_wire::system::{
     AppKeybindingOverride, SystemExecutionOptionsQuery, SystemExecutionOptionsResponse,
@@ -25,6 +26,10 @@ use crate::interact::{InteractionForm, handle_interaction_key, interaction_mutat
 use crate::keymap::{Command, Keymap};
 use crate::new_thread::{
     NewThreadForm, NewThreadLoaded, NewThreadRequest, handle_new_thread_key, new_thread_paste,
+};
+use crate::palette::{
+    Palette, PaletteKind, PaletteLoaded, PaletteRequest, ResultPane, handle_palette_key,
+    handle_pane_key,
 };
 use crate::prompt::PromptDraft;
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
@@ -123,6 +128,10 @@ pub enum Action {
         generation: u64,
         loaded: NewThreadLoaded,
     },
+    PaletteLoaded {
+        generation: u64,
+        loaded: PaletteLoaded,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,6 +165,11 @@ pub enum Effect {
         generation: u64,
         request: NewThreadRequest,
     },
+    Palette {
+        generation: u64,
+        request: PaletteRequest,
+    },
+    SavePaletteRecents(Vec<String>),
     Quit,
 }
 
@@ -181,6 +195,11 @@ pub struct AppState {
     pub new_thread: Option<NewThreadForm>,
     pub new_thread_generation: u64,
     pub new_thread_draft: Option<PromptDraft>,
+    pub palette: Option<Palette>,
+    pub palette_generation: u64,
+    pub palette_recents: Vec<String>,
+    pub plugin_contributions: Option<Vec<PluginCliContribution>>,
+    pub result_pane: Option<ResultPane>,
     pub stop_requested: HashSet<String>,
     pub history_requested: HashSet<String>,
     pub submit_key: SubmitKey,
@@ -222,6 +241,11 @@ impl AppState {
             new_thread: None,
             new_thread_generation: 0,
             new_thread_draft: None,
+            palette: None,
+            palette_generation: 0,
+            palette_recents: Vec::new(),
+            plugin_contributions: None,
+            result_pane: None,
             stop_requested: HashSet::new(),
             history_requested: HashSet::new(),
             submit_key: SubmitKey::default(),
@@ -347,7 +371,7 @@ impl AppState {
         }
     }
 
-    fn rebuild_rows(&mut self) {
+    pub(crate) fn rebuild_rows(&mut self) {
         let previous = self.selected_row().map(SidebarRow::key);
         self.rows = match self.snapshot.sidebar.data.as_deref() {
             Some(sidebar) => build_rows(
@@ -576,6 +600,17 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
                 state.toast("Read-only mode: cannot create thread", ToastLevel::Error);
                 false
             }
+            Effect::Palette {
+                generation,
+                request: PaletteRequest::RunCli { .. },
+            } => {
+                state.close_pane(*generation);
+                state.toast(
+                    "Read-only mode: cannot run plugin commands",
+                    ToastLevel::Error,
+                );
+                false
+            }
             Effect::Mutate(mutation) => {
                 if !mutation.is_silent() {
                     state.toast(
@@ -700,6 +735,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::NewThreadLoaded { generation, loaded } => {
             state.new_thread_loaded(generation, loaded)
         }
+        Action::PaletteLoaded { generation, loaded } => state.palette_loaded(generation, loaded),
     }
 }
 
@@ -707,7 +743,32 @@ fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
+fn is_palette_chord(state: &AppState, key: &KeyEvent) -> Option<Command> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    state
+        .keymap
+        .lookup(key)
+        .filter(|command| matches!(command, Command::PaletteOpen | Command::QuickOpen))
+}
+
 fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+    if state.result_pane.is_some() {
+        return handle_pane_key(state, key);
+    }
+    if state.palette.is_some() {
+        return handle_palette_key(state, key);
+    }
+    if state.mode == Mode::Normal
+        && matches!(
+            state.focus,
+            Focus::NewThread | Focus::Interaction | Focus::Composer
+        )
+        && let Some(command) = is_palette_chord(state, &key)
+    {
+        return run_command(state, command);
+    }
     match std::mem::replace(&mut state.mode, Mode::Normal) {
         Mode::Picker(picker) => {
             if is_ctrl_c(&key) {
@@ -969,6 +1030,10 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             }
         }
         Command::NextPending => return state.jump_to_pending(),
+        Command::PaletteOpen => return state.open_palette(PaletteKind::Commands),
+        Command::QuickOpen => return state.open_palette(PaletteKind::Files),
+        Command::SearchThreads => return state.open_palette(PaletteKind::Threads),
+        Command::SwitchProject => return state.open_palette(PaletteKind::Projects),
         Command::NewThread => return state.open_new_thread(),
         Command::NewThreadInEnvironment => return state.open_new_thread_in_environment(),
         Command::ThreadNext => return state.step_thread(true),

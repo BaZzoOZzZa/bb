@@ -18,7 +18,12 @@ use bb_wire::system::{
 };
 use bb_wire::thread::{CreateThreadRequest, ThreadResponse, UpdateThreadRequest};
 
+use bb_wire::plugin::{PluginCliContribution, PluginCliRequest, PluginCliResult};
+use bb_wire::project::{WorkspacePathListResponse, WorkspacePathsQuery};
+use bb_wire::thread::{ThreadSearchQuery, ThreadSearchResponse};
+
 use crate::new_thread::CreationConfig;
+use crate::palette::FileSource;
 
 pub type ApiFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send>>;
 
@@ -277,6 +282,24 @@ pub trait Api: Send + Sync + 'static {
     ) -> ApiFuture<ProjectBranchesResponse>;
 
     fn create_thread(&self, request: CreateThreadRequest) -> ApiFuture<ThreadResponse>;
+
+    fn plugin_contributions(&self) -> ApiFuture<Vec<PluginCliContribution>>;
+
+    fn search_threads(&self, query: ThreadSearchQuery) -> ApiFuture<ThreadSearchResponse>;
+
+    fn workspace_paths(
+        &self,
+        source: FileSource,
+        query: WorkspacePathsQuery,
+    ) -> ApiFuture<WorkspacePathListResponse>;
+
+    fn workspace_file(&self, source: FileSource, path: String) -> ApiFuture<Vec<u8>>;
+
+    fn run_plugin_cli(
+        &self,
+        plugin_id: String,
+        request: PluginCliRequest,
+    ) -> ApiFuture<PluginCliResult>;
 }
 
 pub fn creation_config_from(config: &bb_wire::system::SystemConfigResponse) -> CreationConfig {
@@ -509,6 +532,75 @@ impl Api for BbClient {
         Box::pin(async move {
             client
                 .create_thread(&request)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn plugin_contributions(&self) -> ApiFuture<Vec<PluginCliContribution>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .plugin_contributions()
+                .await
+                .map(|response| response.cli_commands)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn search_threads(&self, query: ThreadSearchQuery) -> ApiFuture<ThreadSearchResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .search_threads(&query)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn workspace_paths(
+        &self,
+        source: FileSource,
+        query: WorkspacePathsQuery,
+    ) -> ApiFuture<WorkspacePathListResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            match &source {
+                FileSource::Environment { environment_id, .. } => {
+                    client.environment_paths(environment_id, &query).await
+                }
+                FileSource::Project { project_id, .. } => {
+                    client.project_paths(project_id, &query).await
+                }
+            }
+            .map_err(|error| error.to_string())
+        })
+    }
+
+    fn workspace_file(&self, source: FileSource, path: String) -> ApiFuture<Vec<u8>> {
+        let client = self.clone();
+        Box::pin(async move {
+            match &source {
+                FileSource::Environment { environment_id, .. } => {
+                    client.environment_file(environment_id, &path).await
+                }
+                FileSource::Project { project_id, .. } => {
+                    client.project_file(project_id, &path).await
+                }
+            }
+            .map_err(|error| error.to_string())
+        })
+    }
+
+    fn run_plugin_cli(
+        &self,
+        plugin_id: String,
+        request: PluginCliRequest,
+    ) -> ApiFuture<PluginCliResult> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .run_plugin_cli(&plugin_id, &request)
                 .await
                 .map_err(|error| error.to_string())
         })
