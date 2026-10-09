@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(
             format_tool_call_command("Tool", Some(&args)),
             format!(
-                "Tool {{ limit: 5, long: {}..., query: select:TodoWrite }}",
+                "Tool {{ query: select:TodoWrite, limit: 5, long: {}... }}",
                 "x".repeat(37)
             )
         );

@@ -525,7 +525,7 @@ mod tests {
         let later = start + DRAFT_SAVE_DELAY;
         assert_eq!(
             composer.take_save(later, false),
-            Some(Some(r#"{"attachments":[],"text":"x"}"#.to_owned()))
+            Some(Some(r#"{"text":"x","attachments":[]}"#.to_owned()))
         );
         assert_eq!(composer.take_save(later, true), None);
         composer.load_stored(Some(r#"{"text":"stored"}"#));

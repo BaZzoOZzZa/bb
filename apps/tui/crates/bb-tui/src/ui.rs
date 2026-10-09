@@ -266,10 +266,17 @@ fn render_sidebar(state: &AppState, frame: &mut Frame, area: Rect) {
             }
             _ => None,
         };
-        let line = match row {
+        let mut line = match row {
             SidebarRow::Group(group) => group_line(group, width),
             SidebarRow::Thread(thread) => thread_line(state, thread, width, renaming),
         };
+        if selected {
+            for span in &mut line.spans {
+                if span.style.fg == Some(Color::DarkGray) {
+                    span.style.fg = Some(Color::Gray);
+                }
+            }
+        }
         let mut style = Style::new();
         if selected {
             style = if focused {

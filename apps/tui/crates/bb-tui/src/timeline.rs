@@ -20,8 +20,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::detail::{
-    Body, ERROR, MUTED, glyph_char, role_style, system_body, system_has_body, work_body,
-    work_has_body,
+    Body, ERROR, MUTED, glyph_char, host_glyph_char, role_style, system_body, system_has_body,
+    work_body, work_has_body,
 };
 use crate::markdown::{bare_urls, render_markdown};
 use crate::wrap::{WrapMode, truncate_spans, wrap_spans};
@@ -1111,7 +1111,7 @@ impl TimelineView {
                     if elapsed >= 1_000 {
                         spans.push(Span::styled(
                             format!(
-                                " ({})",
+                                " {}",
                                 bb_view::format::duration_ms_to_compact_string(elapsed)
                             ),
                             MUTED,
@@ -1151,10 +1151,12 @@ impl TimelineView {
             _ => MUTED,
         };
         let glyph = match row {
-            ViewRow::Work(work) => match work_row_glyph(&work.row, |_| false) {
-                ResolvedGlyph::Builtin(glyph) => glyph_char(glyph),
-                ResolvedGlyph::Host(_) => "◈",
-            },
+            ViewRow::Work(work) => {
+                match work_row_glyph(&work.row, |name| host_glyph_char(name).is_some()) {
+                    ResolvedGlyph::Builtin(glyph) => glyph_char(glyph),
+                    ResolvedGlyph::Host(name) => host_glyph_char(&name).unwrap_or("◈"),
+                }
+            }
             ViewRow::Summary(_) => "≡",
             ViewRow::Turn(_) => "◦",
             ViewRow::System(system) => system_glyph(system),

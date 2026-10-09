@@ -83,7 +83,7 @@ fn decoration_spans(decoration: &TitleDecoration, now_ms: i64) -> Vec<StyledSpan
                 return Vec::new();
             }
             vec![StyledSpan::new(
-                format!("({})", duration_ms_to_compact_string(elapsed)),
+                duration_ms_to_compact_string(elapsed),
                 if *em {
                     SpanRole::Emphasis
                 } else {
@@ -134,9 +134,19 @@ fn decoration_spans(decoration: &TitleDecoration, now_ms: i64) -> Vec<StyledSpan
             },
         )],
         TitleDecoration::Duration { .. } => vec![StyledSpan::new(
-            format_timeline_decoration_text(decoration),
+            unparenthesized(format_timeline_decoration_text(decoration)),
             SpanRole::Decoration,
         )],
+    }
+}
+
+fn unparenthesized(text: String) -> String {
+    match text
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        Some(inner) => inner.to_owned(),
+        None => text,
     }
 }
 
@@ -271,7 +281,7 @@ mod tests {
             ],
         );
         let spans = title_spans(&title, 66_000);
-        assert_eq!(spans_text(&spans), "Running cargo test (1m 5s) +3");
+        assert_eq!(spans_text(&spans), "Running cargo test 1m 5s +3");
         assert_eq!(spans[2].role, SpanRole::Emphasis);
         assert_eq!(spans[6].role, SpanRole::DiffAdded);
         assert_eq!(

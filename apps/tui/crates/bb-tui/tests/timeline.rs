@@ -130,7 +130,7 @@ fn renders_conversation_markdown_and_work_rows() {
     );
     assert!(text.contains("$ Ran cargo test -p parser"), "{text}");
     assert!(text.contains("✎ Edited parser.rs +1 -1"), "{text}");
-    assert!(text.contains("✻ Thought (3s)"), "{text}");
+    assert!(text.contains("✻ Thought 3s"), "{text}");
     assert!(
         text.contains("● Fixed it. See the docs (https://example.com/parser)."),
         "{text}"
@@ -440,7 +440,7 @@ fn active_thinking_shows_spinner_and_text() {
     update(&mut state, Action::Snapshot(Arc::new(snapshot)));
     open_thread(&mut state);
     let text = main_text(&state);
-    assert!(text.contains("Thinking… (12s)"), "{text}");
+    assert!(text.contains("Thinking… 12s"), "{text}");
     assert!(text.contains("Weighing the parser rewrite"), "{text}");
 }
 
@@ -579,5 +579,5 @@ fn background_workflows_show_activity_while_idle() {
     update(&mut state, Action::Snapshot(Arc::new(snapshot)));
     open_thread(&mut state);
     let text = main_text(&state);
-    assert!(text.contains("Running nightly… (9m 58s)"), "{text}");
+    assert!(text.contains("Running nightly… 9m 58s"), "{text}");
 }

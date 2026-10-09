@@ -146,7 +146,7 @@ pub fn glyph_char(glyph: WorkRowGlyph) -> &'static str {
         WorkRowGlyph::FileText => "≡",
         WorkRowGlyph::Folder => "⊞",
         WorkRowGlyph::Globe => "⊕",
-        WorkRowGlyph::ListTodo => "☰",
+        WorkRowGlyph::ListTodo => "≣",
         WorkRowGlyph::Lock => "⊡",
         WorkRowGlyph::Palette => "◐",
         WorkRowGlyph::Puzzle => "◈",
@@ -155,6 +155,29 @@ pub fn glyph_char(glyph: WorkRowGlyph) -> &'static str {
         WorkRowGlyph::UserRoundPlus => "↳",
         WorkRowGlyph::Zap => "ϟ",
     }
+}
+
+pub fn host_glyph_char(name: &str) -> Option<&'static str> {
+    let glyph = match name {
+        "Terminal" | "SquareTerminal" => WorkRowGlyph::Terminal,
+        "FileText" | "File" | "Files" => WorkRowGlyph::FileText,
+        "EditFile" | "FilePen" | "FolderEdit" | "Pencil" => WorkRowGlyph::EditFile,
+        "Folder" | "FolderOpen" => WorkRowGlyph::Folder,
+        "Search" => WorkRowGlyph::Search,
+        "Globe" => WorkRowGlyph::Globe,
+        "ListTodo" | "Workflow" => WorkRowGlyph::ListTodo,
+        "Lock" => WorkRowGlyph::Lock,
+        "Palette" => WorkRowGlyph::Palette,
+        "Puzzle" | "Toolbox" | "SlidersHorizontal" => WorkRowGlyph::Puzzle,
+        "UserRound" | "UserRoundPlus" => WorkRowGlyph::UserRoundPlus,
+        "CircleQuestion" | "CircleHelp" => WorkRowGlyph::CircleQuestion,
+        "Zap" => WorkRowGlyph::Zap,
+        "Brain" => return Some("✻"),
+        "Trash2" | "Trash" => return Some("✗"),
+        "Archive" => return Some("▣"),
+        _ => return None,
+    };
+    Some(glyph_char(glyph))
 }
 
 pub fn role_style(span: &StyledSpan) -> Style {

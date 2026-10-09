@@ -129,7 +129,7 @@ impl Indicator {
             Self::Archived => '▤',
             Self::UnreadError | Self::QueuedFailed => '✗',
             Self::WaitingForInput => '?',
-            Self::PlanMode => '☰',
+            Self::PlanMode => '≣',
             Self::Goal => '◎',
             Self::Runtime => SPINNER[(frame as usize) % SPINNER.len()],
             Self::Workflow => '≋',

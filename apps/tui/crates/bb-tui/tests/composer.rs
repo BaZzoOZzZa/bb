@@ -573,7 +573,7 @@ fn drafts_load_once_and_save_after_a_pause() {
     );
     assert!(effects.contains(&Effect::SaveDraft {
         thread_id: IDLE.into(),
-        raw: Some(r#"{"attachments":[],"text":"saved draft!"}"#.into()),
+        raw: Some(r#"{"text":"saved draft!","attachments":[]}"#.into()),
     }));
 }
 
