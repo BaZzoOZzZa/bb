@@ -432,6 +432,39 @@ const COMMAND_ENTRIES: &[CommandEntry] = &[
     entry(Command::Help, LAYOUT, "Show keyboard shortcuts", false),
     entry(Command::Quit, LAYOUT, "Quit", false),
     entry(Command::QuickOpen, WORKSPACE, "Quick open file", false),
+    entry(Command::DiffToggle, WORKSPACE, "Toggle git diff", true),
+    entry(Command::PanelNextTab, WORKSPACE, "Next panel tab", false),
+    entry(
+        Command::PanelPreviousTab,
+        WORKSPACE,
+        "Previous panel tab",
+        false,
+    ),
+    entry(
+        Command::PanelFullScreen,
+        WORKSPACE,
+        "Maximize / restore panel",
+        false,
+    ),
+    entry(Command::GitCommit, WORKSPACE, "Commit changes", true),
+    entry(
+        Command::PullRequestMerge,
+        WORKSPACE,
+        "Merge pull request",
+        true,
+    ),
+    entry(
+        Command::PullRequestReady,
+        WORKSPACE,
+        "Mark pull request ready for review",
+        true,
+    ),
+    entry(
+        Command::PullRequestDraft,
+        WORKSPACE,
+        "Convert pull request to draft",
+        true,
+    ),
     entry(Command::FocusComposer, COMPOSER, "Focus composer", true),
     entry(Command::ModelPicker, COMPOSER, "Pick model", true),
     entry(
@@ -1105,7 +1138,7 @@ pub fn pane_lines_for_cli(result: &PluginCliResult) -> Vec<Vec<Span<'static>>> {
     lines
 }
 
-fn extension(path: &str) -> Option<&str> {
+pub fn extension(path: &str) -> Option<&str> {
     let name = path.rsplit('/').next().unwrap_or(path);
     match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => Some(ext),
@@ -1209,7 +1242,7 @@ impl AppState {
             })
     }
 
-    fn project_name(&self, project_id: &str) -> Option<String> {
+    pub(crate) fn project_name(&self, project_id: &str) -> Option<String> {
         let sidebar = self.snapshot.sidebar.data.as_deref()?;
         sidebar
             .projects

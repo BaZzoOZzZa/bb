@@ -86,24 +86,38 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     }
 
     let sidebar_width = (body.width * 3 / 10).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
-    let panel_width = (body.width * 3 / 10).clamp(20, 48);
+    let panel_width = match state.panel.tab {
+        crate::panel::PanelTab::Info => (body.width * 3 / 10).clamp(28, 56),
+        _ => (body.width / 2).clamp(40, 120),
+    };
+    let maximized = state.panel_visible && state.panel.maximized;
     let [sidebar_area, main_area, panel_area] = Layout::horizontal([
         Constraint::Length(if state.sidebar_visible {
             sidebar_width
         } else {
             0
         }),
-        Constraint::Fill(1),
-        Constraint::Length(if state.panel_visible { panel_width } else { 0 }),
+        if maximized {
+            Constraint::Length(0)
+        } else {
+            Constraint::Fill(1)
+        },
+        if maximized {
+            Constraint::Fill(1)
+        } else {
+            Constraint::Length(if state.panel_visible { panel_width } else { 0 })
+        },
     ])
     .areas(body);
 
     if state.sidebar_visible {
         render_sidebar(state, frame, sidebar_area);
     }
-    render_main(state, frame, main_area);
+    if !maximized {
+        render_main(state, frame, main_area);
+    }
     if state.panel_visible {
-        render_panel(state, frame, panel_area);
+        crate::panel_ui::render_panel(state, frame, panel_area);
     }
     render_status(state, frame, status);
     render_toasts(state, frame, body);
@@ -125,6 +139,9 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     }
     if let Some(pane) = &state.result_pane {
         crate::palette_ui::render_pane(pane, frame, body);
+    }
+    if let Some(confirm) = &state.panel.confirm {
+        crate::panel_ui::render_confirm(confirm, frame, body);
     }
 }
 
@@ -616,21 +633,6 @@ fn render_timeline(state: &AppState, frame: &mut Frame, area: Rect, focused: boo
     }
 }
 
-fn render_panel(state: &AppState, frame: &mut Frame, area: Rect) {
-    let focused = state.focus == Focus::Panel;
-    let block = pane_block("Panel", focused);
-    let text = match state.open_thread.as_deref() {
-        Some(id) => format!("thread {id}"),
-        None => "Nothing to show".into(),
-    };
-    frame.render_widget(
-        Paragraph::new(text)
-            .style(Style::new().fg(Color::DarkGray))
-            .block(block),
-        area,
-    );
-}
-
 fn connection_span(connection: &ConnectionState) -> Span<'static> {
     match connection {
         ConnectionState::Idle => Span::styled("○ idle", Style::new().fg(Color::DarkGray)),
@@ -681,6 +683,10 @@ fn hints(state: &AppState) -> String {
                 state.new_thread_form().expect("form"),
                 state.submit_key.submit_label(),
             )
+        }
+        Mode::Normal if state.panel.confirm.is_some() => "y/Enter confirm · Esc cancel".into(),
+        Mode::Normal if state.focus == Focus::Panel && state.panel_visible => {
+            crate::panel_ui::hints(state)
         }
         Mode::Normal if state.focus == Focus::Interaction => format!(
             "Esc leave · {} next waiting request · {} focus",
@@ -829,6 +835,19 @@ fn help_entries(state: &AppState) -> Vec<(String, String)> {
         (
             "i / Tab".to_owned(),
             "New thread: edit the prompt / next field".to_owned(),
+        ),
+        ("1-3".to_owned(), "Panel: Info / Diff / File tab".to_owned()),
+        (
+            "s n/N [/]".to_owned(),
+            "Diff: scope, next/previous hunk, file".to_owned(),
+        ),
+        (
+            "p e".to_owned(),
+            "Panel: preview file, open in $EDITOR".to_owned(),
+        ),
+        (
+            "C M R W".to_owned(),
+            "Panel: commit, merge, ready, draft PR".to_owned(),
         ),
     ];
     Command::ALL

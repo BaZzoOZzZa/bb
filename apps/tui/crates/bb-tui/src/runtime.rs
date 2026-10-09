@@ -17,14 +17,17 @@ use bb_wire::thread::ThreadSearchQuery;
 use crate::api::{Api, AttachmentUpload};
 use crate::app::{Action, AppState, Effect, ToastLevel, update};
 use crate::attach::{ATTACHMENT_MAX_BYTES, UploadRequest, file_name, mime_type_for};
+use crate::git_diff::diff_query;
 use crate::new_thread::{NewThreadLoaded, NewThreadRequest};
 use crate::palette::{
     FILE_SEARCH_LIMIT, PaletteLoaded, PaletteRequest, THREAD_SEARCH_LIMIT_PER_GROUP,
 };
+use crate::panel::{PanelLoaded, PanelRequest};
 use crate::platform::Platform;
 use crate::time::now_ms;
 use crate::typeahead::{TypeaheadLoaded, TypeaheadRequest};
 use crate::ui;
+use bb_wire::environment::{EnvironmentDiffPatchRequest, EnvironmentStatusQuery};
 use bb_wire::project::UploadedPromptAttachment;
 
 pub const TICK: Duration = Duration::from_millis(200);
@@ -37,6 +40,7 @@ pub struct EffectRunner<A: Api, P: Platform> {
     _sidebar: Interest,
     thread: Option<(String, Interest)>,
     palette_tasks: HashMap<&'static str, tokio::task::JoinHandle<()>>,
+    redraw: bool,
 }
 
 impl<A: Api, P: Platform> EffectRunner<A, P> {
@@ -55,6 +59,7 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
             _sidebar: sidebar,
             thread: None,
             palette_tasks: HashMap::new(),
+            redraw: false,
         }
     }
 
@@ -211,6 +216,30 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                     });
                 });
             }
+            Effect::Panel(request) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                let slot = request.slot();
+                let task = tokio::spawn(async move {
+                    let loaded = run_panel_request(api.as_ref(), request).await;
+                    let _ = tx.send(Action::PanelLoaded(loaded));
+                });
+                if let Some(slot) = slot
+                    && let Some(previous) = self.palette_tasks.insert(slot, task)
+                {
+                    previous.abort();
+                }
+            }
+            Effect::EditFile { path, line } => {
+                let result = self.platform.edit_file(&path, line);
+                self.redraw = true;
+                if let Err(error) = result {
+                    let _ = self.tx.send(Action::Notify {
+                        message: format!("Cannot open editor: {error}"),
+                        level: ToastLevel::Error,
+                    });
+                }
+            }
             Effect::SavePaletteRecents(recents) => {
                 if let Err(error) = self.platform.save_palette_recents(&recents) {
                     tracing::debug!(%error, "failed to save palette recents");
@@ -218,6 +247,10 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
             }
             Effect::Quit => {}
         }
+    }
+
+    pub fn take_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.redraw)
     }
 
     pub fn watched_thread(&self) -> Option<&str> {
@@ -306,6 +339,84 @@ pub async fn run_palette_request<A: Api>(api: &A, request: PaletteRequest) -> Pa
                 .join(" ");
             let result = api.run_plugin_cli(plugin_id, request).await;
             PaletteLoaded::Cli { label, result }
+        }
+    }
+}
+
+pub async fn run_panel_request<A: Api>(api: &A, request: PanelRequest) -> PanelLoaded {
+    match request {
+        PanelRequest::Status {
+            environment_id,
+            merge_base_branch,
+        } => {
+            let result = api
+                .environment_status(
+                    environment_id.clone(),
+                    EnvironmentStatusQuery {
+                        merge_base_branch: merge_base_branch.clone(),
+                    },
+                )
+                .await;
+            PanelLoaded::Status {
+                environment_id,
+                merge_base_branch,
+                result,
+            }
+        }
+        PanelRequest::PullRequest { environment_id } => {
+            let result = api.environment_pull_request(environment_id.clone()).await;
+            PanelLoaded::PullRequest {
+                environment_id,
+                result,
+            }
+        }
+        PanelRequest::DiffFiles {
+            environment_id,
+            target,
+        } => {
+            let result = api
+                .environment_diff_files(environment_id.clone(), diff_query(&target))
+                .await;
+            PanelLoaded::DiffFiles {
+                environment_id,
+                target,
+                result,
+            }
+        }
+        PanelRequest::DiffPatches {
+            environment_id,
+            target,
+            paths,
+        } => {
+            let result = api
+                .environment_diff_patch(
+                    environment_id.clone(),
+                    EnvironmentDiffPatchRequest {
+                        target: target.clone(),
+                        paths: paths.clone(),
+                    },
+                )
+                .await;
+            PanelLoaded::DiffPatches {
+                environment_id,
+                target,
+                paths,
+                result,
+            }
+        }
+        PanelRequest::File {
+            environment_id,
+            path,
+            query,
+        } => {
+            let result = api
+                .environment_diff_file(environment_id.clone(), query)
+                .await;
+            PanelLoaded::File {
+                environment_id,
+                path,
+                result,
+            }
         }
     }
 }
@@ -445,6 +556,9 @@ where
         dispatch(state, &mut runner, action);
         while let Ok(action) = rx.try_recv() {
             dispatch(state, &mut runner, action);
+        }
+        if runner.take_redraw() {
+            terminal.clear().map_err(|error| anyhow!(error))?;
         }
     }
     Ok(())

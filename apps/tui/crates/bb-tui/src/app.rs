@@ -33,6 +33,7 @@ use crate::palette::{
     Palette, PaletteKind, PaletteLoaded, PaletteRequest, ResultPane, handle_palette_key,
     handle_pane_key,
 };
+use crate::panel::{GitAction, PanelLoaded, PanelRequest, RightPanel};
 use crate::prompt::PromptDraft;
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
 use crate::timeline::{LoadRequest, TimelineView};
@@ -146,6 +147,7 @@ pub enum Action {
         loaded: PaletteLoaded,
     },
     TypeaheadLoaded(TypeaheadLoaded),
+    PanelLoaded(PanelLoaded),
     AttachmentUploaded {
         target: ComposerTarget,
         path: std::path::PathBuf,
@@ -191,6 +193,11 @@ pub enum Effect {
     SavePaletteRecents(Vec<String>),
     Typeahead(TypeaheadRequest),
     Upload(UploadRequest),
+    Panel(PanelRequest),
+    EditFile {
+        path: String,
+        line: Option<u32>,
+    },
     Quit,
 }
 
@@ -230,6 +237,7 @@ pub struct AppState {
     pub enter_steers: bool,
     pub sidebar_visible: bool,
     pub panel_visible: bool,
+    pub panel: RightPanel,
     pub keymap: Keymap,
     pub read_only: bool,
     pub toasts: Vec<Toast>,
@@ -279,6 +287,7 @@ impl AppState {
             enter_steers: false,
             sidebar_visible: true,
             panel_visible: false,
+            panel: RightPanel::default(),
             keymap: Keymap::default(),
             read_only: false,
             toasts: Vec::new(),
@@ -497,6 +506,7 @@ impl AppState {
         effects.extend(self.ensure_thread_data(&thread_id));
         effects.extend(self.sync_timeline());
         self.sync_interactions();
+        effects.extend(self.sync_panel());
         effects
     }
 
@@ -661,7 +671,9 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             state.now_ms = now_ms;
             state.frame = state.frame.wrapping_add(1);
             state.toasts.retain(|toast| toast.expires_at > now);
-            composer_tick(state, now)
+            let mut effects = composer_tick(state, now);
+            effects.extend(state.panel_tick());
+            effects
         }
         Action::Snapshot(snapshot) => {
             state.attention = snapshot.sidebar.data.as_deref().map_or(0, attention_count);
@@ -679,10 +691,14 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             effects.extend(state.sync_timeline());
             state.sync_interactions();
             effects.extend(state.sync_new_thread());
+            effects.extend(state.sync_panel());
             effects
         }
         Action::MutationFinished { mutation, result } if mutation.is_interaction() => {
             interaction_mutation_finished(state, mutation, result)
+        }
+        Action::MutationFinished { mutation, result } if mutation.is_environment_action() => {
+            state.git_action_finished(&mutation, result)
         }
         Action::MutationFinished { mutation, result } if mutation.is_composer() => {
             composer_mutation_finished(state, mutation, result)
@@ -772,6 +788,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
         }
         Action::PaletteLoaded { generation, loaded } => state.palette_loaded(generation, loaded),
         Action::TypeaheadLoaded(loaded) => state.typeahead_loaded(loaded),
+        Action::PanelLoaded(loaded) => state.panel_loaded(loaded),
         Action::AttachmentUploaded {
             target,
             path,
@@ -820,6 +837,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     if state.palette.is_some() {
         return handle_palette_key(state, key);
     }
+    if state.panel.confirm.is_some() {
+        return crate::panel::handle_confirm_key(state, key);
+    }
     if state.mode == Mode::Normal
         && let Some(target) = state.active_composer_target()
         && let Some(effects) = crate::typeahead::handle_typeahead_key(state, &target, &key)
@@ -858,6 +878,15 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             crate::compose::handle_attachments_key(state, target, selected, key)
         }
         Mode::Normal if state.focus == Focus::NewThread => handle_new_thread_key(state, key),
+        Mode::Normal if state.focus == Focus::Panel && state.panel_visible => {
+            match crate::panel::handle_panel_key(state, key) {
+                Some(effects) => effects,
+                None => match state.keymap.lookup(&key) {
+                    Some(command) => run_command(state, command),
+                    None => Vec::new(),
+                },
+            }
+        }
         Mode::Normal if state.focus == Focus::Interaction => handle_interaction_key(state, key),
         Mode::Normal if state.focus == Focus::Composer && state.open_interaction_panel() => {
             state.focus = Focus::Interaction;
@@ -1126,10 +1155,25 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         }
         Command::PanelToggle => {
             state.panel_visible = !state.panel_visible;
-            if !state.panel_visible && state.focus == Focus::Panel {
-                state.focus = Focus::Main;
+            if !state.panel_visible {
+                state.panel.maximized = false;
+                if state.focus == Focus::Panel {
+                    state.focus = Focus::Main;
+                }
             }
+            return state.sync_panel();
         }
+        Command::DiffToggle => return state.toggle_diff_panel(),
+        Command::PanelNextTab => return state.cycle_panel_tab(true),
+        Command::PanelPreviousTab => return state.cycle_panel_tab(false),
+        Command::PanelFullScreen => {
+            state.toggle_panel_maximized();
+            return state.sync_panel();
+        }
+        Command::GitCommit => return state.git_command(GitAction::Commit),
+        Command::PullRequestMerge => return state.git_command(GitAction::Merge),
+        Command::PullRequestReady => return state.git_command(GitAction::MarkReady),
+        Command::PullRequestDraft => return state.git_command(GitAction::ConvertToDraft),
         Command::Reload => {
             state.toast("Reloading", ToastLevel::Info);
             return vec![Effect::RefreshAll];

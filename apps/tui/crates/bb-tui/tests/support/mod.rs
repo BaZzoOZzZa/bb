@@ -14,7 +14,10 @@ use bb_tui::new_thread::CreationConfig;
 use bb_tui::palette::FileSource;
 use bb_tui::platform::Platform;
 use bb_tui::ui;
-use bb_wire::environment::{CreateThreadEnvironmentArgs, Host};
+use bb_wire::environment::{
+    CreateThreadEnvironmentArgs, DiffPatchEntry, EnvironmentDiffFilesResponse,
+    EnvironmentDiffPatchRequest, EnvironmentDiffPatchResponse, EnvironmentDiffQuery, Host,
+};
 use bb_wire::interaction::PendingInteraction;
 use bb_wire::plugin::{
     PluginCliContribution, PluginCliRequest, PluginCliResult, PluginMentionProviderContribution,
@@ -259,6 +262,9 @@ pub struct MockApi {
     pub commands: Vec<ProviderCommand>,
     pub command_queries: Mutex<Vec<(String, ProjectCommandsQuery)>>,
     pub uploads: Mutex<Vec<AttachmentUpload>>,
+    pub diff_files: Option<EnvironmentDiffFilesResponse>,
+    pub diff_patch_requests: Mutex<Vec<(String, EnvironmentDiffPatchRequest)>>,
+    pub diff_queries: Mutex<Vec<(String, EnvironmentDiffQuery)>>,
 }
 
 impl MockApi {
@@ -299,6 +305,9 @@ impl MockApi {
             commands: Vec::new(),
             command_queries: Mutex::new(Vec::new()),
             uploads: Mutex::new(Vec::new()),
+            diff_files: None,
+            diff_patch_requests: Mutex::new(Vec::new()),
+            diff_queries: Mutex::new(Vec::new()),
         })
     }
 
@@ -549,9 +558,54 @@ impl Api for MockApi {
         self.uploads.lock().unwrap().push(upload);
         Box::pin(async move { Ok(response) })
     }
+
+    fn environment_diff_files(
+        &self,
+        environment_id: String,
+        query: EnvironmentDiffQuery,
+    ) -> ApiFuture<EnvironmentDiffFilesResponse> {
+        self.diff_queries
+            .lock()
+            .unwrap()
+            .push((environment_id, query));
+        let files = self.diff_files.clone();
+        Box::pin(async move { files.ok_or_else(|| "no diff".to_string()) })
+    }
+
+    fn environment_diff_patch(
+        &self,
+        environment_id: String,
+        request: EnvironmentDiffPatchRequest,
+    ) -> ApiFuture<EnvironmentDiffPatchResponse> {
+        let patches = request
+            .paths
+            .iter()
+            .map(|path| DiffPatchEntry {
+                path: path.clone(),
+                patch: format!(
+                    "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n keep\n+added in {path}\n"
+                ),
+                truncated: false,
+            })
+            .collect();
+        self.diff_patch_requests
+            .lock()
+            .unwrap()
+            .push((environment_id, request));
+        Box::pin(async move { Ok(EnvironmentDiffPatchResponse::Available { patches }) })
+    }
 }
 
 impl MockApi {
+    pub fn with_diff_files(
+        backend: Arc<FakeBackend>,
+        files: EnvironmentDiffFilesResponse,
+    ) -> Arc<Self> {
+        let mut api = Arc::try_unwrap(Self::new(backend)).ok().expect("fresh api");
+        api.diff_files = Some(files);
+        Arc::new(api)
+    }
+
     fn palette_paths(&self, query: &WorkspacePathsQuery) -> WorkspacePathListResponse {
         let needle = query.query.clone().unwrap_or_default().to_lowercase();
         WorkspacePathListResponse {
@@ -664,6 +718,7 @@ pub fn buffer_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
 
 #[derive(Default)]
 pub struct MockPlatform {
+    pub edited: Mutex<Vec<(String, Option<u32>)>>,
     pub copied: Mutex<Vec<String>>,
     pub opened: Mutex<Vec<String>>,
     pub drafts: Mutex<HashMap<String, String>>,
@@ -682,6 +737,11 @@ impl Platform for MockPlatform {
 
     fn load_draft(&self, thread_id: &str) -> Option<String> {
         self.drafts.lock().unwrap().get(thread_id).cloned()
+    }
+
+    fn edit_file(&self, path: &str, line: Option<u32>) -> Result<(), String> {
+        self.edited.lock().unwrap().push((path.to_owned(), line));
+        Ok(())
     }
 
     fn save_draft(&self, thread_id: &str, raw: Option<&str>) -> Result<(), String> {

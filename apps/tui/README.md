@@ -246,6 +246,76 @@ Not built yet: the web palette's settings and plugin-page entries, the
 archived-thread recents list, sorting threads by date, the thread-view
 submenu, and passing a working directory to plugin commands.
 
+## Right panel
+
+`i` shows or hides the right panel for the open thread, `D` opens it on the
+Diff tab and focuses it (again closes it), `>`/`<` switch tabs and `Z`
+maximizes it over the timeline. In the panel `1`/`2`/`3` pick the Info, Diff
+and File tabs, `r` reloads, and `Esc` returns from a preview, restores a
+maximized panel, then leaves the panel. The keys follow the web app's
+`panel.toggle`, `diff.toggle`, `panel.nextTab`, `panel.previousTab` and
+`panel.fullScreen.toggle` commands, so server keybinding overrides rebind them.
+The panel reloads when the server reports a work-status or git-refs change of
+the environment.
+
+**Info** follows the web thread-info card (`ThreadMetadataContent`): status,
+project, environment, machine (offline marker), directory, branch or detached
+HEAD, merge base and how far ahead/behind it the branch is, the pull request
+(number, state, checks/review next step, auto-merge), archived, provider,
+model and reasoning level, context-window usage, created and updated times,
+then the commits ahead of the merge base, the files they changed and the
+uncommitted files with line counts. Data comes from `GET
+/environments/:id/status` (with the environment's merge base branch, or the
+default branch when it has none) and `GET /environments/:id/pull-request`.
+`j`/`k` move, `Enter` opens a commit's diff, reveals a file in the diff, copies
+the directory or branch, or opens the pull request; `p` previews a file, `e`
+opens it in `$EDITOR`, `y` copies the SHA, path or URL.
+
+**Diff** lists `GET /environments/:id/diff/files` for a scope: all changes
+against the merge base, committed changes, uncommitted changes, or a single
+commit (`s`/`S` cycle through the ones that exist, like the web selector).
+With more than ten files every file starts collapsed (deleted files always
+do). Patches load lazily: the server's inline patches are used first, then
+`POST /environments/:id/diff/patch` fetches expanded `auto` files near the
+viewport in batches of at most 50 paths; `on_demand` files (over 500 changed
+lines or binary) load on `Enter`, `too_large` files (over 20 000 lines) are
+never fetched and can only be previewed. Only the visible rows are rendered,
+so a diff with hundreds of files opens as fast as the file list arrives. Lines
+show old/new line numbers, `+`/`-` with a tinted background and syntect
+highlighting.
+
+| Keys (Diff) | Action |
+|---|---|
+| `j`/`k`, `PgUp`/`PgDn`, `C-d`/`C-u`, `g`/`G` | Move |
+| `h`/`l`, `0` | Scroll sideways, back to the first column |
+| `Enter` | Fold / unfold the file, load an on-demand diff |
+| `n`/`N` | Next / previous hunk |
+| `]`/`[` | Next / previous file |
+| `a` | Fold / unfold all files |
+| `s`/`S` | Next / previous scope |
+| `p` | Preview the file at the selected line (`GET /environments/:id/diff/file`, new side; old side for deleted files) |
+| `e` | Open the file at the selected line in `$VISUAL`/`$EDITOR` |
+| `y` | Copy the line or the path |
+
+**File** shows the previewed file with line numbers and highlighting (first
+512 KiB; binary files are described, not shown). `e` opens it in the editor:
+the TUI leaves the alternate screen, runs `$VISUAL`, `$EDITOR` or `vi` with
+`+line` (or `--goto path:line` for VS Code-style editors) and redraws when the
+editor exits. This only works when the workspace path exists on this machine.
+
+Git actions use `POST /environments/:id/actions` and always ask for
+confirmation (`y`/`Enter` confirm, `Esc` cancel): `C` commits all uncommitted
+changes (the server stages them and writes the commit message), `M` merges the
+open pull request (`←`/`→` or `1`-`3` pick squash, merge or rebase), `R` marks
+a draft pull request ready and `W` converts an open one to draft. They are also
+in the command palette. `--read-only` refuses them; everything else in the
+panel only reads (the patch batch request is a `POST` but changes nothing).
+
+Not built yet: choosing another merge base branch, the file filter, context
+expansion around hunks, image previews, forks and thread-storage sections,
+showing cost (the server does not report it), and the web's push/create-PR
+flows (the actions API has no such actions).
+
 ## Server connection (`bb-client`)
 
 The server URL is resolved in this order: `--server-url`, `BB_SERVER_URL`,
@@ -269,6 +339,10 @@ cargo test -p bb-client --test live -- --ignored --nocapture
 cargo test -p bb-tui --test live -- --ignored --nocapture
 ```
 
+`renders_live_panel_read_only` opens up to `BB_TUI_LIVE_THREADS` (default 5)
+threads with an environment, loads their Info, Diff (file list and inline
+patches only) and the preview of the first changed file through the GET
+endpoints, and never runs git actions, patch batches or an editor.
 `renders_live_mentions_read_only` opens a thread with an environment, types
 an `@` mention after Cyrillic and emoji text, inserts the first result as a
 chip, opens the `/` command list and prints the draft JSON; it never sends,

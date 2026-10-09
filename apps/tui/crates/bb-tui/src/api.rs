@@ -3,6 +3,12 @@ use std::pin::Pin;
 
 use bb_client::BbClient;
 use bb_wire::common::JsonValue;
+use bb_wire::environment::{
+    EnvironmentActionRequest, EnvironmentActionResponse, EnvironmentDiffFileQuery,
+    EnvironmentDiffFileResponse, EnvironmentDiffFilesResponse, EnvironmentDiffPatchRequest,
+    EnvironmentDiffPatchResponse, EnvironmentDiffQuery, EnvironmentPullRequestResponse,
+    EnvironmentStatusQuery, EnvironmentStatusResponse,
+};
 use bb_wire::interaction::{InteractionResolution, RespondPluginInteractionRequest};
 use bb_wire::project::{ProjectBranchesQuery, ProjectBranchesResponse, PromptHistoryQuery};
 use bb_wire::prompt::{
@@ -120,6 +126,11 @@ pub enum Mutation {
         thread_id: String,
         interaction_id: String,
     },
+    EnvironmentAction {
+        thread_id: String,
+        environment_id: String,
+        request: EnvironmentActionRequest,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +138,7 @@ pub enum MutationReply {
     Done,
     Delivery(SendMessageResponse),
     Lease { lease_ms: u64 },
+    EnvironmentAction(Box<EnvironmentActionResponse>),
 }
 
 impl Mutation {
@@ -149,7 +161,8 @@ impl Mutation {
             | Self::Stop { thread_id }
             | Self::ResolveInteraction { thread_id, .. }
             | Self::RespondInteraction { thread_id, .. }
-            | Self::CancelInteraction { thread_id, .. } => thread_id,
+            | Self::CancelInteraction { thread_id, .. }
+            | Self::EnvironmentAction { thread_id, .. } => thread_id,
         }
     }
 
@@ -187,6 +200,10 @@ impl Mutation {
         }
     }
 
+    pub fn is_environment_action(&self) -> bool {
+        matches!(self, Self::EnvironmentAction { .. })
+    }
+
     pub fn is_composer(&self) -> bool {
         matches!(
             self,
@@ -219,6 +236,12 @@ impl Mutation {
             Self::Stop { .. } => "Stopping",
             Self::ResolveInteraction { .. } | Self::RespondInteraction { .. } => "Answered",
             Self::CancelInteraction { .. } => "Request cancelled",
+            Self::EnvironmentAction { request, .. } => match request {
+                EnvironmentActionRequest::Commit => "Commit created",
+                EnvironmentActionRequest::PullRequestReady => "Pull request marked ready",
+                EnvironmentActionRequest::PullRequestMerge { .. } => "Pull request merged",
+                EnvironmentActionRequest::PullRequestDraft => "Pull request converted to draft",
+            },
         }
     }
 
@@ -241,6 +264,12 @@ impl Mutation {
             Self::Stop { .. } => "stop",
             Self::ResolveInteraction { .. } | Self::RespondInteraction { .. } => "answer request",
             Self::CancelInteraction { .. } => "cancel request",
+            Self::EnvironmentAction { request, .. } => match request {
+                EnvironmentActionRequest::Commit => "commit",
+                EnvironmentActionRequest::PullRequestReady => "mark the pull request ready",
+                EnvironmentActionRequest::PullRequestMerge { .. } => "merge the pull request",
+                EnvironmentActionRequest::PullRequestDraft => "convert the pull request to draft",
+            },
         }
     }
 
@@ -331,6 +360,40 @@ pub trait Api: Send + Sync + 'static {
     }
     fn upload_attachment(&self, _upload: AttachmentUpload) -> ApiFuture<UploadedPromptAttachment> {
         unsupported("attachment upload")
+    }
+    fn environment_status(
+        &self,
+        _environment_id: String,
+        _query: EnvironmentStatusQuery,
+    ) -> ApiFuture<EnvironmentStatusResponse> {
+        unsupported("workspace status")
+    }
+    fn environment_pull_request(
+        &self,
+        _environment_id: String,
+    ) -> ApiFuture<EnvironmentPullRequestResponse> {
+        unsupported("pull request status")
+    }
+    fn environment_diff_files(
+        &self,
+        _environment_id: String,
+        _query: EnvironmentDiffQuery,
+    ) -> ApiFuture<EnvironmentDiffFilesResponse> {
+        unsupported("git diff")
+    }
+    fn environment_diff_patch(
+        &self,
+        _environment_id: String,
+        _request: EnvironmentDiffPatchRequest,
+    ) -> ApiFuture<EnvironmentDiffPatchResponse> {
+        unsupported("git diff patches")
+    }
+    fn environment_diff_file(
+        &self,
+        _environment_id: String,
+        _query: EnvironmentDiffFileQuery,
+    ) -> ApiFuture<EnvironmentDiffFileResponse> {
+        unsupported("diff file contents")
     }
 }
 
@@ -478,6 +541,13 @@ async fn run_mutation(
             .cancel_interaction(thread_id, interaction_id)
             .await
             .map(done)?,
+        Mutation::EnvironmentAction {
+            environment_id,
+            request,
+            ..
+        } => MutationReply::EnvironmentAction(Box::new(
+            client.environment_action(environment_id, request).await?,
+        )),
     })
 }
 
@@ -737,6 +807,74 @@ impl Api for BbClient {
                     upload.mime_type.as_deref(),
                     upload.bytes,
                 )
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+    fn environment_status(
+        &self,
+        environment_id: String,
+        query: EnvironmentStatusQuery,
+    ) -> ApiFuture<EnvironmentStatusResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .environment_status(&environment_id, &query)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn environment_pull_request(
+        &self,
+        environment_id: String,
+    ) -> ApiFuture<EnvironmentPullRequestResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .environment_pull_request(&environment_id)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn environment_diff_files(
+        &self,
+        environment_id: String,
+        query: EnvironmentDiffQuery,
+    ) -> ApiFuture<EnvironmentDiffFilesResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .environment_diff_files(&environment_id, &query)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn environment_diff_patch(
+        &self,
+        environment_id: String,
+        request: EnvironmentDiffPatchRequest,
+    ) -> ApiFuture<EnvironmentDiffPatchResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .environment_diff_patch(&environment_id, &request)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn environment_diff_file(
+        &self,
+        environment_id: String,
+        query: EnvironmentDiffFileQuery,
+    ) -> ApiFuture<EnvironmentDiffFileResponse> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .environment_diff_file(&environment_id, &query)
                 .await
                 .map_err(|error| error.to_string())
         })

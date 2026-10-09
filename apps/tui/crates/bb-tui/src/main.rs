@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
         &mut state,
         store,
         api,
-        Arc::new(SystemPlatform::new()),
+        Arc::new(SystemPlatform::new().with_keyboard_enhancement(enhanced)),
         terminal_events(),
     )
     .await;

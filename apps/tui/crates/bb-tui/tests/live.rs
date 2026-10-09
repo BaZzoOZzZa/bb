@@ -969,3 +969,176 @@ async fn renders_live_mentions_read_only() {
     let raw = composer.persisted_draft().serialize();
     println!("draft json: {raw:?}");
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only GET requests only"]
+async fn renders_live_panel_read_only() {
+    use bb_tui::app::Effect;
+    use bb_tui::panel::{PanelRequest, PanelTab};
+    use bb_tui::runtime::run_panel_request;
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let store = Store::spawn(
+        Arc::new(client.clone()),
+        NoRealtime,
+        None,
+        StoreConfig::default(),
+    );
+    let _interest = store.watch_sidebar();
+    let mut rx = store.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while rx.borrow_and_update().sidebar.data.is_none() {
+            rx.changed().await.expect("store");
+        }
+    })
+    .await
+    .expect("sidebar loaded");
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    state.read_only = true;
+    update(&mut state, Action::Snapshot(store.snapshot()));
+
+    async fn drive(state: &mut AppState, client: &BbClient, effects: Vec<Effect>) -> usize {
+        let mut skipped = 0;
+        let mut pending = effects;
+        while !pending.is_empty() {
+            for effect in std::mem::take(&mut pending) {
+                assert!(
+                    !matches!(effect, Effect::Mutate(_) | Effect::EditFile { .. }),
+                    "live test must not mutate or spawn an editor: {effect:?}"
+                );
+                if let Effect::Panel(request) = effect {
+                    if matches!(request, PanelRequest::DiffPatches { .. }) {
+                        skipped += 1;
+                        continue;
+                    }
+                    let loaded = run_panel_request(client, request).await;
+                    pending.extend(update(state, Action::PanelLoaded(loaded)));
+                }
+            }
+        }
+        skipped
+    }
+    fn print(state: &AppState, label: &str) {
+        if std::env::var_os("BB_TUI_LIVE_PRINT").is_none() {
+            return;
+        }
+        println!("--- {label}");
+        for line in render_lines(state, 160, 40) {
+            println!("{line}");
+        }
+    }
+
+    let limit: usize = std::env::var("BB_TUI_LIVE_THREADS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(5);
+    let candidates: Vec<String> = state
+        .snapshot
+        .sidebar_threads()
+        .filter(|entry| entry.thread.environment_id.is_some() && !entry.thread.is_archived())
+        .map(|entry| entry.thread.id.clone())
+        .take(limit)
+        .collect();
+    for thread_id in candidates {
+        let interest = store.watch_thread(&thread_id);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if rx
+                    .borrow_and_update()
+                    .thread(&thread_id)
+                    .is_some_and(|detail| detail.environment.is_some())
+                {
+                    break;
+                }
+                rx.changed().await.expect("store");
+            }
+        })
+        .await
+        .expect("thread detail");
+        update(&mut state, Action::Snapshot(store.snapshot()));
+        let index = state
+            .rows
+            .iter()
+            .position(|row| row.thread().is_some_and(|thread| thread.id == thread_id));
+        let Some(index) = index else {
+            drop(interest);
+            continue;
+        };
+        state.selected = index;
+        state.focus = bb_tui::app::Focus::Sidebar;
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Enter)));
+        drive(&mut state, &client, effects).await;
+        if !state.panel_visible {
+            let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('i'))));
+            drive(&mut state, &client, effects).await;
+        }
+        state.panel.tab = PanelTab::Info;
+        let entries = state.info_entries();
+        println!(
+            "{thread_id}: status {:?}, info rows {}",
+            state.panel.status.loaded().map(|status| match status {
+                bb_tui::panel::StatusView::Available(_) => "available".to_owned(),
+                bb_tui::panel::StatusView::NotApplicable(message)
+                | bb_tui::panel::StatusView::Unavailable(message) => message.clone(),
+            }),
+            entries.len()
+        );
+        assert!(!state.panel.status.is_failed(), "{:?}", state.panel.status);
+        print(&state, &format!("{thread_id} info"));
+
+        let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('D'))));
+        let skipped = drive(&mut state, &client, effects).await;
+        let started = Instant::now();
+        if let Some(document) = state.panel.document() {
+            let loaded = document
+                .files
+                .iter()
+                .filter(|file| matches!(file.patch, bb_tui::git_diff::PatchState::Loaded(_)))
+                .count();
+            println!(
+                "  diff {}: {} files, {} rows, {loaded} patches inline, {skipped} patch batches not fetched",
+                state.panel.scope.label(),
+                document.files.len(),
+                document.row_count(),
+            );
+        } else {
+            println!("  diff: {:?}", state.panel.diff.is_failed());
+        }
+        print(&state, &format!("{thread_id} diff"));
+        let _ = render_lines(&state, 160, 40);
+        println!("  render {:?}", started.elapsed());
+        if state
+            .panel
+            .document()
+            .is_some_and(|document| !document.files.is_empty())
+        {
+            let effects = update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('p'))));
+            drive(&mut state, &client, effects).await;
+            if let Some(preview) = &state.panel.preview {
+                println!(
+                    "  preview {}: {} lines, failed {}",
+                    preview.path,
+                    preview.line_count(),
+                    preview.body.is_failed()
+                );
+            }
+            print(&state, &format!("{thread_id} file"));
+            update(&mut state, Action::Key(KeyEvent::from(KeyCode::Esc)));
+        }
+        update(&mut state, Action::Key(KeyEvent::from(KeyCode::Char('D'))));
+        drop(interest);
+    }
+}

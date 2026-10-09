@@ -242,7 +242,7 @@ pub fn render_palette(palette: &Palette, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), list);
 }
 
-fn slice_spans(spans: &[Span<'static>], skip: usize, width: usize) -> Vec<Span<'static>> {
+pub fn slice_spans(spans: &[Span<'static>], skip: usize, width: usize) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut column = 0;
     let mut used = 0;
