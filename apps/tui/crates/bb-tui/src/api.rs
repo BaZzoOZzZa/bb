@@ -9,7 +9,9 @@ use bb_wire::environment::{
     EnvironmentDiffPatchResponse, EnvironmentDiffQuery, EnvironmentPullRequestResponse,
     EnvironmentStatusQuery, EnvironmentStatusResponse,
 };
-use bb_wire::interaction::{InteractionResolution, RespondPluginInteractionRequest};
+use bb_wire::interaction::{
+    InteractionResolution, PendingInteraction, RespondPluginInteractionRequest,
+};
 use bb_wire::project::{ProjectBranchesQuery, ProjectBranchesResponse, PromptHistoryQuery};
 use bb_wire::prompt::{
     ProjectExecutionDefaults, PromptHistoryEntry, ResolvedThreadExecutionOptions,
@@ -394,6 +396,10 @@ pub trait Api: Send + Sync + 'static {
         _query: EnvironmentDiffFileQuery,
     ) -> ApiFuture<EnvironmentDiffFileResponse> {
         unsupported("diff file contents")
+    }
+
+    fn thread_interactions(&self, _thread_id: String) -> ApiFuture<Vec<PendingInteraction>> {
+        unsupported("pending interactions")
     }
 }
 
@@ -875,6 +881,16 @@ impl Api for BbClient {
         Box::pin(async move {
             client
                 .environment_diff_file(&environment_id, &query)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    fn thread_interactions(&self, thread_id: String) -> ApiFuture<Vec<PendingInteraction>> {
+        let client = self.clone();
+        Box::pin(async move {
+            client
+                .thread_interactions(&thread_id)
                 .await
                 .map_err(|error| error.to_string())
         })

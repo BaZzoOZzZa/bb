@@ -8,7 +8,9 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 const MAX_HIGHLIGHT_BYTES: usize = 200_000;
-const THEME: &str = "base16-ocean.dark";
+pub const DEFAULT_THEME: &str = "base16-ocean.dark";
+
+static THEME_NAME: OnceLock<String> = OnceLock::new();
 
 struct Highlighter {
     syntaxes: SyntaxSet,
@@ -21,7 +23,7 @@ fn highlighter() -> &'static Highlighter {
         let mut themes = ThemeSet::load_defaults();
         let theme = themes
             .themes
-            .remove(THEME)
+            .remove(THEME_NAME.get().map_or(DEFAULT_THEME, String::as_str))
             .or_else(|| themes.themes.into_values().next())
             .unwrap_or_default();
         Highlighter {
@@ -29,6 +31,25 @@ fn highlighter() -> &'static Highlighter {
             theme,
         }
     })
+}
+
+pub fn theme_names() -> Vec<String> {
+    ThemeSet::load_defaults().themes.into_keys().collect()
+}
+
+pub fn set_theme(name: &str) -> Result<(), String> {
+    let names = theme_names();
+    if !names.iter().any(|known| known == name) {
+        return Err(format!(
+            "unknown theme `{name}`; available: {}",
+            names.join(", ")
+        ));
+    }
+    match THEME_NAME.set(name.to_owned()) {
+        Ok(()) => Ok(()),
+        Err(_) if THEME_NAME.get().map(String::as_str) == Some(name) => Ok(()),
+        Err(_) => Err("the theme is already set".into()),
+    }
 }
 
 fn alias(lang: &str) -> &str {

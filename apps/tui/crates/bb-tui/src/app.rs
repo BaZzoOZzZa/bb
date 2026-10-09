@@ -82,11 +82,15 @@ pub enum Mode {
         target: ComposerTarget,
         selected: usize,
     },
+    Notifications {
+        selected: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastLevel {
     Info,
+    Attention,
     Error,
 }
 
@@ -153,6 +157,16 @@ pub enum Action {
         path: std::path::PathBuf,
         result: Result<UploadedPromptAttachment, String>,
     },
+    PluginSignal {
+        plugin_id: String,
+        channel: String,
+        payload: bb_wire::common::JsonValue,
+    },
+    TerminalFocus(bool),
+    NotificationInteractions {
+        thread_id: String,
+        result: Result<Vec<bb_wire::interaction::PendingInteraction>, String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +212,9 @@ pub enum Effect {
         path: String,
         line: Option<u32>,
     },
+    Alert(crate::notifications::Alert),
+    SetTitle(String),
+    FetchNotificationInteractions(String),
     Quit,
 }
 
@@ -244,6 +261,7 @@ pub struct AppState {
     pub last_archived: Option<String>,
     pub attention: usize,
     pub waiting: usize,
+    pub notifications: crate::notifications::Notifications,
     pub clock: Instant,
     pub now_ms: i64,
     pub frame: u64,
@@ -294,6 +312,7 @@ impl AppState {
             last_archived: None,
             attention: 0,
             waiting: 0,
+            notifications: crate::notifications::Notifications::default(),
             clock: now,
             now_ms,
             frame: 0,
@@ -385,7 +404,7 @@ impl AppState {
     pub fn toast(&mut self, message: impl Into<String>, level: ToastLevel) {
         let ttl = match level {
             ToastLevel::Info => INFO_TOAST_TTL,
-            ToastLevel::Error => ERROR_TOAST_TTL,
+            ToastLevel::Attention | ToastLevel::Error => ERROR_TOAST_TTL,
         };
         self.toasts.push(Toast {
             message: message.into(),
@@ -479,7 +498,7 @@ impl AppState {
         self.focus = panes[next];
     }
 
-    pub(crate) fn open(&mut self, thread_id: String) -> Vec<Effect> {
+    pub fn open(&mut self, thread_id: String) -> Vec<Effect> {
         let mut effects = Vec::new();
         self.close_new_thread();
         if self.open_thread.as_deref() != Some(thread_id.as_str()) {
@@ -499,6 +518,7 @@ impl AppState {
             }));
         }
         self.select_key(&RowKey::Thread(thread_id.clone()));
+        self.notifications.mark_thread_read(&thread_id);
         self.timelines
             .entry(thread_id.clone())
             .or_insert_with(|| TimelineView::new(thread_id.clone()));
@@ -673,6 +693,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             state.toasts.retain(|toast| toast.expires_at > now);
             let mut effects = composer_tick(state, now);
             effects.extend(state.panel_tick());
+            effects.extend(state.notifications_tick());
             effects
         }
         Action::Snapshot(snapshot) => {
@@ -682,7 +703,8 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
                 .filter(|entry| entry.has_pending_interaction && !entry.thread.is_archived())
                 .count();
             let first_load = state.snapshot.sidebar.data.is_none();
-            state.snapshot = snapshot;
+            let previous = std::mem::replace(&mut state.snapshot, snapshot);
+            state.notifications_snapshot(&previous);
             state.rebuild_rows();
             if first_load && state.snapshot.sidebar.data.is_some() {
                 state.select_first_thread();
@@ -692,6 +714,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             state.sync_interactions();
             effects.extend(state.sync_new_thread());
             effects.extend(state.sync_panel());
+            effects.extend(state.sync_title());
             effects
         }
         Action::MutationFinished { mutation, result } if mutation.is_interaction() => {
@@ -797,6 +820,18 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             state.attachment_uploaded(target, path, result);
             Vec::new()
         }
+        Action::PluginSignal {
+            plugin_id,
+            channel,
+            payload,
+        } => state.plugin_signal(&plugin_id, &channel, payload),
+        Action::TerminalFocus(focused) => {
+            state.notifications.terminal_focused = Some(focused);
+            Vec::new()
+        }
+        Action::NotificationInteractions { thread_id, result } => {
+            state.notification_interactions_loaded(thread_id, result)
+        }
     }
 }
 
@@ -876,6 +911,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         }
         Mode::Attachments { target, selected } => {
             crate::compose::handle_attachments_key(state, target, selected, key)
+        }
+        Mode::Notifications { selected } => {
+            crate::notifications::handle_notifications_key(state, selected, key)
         }
         Mode::Normal if state.focus == Focus::NewThread => handle_new_thread_key(state, key),
         Mode::Normal if state.focus == Focus::Panel && state.panel_visible => {
@@ -1131,6 +1169,7 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             }
         }
         Command::NextPending => return state.jump_to_pending(),
+        Command::Notifications => state.open_notifications(),
         Command::PaletteOpen => return state.open_palette(PaletteKind::Commands),
         Command::QuickOpen => return state.open_palette(PaletteKind::Files),
         Command::SearchThreads => return state.open_palette(PaletteKind::Threads),

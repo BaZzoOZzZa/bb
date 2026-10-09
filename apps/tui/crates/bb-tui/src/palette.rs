@@ -424,6 +424,7 @@ const COMMAND_ENTRIES: &[CommandEntry] = &[
         "Answer the next waiting request",
         false,
     ),
+    entry(Command::Notifications, LAYOUT, "Show notifications", false),
     entry(Command::Reload, LAYOUT, "Reload data", false),
     entry(Command::SidebarToggle, LAYOUT, "Toggle sidebar", false),
     entry(Command::PanelToggle, LAYOUT, "Toggle panel", false),

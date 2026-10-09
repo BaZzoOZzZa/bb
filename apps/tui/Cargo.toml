@@ -44,6 +44,7 @@ clap = { version = "4", features = ["derive", "env"] }
 pretty_assertions = "1"
 serde_urlencoded = "0.7"
 tempfile = "3"
+toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

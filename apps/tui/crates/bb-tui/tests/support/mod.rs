@@ -317,6 +317,18 @@ impl MockApi {
 }
 
 impl Api for MockApi {
+    fn thread_interactions(&self, thread_id: String) -> ApiFuture<Vec<PendingInteraction>> {
+        let list = self
+            .backend
+            .interactions
+            .lock()
+            .unwrap()
+            .get(&thread_id)
+            .cloned()
+            .unwrap_or_default();
+        Box::pin(async move { Ok(list) })
+    }
+
     fn mutate(&self, mutation: Mutation) -> ApiFuture<MutationReply> {
         self.mutations.lock().unwrap().push(mutation.clone());
         if self.fail {
@@ -718,6 +730,8 @@ pub fn buffer_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
 
 #[derive(Default)]
 pub struct MockPlatform {
+    pub alerts: Mutex<Vec<bb_tui::notifications::Alert>>,
+    pub titles: Mutex<Vec<String>>,
     pub edited: Mutex<Vec<(String, Option<u32>)>>,
     pub copied: Mutex<Vec<String>>,
     pub opened: Mutex<Vec<String>>,
@@ -741,6 +755,16 @@ impl Platform for MockPlatform {
 
     fn edit_file(&self, path: &str, line: Option<u32>) -> Result<(), String> {
         self.edited.lock().unwrap().push((path.to_owned(), line));
+        Ok(())
+    }
+
+    fn alert(&self, alert: &bb_tui::notifications::Alert) -> Result<(), String> {
+        self.alerts.lock().unwrap().push(alert.clone());
+        Ok(())
+    }
+
+    fn set_title(&self, title: &str) -> Result<(), String> {
+        self.titles.lock().unwrap().push(title.to_owned());
         Ok(())
     }
 

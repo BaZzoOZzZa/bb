@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
+use bb_client::RealtimeEvent;
 use bb_store::{Interest, ResourceKey, Store};
 use crossterm::event::{Event, KeyEventKind};
 use futures::{Stream, StreamExt};
@@ -244,6 +245,24 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                 if let Err(error) = self.platform.save_palette_recents(&recents) {
                     tracing::debug!(%error, "failed to save palette recents");
                 }
+            }
+            Effect::Alert(alert) => {
+                if let Err(error) = self.platform.alert(&alert) {
+                    tracing::debug!(%error, "notification alert failed");
+                }
+            }
+            Effect::SetTitle(title) => {
+                if let Err(error) = self.platform.set_title(&title) {
+                    tracing::debug!(%error, "failed to set the terminal title");
+                }
+            }
+            Effect::FetchNotificationInteractions(thread_id) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = api.thread_interactions(thread_id.clone()).await;
+                    let _ = tx.send(Action::NotificationInteractions { thread_id, result });
+                });
             }
             Effect::Quit => {}
         }
@@ -498,6 +517,8 @@ pub fn terminal_action(event: std::io::Result<Event>) -> Option<Action> {
         Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => Some(Action::Key(key)),
         Ok(Event::Resize(_, _)) => Some(Action::Resize),
         Ok(Event::Paste(text)) => Some(Action::Paste(text)),
+        Ok(Event::FocusGained) => Some(Action::TerminalFocus(true)),
+        Ok(Event::FocusLost) => Some(Action::TerminalFocus(false)),
         _ => None,
     }
 }
@@ -505,6 +526,31 @@ pub fn terminal_action(event: std::io::Result<Event>) -> Option<Action> {
 pub fn terminal_events() -> impl Stream<Item = Action> + Unpin {
     crossterm::event::EventStream::new()
         .filter_map(|event| std::future::ready(terminal_action(event)))
+}
+
+pub fn realtime_actions(
+    events: tokio::sync::broadcast::Receiver<RealtimeEvent>,
+) -> impl Stream<Item = Action> + Unpin {
+    Box::pin(futures::stream::unfold(events, |mut events| async move {
+        loop {
+            match events.recv().await {
+                Ok(RealtimeEvent::PluginSignal {
+                    plugin_id,
+                    channel,
+                    payload,
+                }) => {
+                    let action = Action::PluginSignal {
+                        plugin_id,
+                        channel,
+                        payload,
+                    };
+                    return Some((action, events));
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }))
 }
 
 pub async fn run<B, A, P, S>(
@@ -528,7 +574,7 @@ where
     let mut runner = EffectRunner::new(store, api, platform, tx);
     runner.load_keymap();
     let initial = snapshots.borrow_and_update().clone();
-    update(state, Action::Snapshot(initial));
+    dispatch(state, &mut runner, Action::Snapshot(initial));
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut events_open = true;

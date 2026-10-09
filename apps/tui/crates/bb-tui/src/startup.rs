@@ -37,11 +37,17 @@ pub struct Args {
     #[arg(
         long,
         env = "BB_TUI_SUBMIT_KEY",
-        default_value = "enter",
         value_parser = parse_submit_key,
-        help = "Composer send key: `enter` (Shift/Alt+Enter or Ctrl+J for a new line) or `ctrl-enter` (Enter inserts a new line, Alt/Ctrl+Enter sends)"
+        help = "Composer send key: `enter` (Shift/Alt+Enter or Ctrl+J for a new line) or `ctrl-enter` (Enter inserts a new line, Alt/Ctrl+Enter sends); overrides `submit_key` in config.toml"
     )]
-    pub submit_key: SubmitKey,
+    pub submit_key: Option<SubmitKey>,
+    #[arg(
+        long = "config",
+        env = "BB_TUI_CONFIG",
+        value_name = "PATH",
+        help = "Settings file (default: ~/.config/bb-tui/config.toml)"
+    )]
+    pub config_file: Option<PathBuf>,
     #[command(subcommand)]
     pub command: Option<TopCommand>,
 }
@@ -50,6 +56,8 @@ pub struct Args {
 pub enum TopCommand {
     #[command(subcommand, about = "Manage bb connect profiles")]
     Connect(ConnectCommand),
+    #[command(about = "Print the settings file path and the effective settings")]
+    Config,
 }
 
 #[derive(Debug, Subcommand)]
@@ -79,6 +87,26 @@ pub fn config_dir(args: &Args) -> Result<PathBuf> {
         .clone()
         .or_else(default_config_dir)
         .ok_or_else(|| anyhow!("could not determine the config directory"))
+}
+
+pub fn config_file(args: &Args) -> Option<PathBuf> {
+    args.config_file
+        .clone()
+        .or_else(|| crate::config::default_path(args.config_dir.as_deref()))
+}
+
+pub fn run_config_command(args: &Args) -> Result<()> {
+    let loaded = crate::config::load(config_file(args));
+    match &loaded.path {
+        Some(path) if path.exists() => println!("# {}", path.display()),
+        Some(path) => println!("# {} (not created; defaults shown)", path.display()),
+        None => println!("# no config directory; defaults shown"),
+    }
+    for warning in &loaded.warnings {
+        eprintln!("warning: {warning}");
+    }
+    print!("{}", crate::config::render(&loaded.config));
+    Ok(())
 }
 
 pub fn find_profile<'a>(list: &'a ProfileList, query: &str) -> Option<&'a ServerProfile> {

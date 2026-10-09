@@ -66,6 +66,7 @@ pub enum Command {
     PullRequestMerge,
     PullRequestReady,
     PullRequestDraft,
+    Notifications,
 }
 
 impl Command {
@@ -94,6 +95,7 @@ impl Command {
         Command::QueueList,
         Command::ToggleSubmitMode,
         Command::NextPending,
+        Command::Notifications,
         Command::NewThread,
         Command::NewThreadInEnvironment,
         Command::ModelPicker,
@@ -234,6 +236,7 @@ impl Command {
             Self::QueueList => "Queued messages (edit, delete, send now)".into(),
             Self::ToggleSubmitMode => "Toggle Enter: queue / steer while running".into(),
             Self::NextPending => "Answer the next waiting request".into(),
+            Self::Notifications => "Notification center".into(),
             Self::NewThread => "New thread".into(),
             Self::NewThreadInEnvironment => "New thread in this thread's environment".into(),
             Self::PaletteOpen => "Command palette".into(),
@@ -439,6 +442,7 @@ impl Default for Keymap {
             (KeyChord::alt('t'), Command::ToggleSubmitMode),
             (KeyChord::ch('w'), Command::NextPending),
             (KeyChord::alt('w'), Command::NextPending),
+            (KeyChord::ch('!'), Command::Notifications),
             (KeyChord::ch('n'), Command::NewThread),
             (KeyChord::ch('N'), Command::NewThreadInEnvironment),
             (KeyChord::ctrl('k'), Command::PaletteOpen),

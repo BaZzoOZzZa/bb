@@ -143,6 +143,7 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     if let Some(confirm) = &state.panel.confirm {
         crate::panel_ui::render_confirm(confirm, frame, body);
     }
+    crate::notifications_ui::render_notifications(state, frame, body);
 }
 
 fn render_open_picker(targets: &[String], selected: usize, frame: &mut Frame, area: Rect) {
@@ -675,6 +676,9 @@ fn hints(state: &AppState) -> String {
         }
         Mode::AttachPrompt { .. } => "Enter attach · Tab complete path · Esc cancel".into(),
         Mode::Attachments { .. } => "j/k select · d/x/Del remove · Esc close".into(),
+        Mode::Notifications { .. } => {
+            "Enter open thread · j/k move · d delete · C clear all · Esc close".into()
+        }
         Mode::Normal if state.typeahead_visible() => {
             "↑/↓ select · Enter/Tab insert · Esc dismiss".into()
         }
@@ -755,6 +759,29 @@ fn render_status(state: &AppState, frame: &mut Frame, area: Rect) {
             format!("⚑ {}", state.attention),
             Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         ));
+    } else if state
+        .snapshot
+        .attention
+        .data
+        .as_ref()
+        .is_some_and(|attention| attention.has_attention)
+    {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "⚑",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let unread = state.notifications.unread();
+    if unread > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            format!(
+                "{} {unread} new",
+                first_label(state, Command::Notifications)
+            ),
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
     }
     let used: usize = spans.iter().map(|span| span.content.width()).sum();
     let hint = hints(state);
@@ -788,6 +815,7 @@ fn render_toasts(state: &AppState, frame: &mut Frame, area: Rect) {
         };
         let style = match toast.level {
             ToastLevel::Info => Style::new().bg(Color::Blue).fg(Color::White),
+            ToastLevel::Attention => Style::new().bg(Color::Yellow).fg(Color::Black),
             ToastLevel::Error => Style::new().bg(Color::Red).fg(Color::White),
         };
         frame.render_widget(Clear, rect);

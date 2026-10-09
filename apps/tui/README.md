@@ -87,7 +87,7 @@ mode and context-window usage.
 
 Unsent drafts are saved per thread under `$XDG_STATE_HOME/bb-tui/drafts`
 (`~/.local/state/bb-tui/drafts`) in the web app's draft format.
-`--submit-key ctrl-enter` (or `BB_TUI_SUBMIT_KEY=ctrl-enter`) makes Enter
+`--submit-key ctrl-enter` (or `BB_TUI_SUBMIT_KEY=ctrl-enter`, or `submit_key` in the settings file) makes Enter
 insert a new line and `Alt-Enter`/`C-Enter` send. Bracketed paste and the kitty
 keyboard protocol are enabled when the terminal supports them.
 
@@ -316,6 +316,92 @@ expansion around hunks, image previews, forks and thread-storage sections,
 showing cost (the server does not report it), and the web's push/create-PR
 flows (the actions API has no such actions).
 
+## Notifications
+
+bb-tui watches the thread list and notifies you when a thread in the
+background needs you, following the push-notifications plugin's rules
+(`plugins/push-notifications/sender.ts`):
+
+| Event | Detected when | Body |
+|---|---|---|
+| Needs input | a thread gets a pending request | the request, e.g. `Approve command: cargo test` or the question (`GET /threads/:id/interactions`) |
+| Error | a thread's status becomes `error` | `The thread hit an error` |
+| Turn finished | a top-level thread goes from running to `idle` | `Finished and waiting for you` |
+
+Events on one thread are coalesced for 2 seconds and only the most important
+one is shown (needs input, then error, then finished). Nothing is shown when
+the thread was read in the meantime (`lastReadAt` at or after the attention
+time), when it is archived, deleted or hidden, or when it is the thread you
+have open and the terminal has focus. Terminal focus comes from focus
+reporting (`CSI ? 1004 h`); terminals that do not report it count as focused.
+
+Signals from the push-notifications plugin (`plugin-signal` with channel
+`notification`, sent when its web or desktop channel is enabled) are shown
+too, unless the TUI already handled the same thread within 30 seconds; test
+notifications (`bb push-notifications test desktop`) show up this way.
+
+Each notification goes to the notification center, an in-app toast, the
+terminal bell, and a desktop notification:
+
+- `osc9` writes `ESC ] 9 ; title: body BEL` (iTerm2, WezTerm, kitty, Ghostty).
+- `osc777` writes `ESC ] 777 ; notify ; title ; body BEL` (foot, urxvt, Ghostty).
+- `native` uses the system notification service (D-Bus, macOS, Windows). It
+  needs a build with `--features notifications`.
+- `auto` picks `native` in such a build, otherwise detects the terminal from
+  `TERM_PROGRAM`, `LC_TERMINAL`, `TERM`, `KITTY_WINDOW_ID` and
+  `WEZTERM_PANE`, and falls back to the bell only.
+
+Inside tmux the OSC sequences are wrapped in a DCS passthrough, so they need
+`set -g allow-passthrough on`. By default desktop notifications are sent only
+while the terminal is not focused.
+
+`!` (or "Show notifications" in the palette) opens the notification center,
+newest first, and marks everything read. In the center, `j`/`k` move,
+`Enter` opens the thread (with the request panel focused if it waits for
+you), `d`/`x`/`Del` delete one, `C` clears all and `Esc` closes. Opening a
+thread marks its notifications read. The status bar shows `! N new` for
+unread notifications, `⚑ N` for threads that need attention, and `⚑` alone
+when `GET /system/attention` reports attention outside the listed threads.
+
+## Settings file
+
+Settings live in `~/.config/bb-tui/config.toml` (`$XDG_CONFIG_HOME/bb-tui/`).
+Use `--config <path>` or `BB_TUI_CONFIG` to point somewhere else. The file is
+optional, and every key has a default:
+
+```toml
+submit_key = "enter"
+theme = "base16-ocean.dark"
+
+[notifications]
+enabled = true
+turn_finished = true
+needs_input = true
+errors = true
+toast = true
+bell = true
+desktop = "auto"
+desktop_when = "unfocused"
+plugin_signals = true
+terminal_title = false
+```
+
+| Key | Values |
+|---|---|
+| `submit_key` | `enter` or `ctrl-enter`. `--submit-key` and `BB_TUI_SUBMIT_KEY` override it |
+| `theme` | syntax highlighting theme for code blocks, diffs and previews: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`, `base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)` |
+| `notifications.enabled` | turns all thread notifications on or off |
+| `notifications.turn_finished`, `needs_input`, `errors` | which events notify |
+| `notifications.toast`, `bell` | the in-app toast and the terminal bell |
+| `notifications.desktop` | `auto`, `osc9`, `osc777`, `native`, `off` |
+| `notifications.desktop_when` | `unfocused` (default) or `always` |
+| `notifications.plugin_signals` | show push-notifications plugin signals |
+| `notifications.terminal_title` | set the terminal title to `bb`, `(N) bb` with N threads needing attention, or `● bb` when the server reports attention elsewhere. The previous title is restored on exit (xterm title stack) |
+
+Unknown keys and invalid values are reported as toasts at startup, and the
+default is used instead. `bb-tui config` prints the file path, any warnings and
+the effective settings.
+
 ## Server connection (`bb-client`)
 
 The server URL is resolved in this order: `--server-url`, `BB_SERVER_URL`,
@@ -350,6 +436,11 @@ uploads or saves.
 `renders_live_palette_read_only` loads the plugin commands, runs a thread
 search for a word from a sidebar title, searches files of a thread's
 environment and previews the first match; it never runs plugin commands.
+`renders_live_notifications_read_only` loads the thread list and
+`/system/attention`, simulates a turn finishing on a local copy of one idle
+thread, checks that it notifies and renders the notification center, and
+describes the pending requests of up to three waiting threads; it sends
+nothing.
 `renders_live_pending_interactions_read_only` parses every listed thread's
 pending interactions and renders the request panel of each waiting thread.
 `renders_live_composer_read_only` parses the execution options, default

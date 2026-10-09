@@ -5,7 +5,11 @@ use std::process::{Command, Stdio};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+use crate::config::DesktopMethod;
 use crate::drafts::{DraftDir, default_dir};
+use crate::notifications::Alert;
+
+pub const NATIVE_NOTIFICATIONS: bool = cfg!(feature = "notifications");
 
 pub trait Platform: Send + Sync + 'static {
     fn copy(&self, text: &str) -> Result<(), String>;
@@ -27,6 +31,14 @@ pub trait Platform: Send + Sync + 'static {
     fn edit_file(&self, _path: &str, _line: Option<u32>) -> Result<(), String> {
         Err("no editor available".into())
     }
+
+    fn alert(&self, _alert: &Alert) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn set_title(&self, _title: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +46,8 @@ pub struct SystemPlatform {
     drafts: Option<DraftDir>,
     recents: Option<PathBuf>,
     keyboard_enhanced: bool,
+    focus_reporting: bool,
+    tmux: bool,
 }
 
 impl SystemPlatform {
@@ -42,6 +56,8 @@ impl SystemPlatform {
             drafts: default_dir().map(DraftDir::new),
             recents: recents_path(),
             keyboard_enhanced: false,
+            focus_reporting: false,
+            tmux: std::env::var_os("TMUX").is_some(),
         }
     }
 
@@ -50,7 +66,14 @@ impl SystemPlatform {
             drafts,
             recents: None,
             keyboard_enhanced: false,
+            focus_reporting: false,
+            tmux: false,
         }
+    }
+
+    pub fn with_focus_reporting(mut self, enabled: bool) -> Self {
+        self.focus_reporting = enabled;
+        self
     }
 
     pub fn with_keyboard_enhancement(mut self, enhanced: bool) -> Self {
@@ -86,6 +109,98 @@ pub fn parse_recents(raw: &str) -> Vec<String> {
 
 pub fn osc52_sequence(text: &str) -> String {
     format!("\u{1b}]52;c;{}\u{7}", STANDARD.encode(text))
+}
+
+fn sanitize(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+pub fn desktop_sequence(method: DesktopMethod, title: &str, body: &str) -> Option<String> {
+    let title = sanitize(title);
+    let body = sanitize(body);
+    match method {
+        DesktopMethod::Osc9 => {
+            let message = if body.is_empty() {
+                title
+            } else {
+                format!("{title}: {body}")
+            };
+            Some(format!("\u{1b}]9;{message}\u{7}"))
+        }
+        DesktopMethod::Osc777 => Some(format!(
+            "\u{1b}]777;notify;{};{body}\u{7}",
+            title.replace(';', ",")
+        )),
+        DesktopMethod::Auto | DesktopMethod::Native | DesktopMethod::Off => None,
+    }
+}
+
+pub fn tmux_passthrough(sequence: &str) -> String {
+    format!(
+        "\u{1b}Ptmux;{}\u{1b}\\",
+        sequence.replace('\u{1b}', "\u{1b}\u{1b}")
+    )
+}
+
+pub fn alert_output(alert: &Alert, tmux: bool) -> String {
+    let mut out = String::new();
+    if alert.bell {
+        out.push('\u{7}');
+    }
+    if let Some(desktop) = &alert.desktop
+        && let Some(sequence) = desktop_sequence(desktop.method, &desktop.title, &desktop.body)
+    {
+        if tmux {
+            out.push_str(&tmux_passthrough(&sequence));
+        } else {
+            out.push_str(&sequence);
+        }
+    }
+    out
+}
+
+pub fn title_sequence(title: &str) -> String {
+    format!("\u{1b}]2;{}\u{7}", sanitize(title))
+}
+
+pub const TITLE_PUSH: &str = "\u{1b}[22;2t";
+pub const TITLE_POP: &str = "\u{1b}[23;2t";
+
+#[cfg(feature = "notifications")]
+fn native_notify(title: &str, body: &str) -> Result<(), String> {
+    let title = title.to_owned();
+    let body = body.to_owned();
+    std::thread::spawn(move || {
+        if let Err(error) = notify_rust::Notification::new()
+            .appname("bb-tui")
+            .summary(&title)
+            .body(&body)
+            .show()
+        {
+            tracing::debug!(%error, "desktop notification failed");
+        }
+    });
+    Ok(())
+}
+
+#[cfg(not(feature = "notifications"))]
+fn native_notify(_title: &str, _body: &str) -> Result<(), String> {
+    Err("built without the `notifications` feature".into())
+}
+
+fn write_stdout(text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let mut stdout = std::io::stdout();
+    stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+        .map_err(|error| error.to_string())
 }
 
 pub fn open_command(target: &str) -> (&'static str, Vec<String>) {
@@ -205,6 +320,9 @@ impl Platform for SystemPlatform {
         if self.keyboard_enhanced {
             let _ = crossterm::execute!(stdout, PopKeyboardEnhancementFlags);
         }
+        if self.focus_reporting {
+            let _ = crossterm::execute!(stdout, crossterm::event::DisableFocusChange);
+        }
         let _ = crossterm::execute!(
             stdout,
             DisableBracketedPaste,
@@ -215,6 +333,9 @@ impl Platform for SystemPlatform {
         let status = Command::new(&program).args(&args).status();
         let _ = enable_raw_mode();
         let _ = crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste);
+        if self.focus_reporting {
+            let _ = crossterm::execute!(stdout, crossterm::event::EnableFocusChange);
+        }
         if self.keyboard_enhanced {
             let _ = crossterm::execute!(
                 stdout,
@@ -226,6 +347,20 @@ impl Platform for SystemPlatform {
             Ok(status) => Err(format!("{program} exited with {status}")),
             Err(error) => Err(format!("{program}: {error}")),
         }
+    }
+
+    fn alert(&self, alert: &Alert) -> Result<(), String> {
+        write_stdout(&alert_output(alert, self.tmux))?;
+        match &alert.desktop {
+            Some(desktop) if desktop.method == DesktopMethod::Native => {
+                native_notify(&desktop.title, &desktop.body)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn set_title(&self, title: &str) -> Result<(), String> {
+        write_stdout(&title_sequence(title))
     }
 
     fn load_palette_recents(&self) -> Vec<String> {
@@ -292,6 +427,34 @@ mod tests {
             Some(("/opt/my ed".into(), vec!["/w/a.rs".into()]))
         );
         assert_eq!(editor_command("  ", "/w/a.rs", None), None);
+    }
+
+    #[test]
+    fn desktop_sequences_strip_control_characters() {
+        use crate::notifications::DesktopNotice;
+        assert_eq!(
+            desktop_sequence(DesktopMethod::Osc9, "Fix\u{7} bug", "done\nnow").as_deref(),
+            Some("\u{1b}]9;Fix  bug: done now\u{7}")
+        );
+        assert_eq!(
+            desktop_sequence(DesktopMethod::Osc777, "a;b", "c;d").as_deref(),
+            Some("\u{1b}]777;notify;a,b;c;d\u{7}")
+        );
+        assert_eq!(desktop_sequence(DesktopMethod::Native, "t", "b"), None);
+        let alert = Alert {
+            bell: true,
+            desktop: Some(DesktopNotice {
+                method: DesktopMethod::Osc9,
+                title: "t".into(),
+                body: String::new(),
+            }),
+        };
+        assert_eq!(alert_output(&alert, false), "\u{7}\u{1b}]9;t\u{7}");
+        assert_eq!(
+            alert_output(&alert, true),
+            "\u{7}\u{1b}Ptmux;\u{1b}\u{1b}]9;t\u{7}\u{1b}\\"
+        );
+        assert_eq!(title_sequence("(2) bb\u{1b}"), "\u{1b}]2;(2) bb\u{7}");
     }
 
     #[test]

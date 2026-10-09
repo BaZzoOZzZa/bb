@@ -495,6 +495,7 @@ fn fallback(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             | Command::Help
             | Command::Quit
             | Command::NextPending
+            | Command::Notifications
             | Command::SidebarToggle
             | Command::PanelToggle
             | Command::ThreadNext

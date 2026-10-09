@@ -1142,3 +1142,133 @@ async fn renders_live_panel_read_only() {
         drop(interest);
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running bb server; read-only"]
+async fn renders_live_notifications_read_only() {
+    use bb_tui::notifications::{NoticeKind, describe_interaction};
+    use bb_wire::thread::ThreadStatus;
+
+    let found = discover_server(
+        &DiscoveryInput::from_env(None),
+        discovery::process_is_running,
+    )
+    .expect("discover");
+    let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let store = Store::spawn(
+        Arc::new(client.clone()),
+        NoRealtime,
+        None,
+        StoreConfig::default(),
+    );
+    let _interest = store.watch_sidebar();
+    let mut rx = store.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            {
+                let snapshot = rx.borrow_and_update();
+                if snapshot.sidebar.data.is_some() && snapshot.attention.data.is_some() {
+                    break;
+                }
+            }
+            rx.changed().await.expect("store");
+        }
+    })
+    .await
+    .expect("sidebar and attention loaded");
+    let real = store.snapshot();
+    println!(
+        "attention: {:?}",
+        real.attention.data.as_ref().map(|a| a.has_attention)
+    );
+    let Some(target) = real
+        .sidebar_threads()
+        .find(|entry| {
+            entry.thread.archived_at.is_none()
+                && entry.thread.parent_thread_id.is_none()
+                && entry.thread.status == ThreadStatus::Idle
+        })
+        .map(|entry| entry.thread.id.clone())
+    else {
+        println!("no idle thread to simulate");
+        return;
+    };
+    let mut state = AppState::new(
+        ServerInfo {
+            url: found.endpoint.to_string(),
+            profile: None,
+        },
+        Instant::now(),
+        now_ms(),
+    );
+    let reshape = |status: ThreadStatus, unread: bool| {
+        let mut snapshot = (*real).clone();
+        let mut sidebar = (**snapshot.sidebar.data.as_ref().unwrap()).clone();
+        for project in sidebar
+            .projects
+            .iter_mut()
+            .chain(std::iter::once(&mut sidebar.personal_project))
+        {
+            for entry in &mut project.threads {
+                if entry.thread.id == target {
+                    entry.thread.status = status;
+                    if unread {
+                        entry.thread.last_read_at = Some(0);
+                        entry.thread.latest_attention_at = now_ms();
+                    }
+                }
+            }
+        }
+        snapshot.sidebar.data = Some(Arc::new(sidebar));
+        Arc::new(snapshot)
+    };
+    update(
+        &mut state,
+        Action::Snapshot(reshape(ThreadStatus::Active, false)),
+    );
+    update(
+        &mut state,
+        Action::Snapshot(reshape(ThreadStatus::Idle, true)),
+    );
+    let later = state.clock + Duration::from_secs(3);
+    update(
+        &mut state,
+        Action::Tick {
+            now: later,
+            now_ms: now_ms(),
+        },
+    );
+    let notice = state
+        .notifications
+        .newest_first()
+        .next()
+        .expect("simulated completion notified")
+        .clone();
+    assert_eq!(notice.kind, NoticeKind::TurnFinished);
+    assert_eq!(notice.thread_id.as_deref(), Some(target.as_str()));
+    let waiting: Vec<String> = real
+        .sidebar_threads()
+        .filter(|entry| entry.has_pending_interaction)
+        .map(|entry| entry.thread.id.clone())
+        .take(3)
+        .collect();
+    for thread_id in waiting {
+        let interactions = Api::thread_interactions(&client, thread_id.clone())
+            .await
+            .expect("interactions");
+        for interaction in &interactions {
+            println!("{thread_id}: {}", describe_interaction(interaction));
+        }
+    }
+    update(
+        &mut state,
+        Action::Key(crossterm::event::KeyEvent::from(
+            crossterm::event::KeyCode::Char('!'),
+        )),
+    );
+    let screen = render_lines(&state, 120, 20).join("\n");
+    assert!(screen.contains("Notifications (1)"), "{screen}");
+    if std::env::var_os("BB_TUI_LIVE_PRINT").is_some() {
+        println!("{screen}");
+    }
+}
