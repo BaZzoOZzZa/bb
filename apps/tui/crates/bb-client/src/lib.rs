@@ -1,40 +1,23 @@
-use url::Url;
+pub mod api;
+pub mod auth;
+pub mod connect;
+pub mod discovery;
+pub mod endpoint;
+pub mod error;
+pub mod http;
+pub mod profiles;
+pub mod realtime;
+pub mod terminal;
+mod ws;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ClientError {
-    #[error("invalid server url: {0}")]
-    InvalidUrl(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct ServerEndpoint {
-    base: Url,
-}
-
-impl ServerEndpoint {
-    pub fn parse(raw: &str) -> Result<Self, ClientError> {
-        let base = Url::parse(raw).map_err(|err| ClientError::InvalidUrl(err.to_string()))?;
-        match base.scheme() {
-            "http" | "https" => Ok(Self { base }),
-            other => Err(ClientError::InvalidUrl(format!(
-                "unsupported scheme {other}"
-            ))),
-        }
-    }
-
-    pub fn base(&self) -> &Url {
-        &self.base
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_non_http_schemes() {
-        assert!(ServerEndpoint::parse("ftp://localhost").is_err());
-        assert!(ServerEndpoint::parse("not a url").is_err());
-        assert!(ServerEndpoint::parse("http://127.0.0.1:3000").is_ok());
-    }
-}
+pub use auth::Auth;
+pub use connect::{ConnectCredential, ConnectError, ConnectSession};
+pub use discovery::{
+    DiscoveredServer, DiscoveryInput, ProbeReport, ServerUrlSource, discover_server, probe_server,
+};
+pub use endpoint::ServerEndpoint;
+pub use error::{ClientError, HttpError};
+pub use http::{BbClient, ClientConfig};
+pub use profiles::{CredentialStore, ProfileList, ProfileStore, ServerProfile};
+pub use realtime::{RealtimeClient, RealtimeConfig, RealtimeEvent, Subscription};
+pub use terminal::{TerminalConfig, TerminalConnection, TerminalConnectionState, TerminalEvent};

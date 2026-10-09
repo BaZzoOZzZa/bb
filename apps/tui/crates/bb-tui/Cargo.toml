@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-keyring = ["dep:keyring"]
+keyring = ["dep:keyring", "bb-client/keyring"]
 notifications = ["dep:notify-rust"]
 
 [dependencies]

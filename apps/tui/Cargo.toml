@@ -43,6 +43,7 @@ notify-rust = "4"
 clap = { version = "4", features = ["derive", "env"] }
 pretty_assertions = "1"
 serde_urlencoded = "0.7"
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
