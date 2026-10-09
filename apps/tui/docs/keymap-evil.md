@@ -380,8 +380,9 @@ character motions are no-ops there.
 
 ### Counts
 
-`{N}` before a motion or command repeats it (`5j`, `3]m`, `2dd`). `{N}G`
-and `:{N}` go to line N. `{N}%` goes to N percent. A count before a leader
+`{N}` before a motion or command repeats it (`5j`, `3]m`, `2dd`). A count
+typed after an operator multiplies the first one (`2d3w` deletes six words).
+`{N}G` and `:{N}` go to line N. `{N}%` goes to N percent. A count before a leader
 key is ignored. The pending count shows in the status bar.
 
 ### Motions
@@ -389,7 +390,7 @@ key is ignored. The pending count shows in the status bar.
 | Keys | Motion |
 |---|---|
 | `h` `j` `k` `l`, arrows | Left, down, up, right |
-| `gj` `gk` | Down / up one display line of a wrapped line |
+| `gj` `gk` | Down / up one display line of a wrapped line (the composer moves by logical lines, because its wrapping is only known while drawing) |
 | `w` `b` `e` `ge` / `W` `B` `E` `gE` | Word / WORD forward, back, end, end back |
 | `0` `^` `$` `g_` | Line start, first non-blank, end, last non-blank |
 | `gg` `G` | First line, last line (`G` in the timeline also resumes following) |
@@ -583,12 +584,15 @@ the send keys while a turn runs, as before.
 | `C-o` | Run one normal-state command, then return to insert |
 | `C-n`, `C-p` | Next / previous completion candidate while the mention popup is open; otherwise next / previous prompt history entry |
 | `C-j`, `C-k` while the mention popup is open | Next / previous candidate (vertico/corfu style) |
-| `TAB`, `S-TAB` | Accept / cycle the mention completion; otherwise insert a tab |
+| `TAB`, `S-TAB` | Accept / cycle the mention completion; otherwise insert a tab (in the new-thread prompt `TAB`/`S-TAB` keep moving between the form fields) |
 | `↑`, `↓` on the first / last line | Prompt history |
 | `C-c ...` | Send, steer, stop, attach (above; `C-c C-a` attaches a file) |
 | `C-v` | Insert the next key literally |
 
-Bracketed paste inserts as one change.
+Bracketed paste inserts as one change. In insert state it joins the insert
+session; in normal state it inserts at the cursor as one undo step and leaves
+the cursor on the last pasted character; in visual state it replaces the
+selection. The pasted text also becomes the `"+` register (section 11).
 
 ### Normal state
 
@@ -600,7 +604,7 @@ Bracketed paste inserts as one change.
 | `x`, `X` | Delete the character under / before the cursor |
 | `s`, `S` | Substitute character / line |
 | `r{char}` | Replace the character |
-| `R` | Replace state |
+| `R` | Replace state: typed characters overwrite, `Bksp` restores the overwritten character, `RET` inserts a line break, `ESC` returns to normal |
 | `~` | Toggle case and advance |
 | `J`, `gJ` | Join lines with / without a space |
 | `d{motion}`, `dd`, `D` | Delete |
@@ -612,6 +616,8 @@ Bracketed paste inserts as one change.
 | `u`, `C-r` | Undo, redo |
 | `U` | Undo all changes on the last changed line |
 | `.` | Repeat the last change, including the text of an insert session, with a new count if given |
+| `m{a-z}` | Set a composer mark |
+| `'{mark}`, `` `{mark} `` | Go to a mark's line / position; also after an operator (`d'a`, `` y`a ``) |
 | `"{reg}` | Use a register for the next delete, yank or put |
 | `v`, `V`, `gv` | Visual, visual-line, reselect |
 | `C-p`, `C-n` | Previous / next prompt history entry (comint style) |
@@ -623,13 +629,33 @@ as ip ap i" a" i' a' i` a` i( a( ib ab i[ a[ i{ a{ iB aB i< a<`. `(`/`)` are
 the same as `b`, `{`/`}` the same as `B`.
 
 Undo granularity: each normal-state command is one undo step; an insert
-session from entering insert to `ESC` is one step (a send ends it).
+session from entering insert to `ESC` is one step (a send ends it). Undo and
+redo also restore the composer's marks. `U` restores the last changed line to
+how it was before the run of changes on it, as a new undoable change; a second
+`U` swaps back. It refuses when lines were added or removed since.
 Repeat (`.`) replays the last change command with its motion or text object
-and, for `c`/`s`/`i`/`a`/`o`, the inserted text.
+and, for `c`/`s`/`i`/`a`/`o`/`R`, the inserted text; a count given to `.`
+replaces the original one (for `i`/`a`/`A`/`R` it repeats the text). Visual
+operations repeat on the same number of characters (selections within one
+line) or lines; multi-line characterwise selections and visual `p` are not
+repeated.
+
+Composer marks hold character positions and move with edits before them; a
+mark inside deleted text moves to the start of the deletion. Besides `a`-`z`
+the composer keeps `'[`/`']` (start / end of the last change), `'<`/`'>`
+(last visual selection, also used by `gv`), `'.` (last change), `'^` (where
+insert was left) and `''` (the position before the last jump: `gg`, `G`,
+`%`, `{N}%`, `(`, `)`, `{`, `}`, mark jumps).
+
+Character motions and `x X r ~ a s` treat a grapheme cluster (a letter with
+combining marks, a ZWJ emoji sequence, a flag) as one character. Word motions
+use vim's classes on Unicode: letters and digits of any script form words,
+punctuation and emoji form their own runs.
 
 Mention chips are atomic: a motion never lands inside a chip, a chip is one
 WORD for `w`/`W`, and `x` or any delete over part of a chip removes the whole
-chip.
+chip. A yank over part of a chip yanks the whole chip text. Mention offsets
+stay UTF-16 offsets into the draft text, as the server expects.
 
 ### Visual states
 
@@ -676,8 +702,10 @@ Yanks also go to the system clipboard (Doom's default, `clipboard=unnamedplus`
 for yanks only; deletes and changes do not overwrite the clipboard). The
 clipboard is written with OSC 52 (wrapped in a DCS passthrough inside tmux),
 as the old `y` did. OSC 52 cannot be read back reliably, so `"+p` puts the
-last text bb-tui itself wrote to the clipboard; text copied in other programs
-is pasted with the terminal's paste key, which arrives as a bracketed paste.
+last text bb-tui itself wrote to the clipboard or the last bracketed paste it
+received in a composer; text copied in other programs is pasted with the
+terminal's paste key, which arrives as a bracketed paste. `".`, `":` and `"/`
+can be put but not written (`E354`).
 `:set clipboard=` turns the automatic clipboard write off; `"+y` still writes
 it. `:reg` lists registers.
 
@@ -1186,6 +1214,15 @@ Built:
   step per command or insert session, insert keys `C-w C-u C-h C-n C-p C-j
   C-r C-o`, `C-c C-c/C-s/C-k/C-a`, `C-RET`/`M-RET`, normal `RET`, the new
   `submit_key` default, the new-thread prompt as the same modal editor.
+- The composer as an evil buffer (second step): `.` repeat with insert text
+  and new counts, `R` replace state (`<R>` tag), `U`, `gv`, composer marks
+  (`m{a-z}`, `'`/`` ` `` jumps and operator targets, `'[ '] '< '> '. '^ ''`),
+  sentence motions and objects (`( ) is as`), `{N}%`, counts after an
+  operator (`2d3w`), grapheme-aware character motions and edits, chips that
+  are one word and are deleted, changed and yanked whole, read-only `". ": "/`
+  registers, bracketed paste as one change in every state and into `"+`,
+  insert `C-a` (first non-blank), `C-v` (literal next key) and `TAB` (a tab),
+  mouse click-to-position and drag selection in the thread composer.
 - Minibuffers: the vertico keys of section 12 except `C-;`, `C-r` and
   `M-p`/`M-n`; `SPC '`.
 - Ex commands of section 13 except `:marks`, `:delm`, `:h {topic}`, `@:`,
@@ -1197,17 +1234,17 @@ Built:
 
 Not built yet:
 
-- Search (`/ ? n N * #`, `g*`, `:noh` highlight), marks and the jump list
-  (`m`, `'`, `` ` ``, `C-o`, `C-i`), `:marks`, `:delm`.
+- Search (`/ ? n N * #`, `g*`, `:noh` highlight), marks outside the composer,
+  global marks and the jump list (`C-o`, `C-i`), `:marks`, `:delm`.
 - The timeline line-and-column cursor: `h l w b e 0 $`, visual selection over
   rendered text, `yy`/`y{motion}`, text objects, `]]`/`[[`, `]e`/`[e`, `gf`;
   sidebar visual-line batches.
-- Composer `.` repeat, `R` replace state, `U`, `gv`, `C-v`, `'[ '] '< '>`.
+- Composer `gj`/`gk` by display line (they move by logical line), mouse
+  click-to-position in the new-thread prompt.
 - Which-key listings for registers and marks; `C-;` embark actions; minibuffer
   history (`M-p`/`M-n`).
 - Cursor shape by state (DECSCUSR), relative line numbers (`SPC t l`,
-  `:set rnu`), `scrolloff`, mouse drag selection and click-to-position in the
-  composer.
+  `:set rnu`), `scrolloff`, mouse drag selection in the timeline.
 - Leader entries `SPC f r`, `SPC h x`, `SPC s s/b/i/r/c`, `SPC t h`,
   `SPC g o P`; `SPC ,` searches all projects instead of the focused one.
 - Diff `gy` (path only), terminal `yy` (the line; it yanks the screen),

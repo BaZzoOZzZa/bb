@@ -434,26 +434,34 @@ session is one undo step.
 | `ESC` | Normal state |
 | `C-w`, `C-u`, `C-h` | Delete the word before the cursor, to the indentation / line start, a character |
 | `C-n`/`C-p`, `↑`/`↓` on the first/last line | Prompt history (`GET /threads/:id/prompt-history`) |
+| `C-a`, `C-e`, `C-k` | First non-blank, line end, delete to the line end |
 | `C-r {reg}` | Insert a register |
 | `C-o` | Run one normal-state command, then return to insert |
+| `C-v {key}` | Insert the next key literally (`TAB`, `RET`) |
+| `TAB` | Accept the mention completion, otherwise insert a tab |
 
 | Keys (normal state) | Action |
 |---|---|
 | `RET`, `:w`, `SPC m s` | Send |
 | `:w!`, `SPC m S` | Steer |
-| `h j k l`, `w b e ge W B E gE`, `0 ^ $ g_`, `gg G`, `{ }`, `%`, `f F t T ; ,` | Motions (with counts) |
-| `i a I A o O gi` | Insert state |
+| `h j k l`, `w b e ge W B E gE`, `0 ^ $ g_`, `gg G`, `{ } ( )`, `%`, `{N}%`, `f F t T ; ,` | Motions (with counts) |
+| `i a I A o O gi`, `R` | Insert state, replace state |
 | `x X s S r ~ J gJ D C Y p P` | Edit commands |
-| `d c y > < gu gU g~` + motion or text object (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a<`), or doubled for a line | Operators |
-| `u`, `C-r` | Undo, redo |
-| `"{reg}` | Use a register: `""`, `"0`, `"1`-`"9`, `"-`, `"a`-`"z` (`"A`-`"Z` append), `"_`, `"+` |
-| `v`, `V` | Visual / visual-line state; then motions, text objects, `d x c s y > < u U ~ J p r o` |
+| `d c y > < gu gU g~` + motion, mark or text object (`iw aw iW aW is as ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a<`), or doubled for a line | Operators (`2d3w` multiplies counts) |
+| `.` | Repeat the last change, with the inserted text |
+| `u`, `C-r`, `U` | Undo, redo, undo the last changed line |
+| `m{a-z}`, `'{mark}`, `` `{mark} `` | Set a mark, go to its line / position (also `'[ '] '< '> '. '^ ''`) |
+| `"{reg}` | Use a register: `""`, `"0`, `"1`-`"9`, `"-`, `"a`-`"z` (`"A`-`"Z` append), `"_`, `"+`; read-only `".`, `":` |
+| `v`, `V`, `gv` | Visual / visual-line state, reselect; then motions, text objects, `d x c s y > < u U ~ J p r o` |
 | `C-p`, `C-n` | Prompt history |
 | `C-k`, `C-w k` | Focus the timeline |
 
 Yanks also go to the system clipboard (OSC 52) unless `clipboard = ""` in the
-`[evil]` settings. Mention chips stay atomic: deleting part of one removes the
-whole chip.
+`[evil]` settings. A bracketed paste is one change in any state and also fills
+`"+`. Mention chips stay atomic: motions skip over them and deleting part of
+one removes the whole chip. Character motions treat a grapheme cluster
+(combining marks, ZWJ emoji) as one character. Clicking the editor puts the
+cursor at the click; dragging makes a visual selection.
 
 | Keys (thread open) | Action |
 |---|---|

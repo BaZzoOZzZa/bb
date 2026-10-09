@@ -390,6 +390,8 @@ fn motions() -> Vec<(&'static str, Motion)> {
         ("↓", Motion::Down),
         ("k", Motion::Up),
         ("↑", Motion::Up),
+        ("g j", Motion::Down),
+        ("g k", Motion::Up),
         ("w", Motion::WordForward),
         ("W", Motion::BigWordForward),
         ("b", Motion::WordBackward),
@@ -408,6 +410,8 @@ fn motions() -> Vec<(&'static str, Motion)> {
         ("G", Motion::LastLine),
         ("}", Motion::ParagraphForward),
         ("{", Motion::ParagraphBackward),
+        (")", Motion::SentenceForward),
+        ("(", Motion::SentenceBackward),
         ("%", Motion::MatchPair),
         (";", Motion::RepeatFind { reverse: false }),
         (",", Motion::RepeatFind { reverse: true }),
@@ -418,6 +422,7 @@ fn objects() -> Vec<(&'static str, Object)> {
     vec![
         ("w", Object::Word),
         ("W", Object::BigWord),
+        ("s", Object::Sentence),
         ("p", Object::Paragraph),
         ("\"", Object::Quote('"')),
         ("'", Object::Quote('\'')),
@@ -482,6 +487,16 @@ fn composer(map: &mut Keymap) {
                 Act::Char(CharAct::ApplyFind { op, forward, till }),
             );
         }
+        map.bind(
+            c,
+            &format!("{prefix} '"),
+            Act::Char(CharAct::ApplyMark { op, line: true }),
+        );
+        map.bind(
+            c,
+            &format!("{prefix} `"),
+            Act::Char(CharAct::ApplyMark { op, line: false }),
+        );
         for (keys, object) in objects() {
             map.bind(
                 c,
@@ -545,8 +560,12 @@ fn composer(map: &mut Keymap) {
         ("P", EditOp::Put { before: true }),
         ("u", EditOp::Undo),
         ("C-r", EditOp::Redo),
+        ("U", EditOp::UndoLine),
+        (".", EditOp::Repeat),
+        ("R", EditOp::ReplaceMode),
         ("v", EditOp::Visual { line: false }),
         ("V", EditOp::Visual { line: true }),
+        ("g v", EditOp::Reselect),
         ("C-p", EditOp::HistoryPrevious),
         ("C-n", EditOp::HistoryNext),
     ];
@@ -555,6 +574,9 @@ fn composer(map: &mut Keymap) {
     }
     map.bind(c, "r", Act::Char(CharAct::Replace));
     map.bind(c, "\"", Act::Char(CharAct::Register));
+    map.bind(c, "m", Act::Char(CharAct::SetMark));
+    map.bind(c, "'", Act::Char(CharAct::Mark { line: true }));
+    map.bind(c, "`", Act::Char(CharAct::Mark { line: false }));
     map.bind(c, "RET", cmd(Command::Send));
     map.bind(c, "C-RET", cmd(Command::Send));
     map.bind(c, "M-RET", cmd(Command::Send));
@@ -606,6 +628,8 @@ fn visual(map: &mut Keymap) {
     }
     map.bind(v, "r", Act::Char(CharAct::VisualReplace));
     map.bind(v, "\"", Act::Char(CharAct::Register));
+    map.bind(v, "'", Act::Char(CharAct::Mark { line: true }));
+    map.bind(v, "`", Act::Char(CharAct::Mark { line: false }));
 }
 
 fn insert(map: &mut Keymap) {

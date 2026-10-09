@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -64,6 +65,7 @@ pub enum EditMode {
     #[default]
     Normal,
     Insert,
+    Replace,
     Visual {
         line: bool,
         anchor: usize,
@@ -71,10 +73,26 @@ pub enum EditMode {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub op: vi::EditOp,
+    pub count: Option<usize>,
+    pub register: Option<char>,
+    pub inserted: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LineUndo {
+    line: usize,
+    lines: usize,
+    text: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Snapshot {
     draft: PromptDraft,
     cursor: usize,
+    marks: HashMap<char, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +141,16 @@ pub struct Composer {
     pub mode: EditMode,
     pub last_insert: Option<usize>,
     pub one_shot: bool,
+    pub marks: HashMap<char, usize>,
+    pub last_visual_line: Option<bool>,
+    pub last_change: Option<Change>,
+    pub pending_change: Option<Change>,
+    pub finished_insert: Option<String>,
+    pub last_inserted: Option<String>,
+    pub literal: bool,
+    insert_base: Option<(Vec<char>, usize)>,
+    replaced: Vec<Option<char>>,
+    line_undo: Option<LineUndo>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
 }
@@ -195,6 +223,16 @@ impl Composer {
             mode: EditMode::Normal,
             last_insert: None,
             one_shot: false,
+            marks: HashMap::new(),
+            last_visual_line: None,
+            last_change: None,
+            pending_change: None,
+            finished_insert: None,
+            last_inserted: None,
+            literal: false,
+            insert_base: None,
+            replaced: Vec::new(),
+            line_undo: None,
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -533,7 +571,32 @@ impl Composer {
         let ctrl = has(&key, KeyModifiers::CONTROL);
         let alt = has(&key, KeyModifiers::ALT);
         let shift = has(&key, KeyModifiers::SHIFT);
+        if self.literal {
+            self.literal = false;
+            let literal = match key.code {
+                KeyCode::Char(ch) => Some(ch),
+                KeyCode::Tab => Some('\t'),
+                KeyCode::Enter => Some('\n'),
+                _ => None,
+            };
+            if let Some(ch) = literal {
+                self.textarea.insert_char(ch);
+                self.sync(now);
+                return ComposerKey::Edited;
+            }
+            return ComposerKey::Handled;
+        }
         match key.code {
+            KeyCode::Char('v') if ctrl && !alt => {
+                self.literal = true;
+                ComposerKey::Handled
+            }
+            KeyCode::Char('a') if ctrl && !alt => {
+                let chars = self.chars();
+                let target = vi::first_non_blank(&chars, self.cursor_char());
+                self.set_cursor_char(target);
+                ComposerKey::Handled
+            }
             KeyCode::Enter => {
                 let plain = !ctrl && !alt && !shift;
                 if ctrl || alt || (plain && submit_key == SubmitKey::Enter) {
@@ -567,7 +630,7 @@ impl Composer {
                 self.history_step(true);
                 ComposerKey::Handled
             }
-            KeyCode::Char('o' | 'r' | 'v' | 's' | 'c') if ctrl && !alt => ComposerKey::Unhandled,
+            KeyCode::Char('o' | 'r' | 's' | 'c') if ctrl && !alt => ComposerKey::Unhandled,
             KeyCode::Esc => ComposerKey::Escape,
             KeyCode::Up if !ctrl && !alt && !shift => {
                 let at_top = self.textarea.cursor().0 == 0;
@@ -618,14 +681,38 @@ impl Composer {
         self.text().chars().collect()
     }
 
+    pub fn motion_chars(&self) -> Vec<char> {
+        let mut chars = self.chars();
+        for range in self.mention_ranges() {
+            for ch in chars.iter_mut().take(range.end).skip(range.start) {
+                *ch = vi::CHIP;
+            }
+        }
+        chars
+    }
+
+    pub fn expand_chips(&self, range: vi::Range) -> vi::Range {
+        let mut expanded = range;
+        for chip in self.mention_ranges() {
+            if chip.start < expanded.end && chip.end > expanded.start {
+                expanded.start = expanded.start.min(chip.start);
+                expanded.end = expanded.end.max(chip.end);
+            }
+        }
+        expanded
+    }
+
     pub fn is_insert(&self) -> bool {
         self.mode == EditMode::Insert
     }
 
     pub fn checkpoint(&mut self) {
+        let cursor = self.cursor_char();
+        self.note_line(cursor);
         self.undo.push(Snapshot {
             draft: self.draft.clone(),
-            cursor: self.cursor_char(),
+            cursor,
+            marks: self.marks.clone(),
         });
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
@@ -633,11 +720,53 @@ impl Composer {
         self.redo.clear();
     }
 
+    fn note_line(&mut self, cursor: usize) {
+        let chars = self.chars();
+        let line = vi::line_index(&chars, cursor);
+        let lines = self.line_count();
+        if self
+            .line_undo
+            .as_ref()
+            .is_some_and(|undo| undo.line == line && undo.lines == lines)
+        {
+            return;
+        }
+        let text = self.textarea.lines().get(line).cloned().unwrap_or_default();
+        self.line_undo = Some(LineUndo { line, lines, text });
+    }
+
+    pub fn undo_line(&mut self, now: Instant) -> bool {
+        let Some(undo) = self.line_undo.clone() else {
+            return false;
+        };
+        if undo.lines != self.line_count() {
+            return false;
+        }
+        let Some(current) = self.textarea.lines().get(undo.line).cloned() else {
+            return false;
+        };
+        if current == undo.text {
+            return false;
+        }
+        self.checkpoint();
+        let chars = self.chars();
+        let start = vi::line_start(&chars, row_col_to_char(self.textarea.lines(), undo.line, 0));
+        let end = vi::line_end(&chars, start);
+        self.replace_range(start, end, &undo.text, start, now);
+        self.line_undo = Some(LineUndo {
+            text: current,
+            ..undo
+        });
+        self.move_to(start, true);
+        true
+    }
+
     fn restore(&mut self, snapshot: Snapshot, now: Instant) {
         let placeholder = self.textarea.placeholder_text().to_owned();
         self.textarea = textarea_with(&snapshot.draft.text);
         self.textarea.set_placeholder_text(placeholder);
         self.draft = snapshot.draft;
+        self.marks = snapshot.marks;
         self.dismissed_trigger = None;
         self.history_index = None;
         self.history_stash = None;
@@ -653,6 +782,7 @@ impl Composer {
         self.redo.push(Snapshot {
             draft: self.draft.clone(),
             cursor: self.cursor_char(),
+            marks: self.marks.clone(),
         });
         self.restore(snapshot, now);
         true
@@ -665,6 +795,7 @@ impl Composer {
         self.undo.push(Snapshot {
             draft: self.draft.clone(),
             cursor: self.cursor_char(),
+            marks: self.marks.clone(),
         });
         self.restore(snapshot, now);
         true
@@ -684,48 +815,150 @@ impl Composer {
         let mut next: String = chars[..start].iter().collect();
         next.push_str(text);
         next.extend(chars[end..].iter());
+        let inserted = text.chars().count();
+        self.shift_marks(start, end, inserted);
+        self.marks.insert('[', start);
+        self.marks.insert(']', start + inserted.saturating_sub(1));
+        self.marks.insert('.', start);
         self.reset_text(&next, cursor);
         self.sync(now);
     }
 
+    fn shift_marks(&mut self, start: usize, end: usize, inserted: usize) {
+        for mark in self.marks.values_mut() {
+            if *mark >= end {
+                *mark = *mark + inserted - (end - start);
+            } else if *mark > start {
+                *mark = start;
+            }
+        }
+    }
+
+    pub fn mark(&self, name: char) -> Option<usize> {
+        let position = match name {
+            '^' => self.last_insert,
+            '`' => self.marks.get(&'\'').copied(),
+            other => self.marks.get(&other).copied(),
+        }?;
+        Some(position.min(char_len(&self.draft.text)))
+    }
+
+    pub fn set_mark(&mut self, name: char, position: usize) -> bool {
+        let name = if name == '`' { '\'' } else { name };
+        if !(name.is_ascii_lowercase() || "'[]<>".contains(name)) {
+            return false;
+        }
+        self.marks.insert(name, position);
+        true
+    }
+
+    pub fn capture_insert_base(&mut self) {
+        self.insert_base = Some((self.chars(), self.cursor_char()));
+        self.replaced.clear();
+    }
+
     pub fn enter_insert(&mut self) {
-        if self.mode != EditMode::Insert {
+        if !matches!(self.mode, EditMode::Insert | EditMode::Replace) {
             self.checkpoint();
         }
         self.textarea.cancel_selection();
         self.mode = EditMode::Insert;
+        self.capture_insert_base();
+    }
+
+    pub fn enter_replace(&mut self) {
+        if !matches!(self.mode, EditMode::Insert | EditMode::Replace) {
+            self.checkpoint();
+        }
+        self.textarea.cancel_selection();
+        self.mode = EditMode::Replace;
+        self.capture_insert_base();
+    }
+
+    fn inserted_text(&self) -> Option<String> {
+        let (base, base_cursor) = self.insert_base.as_ref()?;
+        let current = self.chars();
+        let limit = base.len().min(current.len());
+        let prefix = (0..limit)
+            .take_while(|index| base[*index] == current[*index])
+            .count()
+            .min(*base_cursor);
+        let suffix = (0..limit - prefix)
+            .take_while(|index| base[base.len() - 1 - index] == current[current.len() - 1 - index])
+            .count();
+        let text: String = current[prefix..current.len() - suffix].iter().collect();
+        Some(text)
     }
 
     pub fn enter_normal(&mut self) {
         self.textarea.cancel_selection();
         let mut cursor = self.cursor_char();
-        if let EditMode::Visual { head, .. } = self.mode {
-            cursor = head;
-        }
-        if self.mode == EditMode::Insert {
-            self.last_insert = Some(cursor);
-            let chars = self.chars();
-            if cursor > vi::line_start(&chars, cursor) {
-                cursor -= 1;
+        match self.mode {
+            EditMode::Visual { line, anchor, head } => {
+                cursor = head;
+                self.marks.insert('<', anchor.min(head));
+                self.marks.insert('>', anchor.max(head));
+                self.last_visual_line = Some(line);
             }
+            EditMode::Insert | EditMode::Replace => {
+                self.last_insert = Some(cursor);
+                let inserted = self.inserted_text().unwrap_or_default();
+                if let Some(mut change) = self.pending_change.take() {
+                    change.inserted = Some(inserted.clone());
+                    self.last_change = Some(change);
+                }
+                if !inserted.is_empty() {
+                    self.finished_insert = Some(inserted.clone());
+                    self.last_inserted = Some(inserted);
+                }
+                self.insert_base = None;
+                self.replaced.clear();
+                let chars = self.chars();
+                if cursor > vi::line_start(&chars, cursor) {
+                    cursor = vi::grapheme_prev(&chars, cursor, 1);
+                }
+            }
+            EditMode::Normal => {}
         }
         self.mode = EditMode::Normal;
         self.one_shot = false;
-        let cursor = vi::clamp_normal(&self.chars(), cursor);
+        self.literal = false;
+        let chars = self.chars();
+        let cursor = self.normal_position(&chars, vi::clamp_normal(&chars, cursor), true);
         self.set_cursor_char(cursor);
+    }
+
+    fn normal_position(&self, chars: &[char], cursor: usize, backward: bool) -> usize {
+        let Some(chip) = self
+            .mention_ranges()
+            .into_iter()
+            .find(|range| range.contains_strictly(cursor))
+        else {
+            return cursor;
+        };
+        if backward || chip.end >= vi::line_end(chars, chip.start) {
+            chip.start
+        } else {
+            chip.end
+        }
     }
 
     pub fn move_to(&mut self, cursor: usize, backward: bool) {
         let chars = self.chars();
         let cursor = match self.mode {
-            EditMode::Insert => cursor.min(chars.len()),
-            _ => vi::clamp_normal(&chars, cursor),
+            EditMode::Insert | EditMode::Replace => {
+                let cursor = cursor.min(chars.len());
+                chips::snap_cursor(&self.draft.text, &self.draft.mentions, cursor, backward)
+            }
+            _ => self.normal_position(&chars, vi::clamp_normal(&chars, cursor), backward),
         };
         self.set_cursor_char(cursor);
-        self.snap_cursor(backward);
         if let EditMode::Visual { line, anchor, .. } = self.mode {
-            let head = self.cursor_char();
-            self.mode = EditMode::Visual { line, anchor, head };
+            self.mode = EditMode::Visual {
+                line,
+                anchor,
+                head: cursor,
+            };
             self.refresh_selection();
         }
     }
@@ -745,21 +978,43 @@ impl Composer {
         self.refresh_selection();
     }
 
-    pub fn visual_range(&self) -> Option<vi::Range> {
-        let EditMode::Visual { line, anchor, head } = self.mode else {
-            return None;
+    pub fn reselect(&mut self) -> bool {
+        let (Some(line), Some(start), Some(end)) = (
+            self.last_visual_line,
+            self.marks.get(&'<').copied(),
+            self.marks.get(&'>').copied(),
+        ) else {
+            return false;
         };
         let chars = self.chars();
+        let start = vi::clamp_normal(&chars, start);
+        let end = vi::clamp_normal(&chars, end);
+        self.set_visual(line, start, end);
+        true
+    }
+
+    fn selection_bounds(&self, line: bool, anchor: usize, head: usize) -> vi::Range {
+        let chars = self.chars();
         if line {
-            return Some(vi::lines_between(&chars, anchor, head));
+            return vi::lines_between(&chars, anchor, head);
         }
         let start = anchor.min(head);
-        let end = (anchor.max(head) + 1).min(chars.len());
-        Some(vi::Range {
+        let last = anchor.max(head);
+        let end = vi::grapheme_next(&chars, last, 1)
+            .max(last + 1)
+            .min(chars.len());
+        self.expand_chips(vi::Range {
             start,
             end: end.max(start),
             linewise: false,
         })
+    }
+
+    pub fn visual_range(&self) -> Option<vi::Range> {
+        let EditMode::Visual { line, anchor, head } = self.mode else {
+            return None;
+        };
+        Some(self.selection_bounds(line, anchor, head))
     }
 
     pub fn refresh_selection(&mut self) {
@@ -772,7 +1027,8 @@ impl Composer {
             let high = anchor.max(head);
             (vi::line_start(&chars, low), vi::line_end(&chars, high))
         } else {
-            (anchor.min(head), (anchor.max(head) + 1).min(chars.len()))
+            let range = self.selection_bounds(false, anchor, head);
+            (range.start, range.end)
         };
         self.textarea.cancel_selection();
         self.set_cursor_char(start);
@@ -784,6 +1040,134 @@ impl Composer {
         match self.mode {
             EditMode::Visual { head, .. } => head,
             _ => self.cursor_char(),
+        }
+    }
+
+    pub fn paste(&mut self, text: &str, now: Instant) {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if normalized.is_empty() {
+            return;
+        }
+        match self.mode {
+            EditMode::Insert | EditMode::Replace => self.insert_text(&normalized, now),
+            EditMode::Normal | EditMode::Visual { .. } => {
+                let range = self.visual_range();
+                if range.is_some() {
+                    self.enter_normal();
+                }
+                self.checkpoint();
+                let at = self.cursor_char();
+                let (start, end) = range.map_or((at, at), |range| (range.start, range.end));
+                let cursor = start + normalized.chars().count() - 1;
+                self.replace_range(start, end, &normalized, cursor, now);
+                self.move_to(cursor, false);
+            }
+        }
+    }
+
+    pub fn screen_offset(&self, row: u16, column: u16) -> usize {
+        let (scroll_row, scroll_col) = self.textarea.scroll_offset();
+        let ratatui_textarea::DataCursor(line, col) = self.textarea.screen_to_data(
+            usize::from(row) + usize::from(scroll_row),
+            usize::from(column) + usize::from(scroll_col),
+        );
+        let lines = self.textarea.lines();
+        let line = line.min(lines.len().saturating_sub(1));
+        let col = col.min(lines.get(line).map_or(0, |text| text.chars().count()));
+        row_col_to_char(lines, line, col)
+    }
+
+    pub fn click_at(&mut self, offset: usize) {
+        let cursor = chips::snap_cursor(&self.draft.text, &self.draft.mentions, offset, false);
+        self.set_cursor_char(cursor);
+        self.capture_insert_base();
+    }
+
+    pub fn drag_to(&mut self, offset: usize) {
+        let anchor = match self.mode {
+            EditMode::Visual { anchor, .. } => anchor,
+            _ => {
+                let anchor = self.cursor_char();
+                self.enter_normal();
+                vi::clamp_normal(&self.chars(), anchor)
+            }
+        };
+        let chars = self.chars();
+        let head = self.normal_position(&chars, vi::clamp_normal(&chars, offset), false);
+        self.set_visual(false, anchor, head);
+    }
+
+    pub fn replace_key(&mut self, key: KeyEvent, now: Instant) -> ComposerKey {
+        let ctrl = has(&key, KeyModifiers::CONTROL);
+        let alt = has(&key, KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => ComposerKey::Escape,
+            KeyCode::Char('[') if ctrl => ComposerKey::Escape,
+            KeyCode::Char(ch) if !ctrl && !alt => {
+                let chars = self.chars();
+                let cursor = self.cursor_char();
+                let end = vi::line_end(&chars, cursor);
+                if cursor < end {
+                    let next = vi::grapheme_next(&chars, cursor, 1);
+                    let original: String = chars[cursor..next].iter().collect();
+                    let mut original = original.chars();
+                    let first = original.next();
+                    self.replace_range(cursor, next, &ch.to_string(), cursor + 1, now);
+                    self.replaced
+                        .push(first.filter(|_| original.next().is_none()));
+                } else {
+                    self.replace_range(cursor, cursor, &ch.to_string(), cursor + 1, now);
+                    self.replaced.push(None);
+                }
+                ComposerKey::Edited
+            }
+            KeyCode::Enter => {
+                let cursor = self.cursor_char();
+                self.replace_range(cursor, cursor, "\n", cursor + 1, now);
+                self.replaced.push(None);
+                ComposerKey::Edited
+            }
+            KeyCode::Backspace => {
+                let cursor = self.cursor_char();
+                if cursor == 0 {
+                    return ComposerKey::Handled;
+                }
+                match self.replaced.pop() {
+                    Some(Some(original)) => {
+                        self.replace_range(
+                            cursor - 1,
+                            cursor,
+                            &original.to_string(),
+                            cursor - 1,
+                            now,
+                        );
+                        ComposerKey::Edited
+                    }
+                    Some(None) => {
+                        self.replace_range(cursor - 1, cursor, "", cursor - 1, now);
+                        ComposerKey::Edited
+                    }
+                    None => {
+                        self.set_cursor_char(cursor - 1);
+                        ComposerKey::Handled
+                    }
+                }
+            }
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Home
+            | KeyCode::End => {
+                self.replaced.clear();
+                self.textarea.input(key);
+                self.snap_cursor(matches!(
+                    key.code,
+                    KeyCode::Left | KeyCode::Up | KeyCode::Home
+                ));
+                ComposerKey::Handled
+            }
+            _ => ComposerKey::Unhandled,
         }
     }
 }

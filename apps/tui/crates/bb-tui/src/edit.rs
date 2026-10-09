@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::app::{AppState, Effect, Focus};
-use crate::composer::{Composer, EditMode};
+use crate::composer::{Change, Composer, ComposerKey, EditMode};
 use crate::evil::{RegisterValue, Registers};
 use crate::vi::{
     self, CharAct, EditOp, InsertAt, LastFind, Motion, Operator, Range, Target, line_end,
@@ -20,6 +20,7 @@ struct Ctx<'a> {
 struct Outcome {
     copy: Option<String>,
     message: Option<String>,
+    error: bool,
     to_rows: bool,
 }
 
@@ -54,20 +55,42 @@ pub(crate) fn apply_edit(state: &mut AppState, op: EditOp, count: Option<usize>)
     let Some(mut ctx) = context(state) else {
         return Vec::new();
     };
-    let outcome = run(&mut ctx, op, count, register);
+    let outcome = if op == EditOp::Repeat {
+        repeat(&mut ctx, count)
+    } else {
+        let change = record(ctx.composer, op, count, register);
+        let outcome = run(&mut ctx, op, count, register);
+        if let Some(change) = change {
+            if matches!(ctx.composer.mode, EditMode::Insert | EditMode::Replace) {
+                ctx.composer.capture_insert_base();
+                ctx.composer.pending_change = Some(change);
+            } else {
+                ctx.composer.last_change = Some(change);
+            }
+        }
+        outcome
+    };
     let one_shot = ctx.composer.one_shot
         && ctx.composer.mode == EditMode::Normal
-        && !matches!(op, EditOp::Visual { .. });
+        && !matches!(op, EditOp::Visual { .. } | EditOp::Reselect);
     if one_shot {
         ctx.composer.enter_insert();
         ctx.composer.one_shot = false;
     }
+    finish(state, outcome)
+}
+
+fn finish(state: &mut AppState, outcome: Outcome) -> Vec<Effect> {
     let mut effects = Vec::new();
     if let Some(text) = outcome.copy {
         effects.push(Effect::Copy(text));
     }
     if let Some(message) = outcome.message {
-        state.keys.message(message);
+        if outcome.error {
+            state.keys.error(message);
+        } else {
+            state.keys.message(message);
+        }
     }
     if outcome.to_rows
         && let Some(form) = state.new_thread.as_mut()
@@ -75,6 +98,113 @@ pub(crate) fn apply_edit(state: &mut AppState, op: EditOp, count: Option<usize>)
         form.prompt_active = false;
     }
     effects
+}
+
+fn cluster_count(chars: &[char], start: usize, end: usize) -> usize {
+    let mut count = 0;
+    let mut pos = start;
+    while pos < end {
+        let next = vi::grapheme_next(chars, pos, 1);
+        pos = if next > pos { next } else { pos + 1 };
+        count += 1;
+    }
+    count
+}
+
+fn record(
+    composer: &Composer,
+    op: EditOp,
+    count: Option<usize>,
+    register: Option<char>,
+) -> Option<Change> {
+    if !op.repeatable() {
+        return None;
+    }
+    let change = |op: EditOp, count: Option<usize>| {
+        Some(Change {
+            op,
+            count,
+            register,
+            inserted: None,
+        })
+    };
+    let visual = matches!(
+        op,
+        EditOp::VisualApply(_) | EditOp::VisualReplace(_) | EditOp::VisualJoin
+    );
+    if !visual {
+        return change(op, count);
+    }
+    let range = composer.visual_range()?;
+    let chars = composer.chars();
+    let first = line_index(&chars, range.start);
+    let last = line_index(&chars, range.end.saturating_sub(1).max(range.start));
+    let lines = last - first + 1;
+    match op {
+        EditOp::VisualJoin => change(EditOp::Join { spaces: true }, Some(lines)),
+        EditOp::VisualApply(operator) if range.linewise => {
+            change(EditOp::Apply(operator, Target::Line), Some(lines))
+        }
+        EditOp::VisualApply(operator) if lines == 1 => change(
+            EditOp::Apply(operator, Target::Motion(Motion::Right)),
+            Some(cluster_count(&chars, range.start, range.end)),
+        ),
+        EditOp::VisualReplace(ch) if !range.linewise && lines == 1 => change(
+            EditOp::ReplaceChar(ch),
+            Some(cluster_count(&chars, range.start, range.end)),
+        ),
+        _ => None,
+    }
+}
+
+fn repeat(ctx: &mut Ctx, count: Option<usize>) -> Outcome {
+    let Some(change) = ctx.composer.last_change.clone() else {
+        return Outcome {
+            message: Some("No previous change to repeat".into()),
+            ..Outcome::default()
+        };
+    };
+    let count = count.or(change.count);
+    let enters_insert = matches!(change.op, EditOp::Insert(_) | EditOp::ReplaceMode);
+    let outcome = run(
+        ctx,
+        change.op,
+        if enters_insert { None } else { count },
+        change.register,
+    );
+    if let Some(text) = &change.inserted {
+        let times = if enters_insert {
+            count.unwrap_or(1).max(1)
+        } else {
+            1
+        };
+        match ctx.composer.mode {
+            EditMode::Insert => {
+                if !text.is_empty() {
+                    ctx.composer.insert_text(&text.repeat(times), ctx.now);
+                }
+            }
+            EditMode::Replace => {
+                for ch in text.repeat(times).chars() {
+                    let key = if ch == '\n' {
+                        crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter)
+                    } else {
+                        crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Char(ch))
+                    };
+                    if ctx.composer.replace_key(key, ctx.now) == ComposerKey::Unhandled {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if matches!(ctx.composer.mode, EditMode::Insert | EditMode::Replace) {
+        ctx.composer.pending_change = None;
+        ctx.composer.enter_normal();
+    }
+    ctx.composer.last_change = Some(Change { count, ..change });
+    outcome
 }
 
 pub(crate) fn char_act(
@@ -97,7 +227,7 @@ pub(crate) fn char_act(
         CharAct::Replace => apply_edit(state, EditOp::ReplaceChar(ch), count),
         CharAct::VisualReplace => apply_edit(state, EditOp::VisualReplace(ch), count),
         CharAct::Register => {
-            if ch.is_ascii_alphanumeric() || "\"-_+*".contains(ch) {
+            if ch.is_ascii_alphanumeric() || "\"-_+*.:/".contains(ch) {
                 state.keys.register = Some(ch);
                 state.keys.count = count;
             } else {
@@ -106,16 +236,130 @@ pub(crate) fn char_act(
             Vec::new()
         }
         CharAct::InsertRegister => {
-            let text = state
+            let stored = state
                 .registers
                 .get(Some(ch))
                 .map(|value| value.text.clone());
-            if let (Some(text), Some(ctx)) = (text, context(state)) {
-                ctx.composer.insert_text(&text, ctx.now);
+            if let Some(ctx) = context(state) {
+                let text = if ch == '.' {
+                    ctx.composer.last_inserted.clone()
+                } else {
+                    stored
+                };
+                if let Some(text) = text {
+                    ctx.composer.insert_text(&text, ctx.now);
+                }
             }
             Vec::new()
         }
+        CharAct::SetMark => {
+            state.keys.register = None;
+            let Some(ctx) = context(state) else {
+                return Vec::new();
+            };
+            let cursor = ctx.composer.cursor();
+            if !ctx.composer.set_mark(ch, cursor) {
+                state
+                    .keys
+                    .error("E191: Argument must be a letter or forward/backward quote");
+            }
+            Vec::new()
+        }
+        CharAct::Mark { line } => {
+            state.keys.register = None;
+            let Some(ctx) = context(state) else {
+                return Vec::new();
+            };
+            let outcome = jump_to_mark(ctx.composer, ch, line);
+            finish(state, outcome)
+        }
+        CharAct::ApplyMark { op, line } => {
+            let register = state.keys.register.take();
+            let Some(mut ctx) = context(state) else {
+                return Vec::new();
+            };
+            let mut outcome = Outcome::default();
+            match ctx.composer.mark(ch) {
+                Some(mark) => {
+                    let chars = ctx.composer.chars();
+                    let pos = ctx.composer.cursor().min(chars.len());
+                    let range = if line {
+                        vi::lines_between(&chars, pos, mark)
+                    } else {
+                        Range {
+                            start: pos.min(mark),
+                            end: pos.max(mark),
+                            linewise: false,
+                        }
+                    };
+                    if range.linewise || range.end > range.start {
+                        let range = if range.linewise {
+                            range
+                        } else {
+                            ctx.composer.expand_chips(range)
+                        };
+                        apply_operator(&mut ctx, op, range, register, &mut outcome);
+                    }
+                }
+                None => {
+                    outcome.message = Some("E20: Mark not set".into());
+                    outcome.error = true;
+                }
+            }
+            finish(state, outcome)
+        }
     }
+}
+
+fn jump_to_mark(composer: &mut Composer, name: char, line: bool) -> Outcome {
+    let Some(mark) = composer.mark(name) else {
+        return Outcome {
+            message: Some("E20: Mark not set".into()),
+            error: true,
+            ..Outcome::default()
+        };
+    };
+    let chars = composer.chars();
+    let pos = composer.cursor();
+    let target = if line {
+        first_non_blank(&chars, mark)
+    } else {
+        mark
+    };
+    composer.set_mark('\'', pos);
+    composer.move_to(target, target < pos);
+    Outcome::default()
+}
+
+fn is_jump(motion: Motion) -> bool {
+    matches!(
+        motion,
+        Motion::FirstLine
+            | Motion::LastLine
+            | Motion::MatchPair
+            | Motion::ParagraphForward
+            | Motion::ParagraphBackward
+            | Motion::SentenceForward
+            | Motion::SentenceBackward
+    )
+}
+
+fn read_only(register: Option<char>) -> bool {
+    matches!(register, Some('.' | ':' | '/'))
+}
+
+fn register_value(ctx: &Ctx, register: Option<char>) -> Option<RegisterValue> {
+    if register == Some('.') {
+        return ctx
+            .composer
+            .last_inserted
+            .clone()
+            .map(|text| RegisterValue {
+                text,
+                linewise: false,
+            });
+    }
+    ctx.registers.get(register).cloned()
 }
 
 fn value(chars: &[char], range: Range) -> RegisterValue {
@@ -148,6 +392,7 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
     let mut outcome = Outcome::default();
     let now = ctx.now;
     let chars = ctx.composer.chars();
+    let scan = ctx.composer.motion_chars();
     let pos = ctx.composer.cursor().min(chars.len());
     let times = count.unwrap_or(1).max(1);
     match op {
@@ -156,7 +401,7 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
                 InsertAt::Before => pos,
                 InsertAt::After => {
                     if pos < chars.len() && chars[pos] != '\n' {
-                        pos + 1
+                        vi::grapheme_next(&chars, pos, 1).max(pos + 1)
                     } else {
                         pos
                     }
@@ -188,14 +433,22 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
                 outcome.to_rows = true;
                 return outcome;
             }
-            if let Some(dest) = vi::motion(&chars, pos, motion, count, ctx.last_find) {
+            if let Some(dest) = vi::motion(&scan, pos, motion, count, ctx.last_find) {
+                if is_jump(motion) && dest != pos {
+                    ctx.composer.set_mark('\'', pos);
+                }
                 ctx.composer.move_to(dest, dest < pos);
             }
         }
         EditOp::Apply(operator, target) => {
             let change = operator == Operator::Change;
-            if let Some(range) = vi::target_range(&chars, pos, target, count, change, ctx.last_find)
+            if let Some(range) = vi::target_range(&scan, pos, target, count, change, ctx.last_find)
             {
+                let range = if range.linewise {
+                    range
+                } else {
+                    ctx.composer.expand_chips(range)
+                };
                 apply_operator(ctx, operator, range, register, &mut outcome);
             }
         }
@@ -204,17 +457,18 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
             let end_line = line_end(&chars, pos);
             let range = if op == EditOp::DeleteCharBefore {
                 Range {
-                    start: pos.saturating_sub(times).max(start_line),
+                    start: vi::grapheme_prev(&chars, pos, times).max(start_line),
                     end: pos,
                     linewise: false,
                 }
             } else {
                 Range {
                     start: pos,
-                    end: (pos + times).min(end_line),
+                    end: vi::grapheme_next(&chars, pos, times).min(end_line),
                     linewise: false,
                 }
             };
+            let range = ctx.composer.expand_chips(range);
             if op == EditOp::Substitute {
                 apply_operator(ctx, Operator::Change, range, register, &mut outcome);
             } else if range.end > range.start {
@@ -222,7 +476,7 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
             }
         }
         EditOp::ToggleCaseChar => {
-            let end = (pos + times).min(line_end(&chars, pos));
+            let end = vi::grapheme_next(&chars, pos, times).min(line_end(&chars, pos));
             if end > pos {
                 let text: String = chars[pos..end].iter().collect();
                 ctx.composer.checkpoint();
@@ -233,11 +487,17 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
                     end,
                     now,
                 );
-                ctx.composer.move_to(end, false);
+                let chars = ctx.composer.chars();
+                let next = if end >= line_end(&chars, pos) {
+                    vi::grapheme_prev(&chars, end, 1)
+                } else {
+                    end
+                };
+                ctx.composer.move_to(next, false);
             }
         }
         EditOp::Join { spaces } => join(ctx, pos, times.max(2) - 1, spaces),
-        EditOp::Put { before } => match ctx.registers.get(register).cloned() {
+        EditOp::Put { before } => match register_value(ctx, register) {
             Some(value) => put(ctx, &chars, pos, &value, before, times),
             None => {
                 outcome.message = Some(format!(
@@ -282,6 +542,18 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
             }
             _ => ctx.composer.start_visual(line),
         },
+        EditOp::Reselect => {
+            if !ctx.composer.reselect() {
+                outcome.message = Some("No previous visual selection".into());
+            }
+        }
+        EditOp::ReplaceMode => ctx.composer.enter_replace(),
+        EditOp::UndoLine => {
+            if !ctx.composer.undo_line(now) {
+                outcome.message = Some("Nothing to undo on the last changed line".into());
+            }
+        }
+        EditOp::Repeat => {}
         EditOp::VisualSwap => {
             if let EditMode::Visual { line, anchor, head } = ctx.composer.mode {
                 ctx.composer.set_visual(line, head, anchor);
@@ -290,10 +562,12 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
         EditOp::VisualObject(target) => {
             if let EditMode::Visual { line, .. } = ctx.composer.mode
                 && let Some(range) =
-                    vi::target_range(&chars, pos, target, count, false, ctx.last_find)
+                    vi::target_range(&scan, pos, target, count, false, ctx.last_find)
                 && range.end > range.start
             {
-                ctx.composer.set_visual(line, range.start, range.end - 1);
+                let range = ctx.composer.expand_chips(range);
+                let last = vi::grapheme_start(&chars, range.end - 1);
+                ctx.composer.set_visual(line, range.start, last);
             }
         }
         EditOp::VisualApply(operator) => {
@@ -311,10 +585,9 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
             }
         }
         EditOp::VisualPut => {
-            if let (Some(range), Some(value)) = (
-                ctx.composer.visual_range(),
-                ctx.registers.get(register).cloned(),
-            ) {
+            if let (Some(range), Some(value)) =
+                (ctx.composer.visual_range(), register_value(ctx, register))
+            {
                 ctx.composer.enter_normal();
                 ctx.composer.checkpoint();
                 let mut text = value.text.clone();
@@ -328,12 +601,21 @@ fn run(ctx: &mut Ctx, op: EditOp, count: Option<usize>, register: Option<char>) 
             }
         }
         EditOp::ReplaceChar(ch) => {
-            let end = pos + times;
-            if end <= line_end(&chars, pos) {
+            let line_stop = line_end(&chars, pos);
+            if cluster_count(&chars, pos, line_stop) >= times {
+                let end = ctx
+                    .composer
+                    .expand_chips(Range {
+                        start: pos,
+                        end: vi::grapheme_next(&chars, pos, times),
+                        linewise: false,
+                    })
+                    .end;
                 ctx.composer.checkpoint();
                 let text: String = std::iter::repeat_n(ch, times).collect();
-                ctx.composer.replace_range(pos, end, &text, end - 1, now);
-                ctx.composer.move_to(end - 1, false);
+                let cursor = pos + times - 1;
+                ctx.composer.replace_range(pos, end, &text, cursor, now);
+                ctx.composer.move_to(cursor, false);
             }
         }
         EditOp::VisualReplace(ch) => {
@@ -368,6 +650,19 @@ fn apply_operator(
     outcome: &mut Outcome,
 ) {
     let now = ctx.now;
+    if read_only(register)
+        && matches!(
+            operator,
+            Operator::Yank | Operator::Delete | Operator::Change
+        )
+    {
+        outcome.message = Some(format!(
+            "E354: Invalid register name: '{}'",
+            register.unwrap_or('"')
+        ));
+        outcome.error = true;
+        return;
+    }
     let chars = ctx.composer.chars();
     let range = Range {
         start: range.start.min(chars.len()),

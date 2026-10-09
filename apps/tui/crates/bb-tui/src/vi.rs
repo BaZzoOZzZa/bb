@@ -20,6 +20,8 @@ pub enum Motion {
     LastLine,
     ParagraphForward,
     ParagraphBackward,
+    SentenceForward,
+    SentenceBackward,
     MatchPair,
     Find { forward: bool, till: bool, ch: char },
     RepeatFind { reverse: bool },
@@ -41,6 +43,7 @@ pub enum Operator {
 pub enum Object {
     Word,
     BigWord,
+    Sentence,
     Paragraph,
     Quote(char),
     Pair(char, char),
@@ -79,6 +82,10 @@ pub enum EditOp {
     Undo,
     Redo,
     Visual { line: bool },
+    Reselect,
+    ReplaceMode,
+    UndoLine,
+    Repeat,
     VisualSwap,
     VisualApply(Operator),
     VisualObject(Target),
@@ -105,6 +112,14 @@ pub enum CharAct {
     VisualReplace,
     Register,
     InsertRegister,
+    SetMark,
+    Mark {
+        line: bool,
+    },
+    ApplyMark {
+        op: Operator,
+        line: bool,
+    },
 }
 
 impl CharAct {
@@ -130,6 +145,10 @@ impl CharAct {
             Self::Replace | Self::VisualReplace => "Replace with a character",
             Self::Register => "Use a register",
             Self::InsertRegister => "Insert a register",
+            Self::SetMark => "Set a mark",
+            Self::Mark { line: true } => "Go to a mark's line",
+            Self::Mark { line: false } => "Go to a mark",
+            Self::ApplyMark { .. } => "Operate up to a mark",
         }
     }
 }
@@ -172,6 +191,8 @@ impl Motion {
             Self::LastLine => "last line",
             Self::ParagraphForward => "next paragraph",
             Self::ParagraphBackward => "previous paragraph",
+            Self::SentenceForward => "next sentence",
+            Self::SentenceBackward => "previous sentence",
             Self::MatchPair => "matching bracket",
             Self::Find { .. } => "find character",
             Self::RepeatFind { reverse: false } => "repeat find",
@@ -207,6 +228,7 @@ impl Object {
         match self {
             Self::Word => "word",
             Self::BigWord => "WORD",
+            Self::Sentence => "sentence",
             Self::Paragraph => "paragraph",
             Self::Quote(_) => "quoted text",
             Self::Pair(..) => "bracketed text",
@@ -247,6 +269,10 @@ impl EditOp {
             Self::Redo => "Redo".into(),
             Self::Visual { line: false } => "Visual state".into(),
             Self::Visual { line: true } => "Visual-line state".into(),
+            Self::Reselect => "Reselect the last visual selection".into(),
+            Self::ReplaceMode => "Replace state".into(),
+            Self::UndoLine => "Undo all changes on the last changed line".into(),
+            Self::Repeat => "Repeat the last change".into(),
             Self::VisualSwap => "Other end of the selection".into(),
             Self::VisualApply(op) => format!("{} the selection", capitalize(op.label())),
             Self::VisualObject(Target::Inner(object)) => format!("Select inner {}", object.label()),
@@ -262,7 +288,7 @@ impl EditOp {
         }
     }
 
-    pub fn changes(self) -> bool {
+    pub fn repeatable(self) -> bool {
         !matches!(
             self,
             Self::Move(_)
@@ -270,12 +296,15 @@ impl EditOp {
                 | Self::Undo
                 | Self::Redo
                 | Self::Visual { .. }
+                | Self::Reselect
+                | Self::Repeat
                 | Self::VisualSwap
                 | Self::VisualApply(Operator::Yank)
                 | Self::VisualObject(_)
+                | Self::VisualPut
+                | Self::UndoLine
                 | Self::HistoryPrevious
                 | Self::HistoryNext
-                | Self::Insert(_)
         )
     }
 }
@@ -302,9 +331,13 @@ pub struct LastFind {
     pub ch: Option<char>,
 }
 
+pub const CHIP: char = '\u{F8FF}';
+
 fn class(ch: char, big: bool) -> u8 {
     if ch.is_whitespace() {
         0
+    } else if ch == CHIP {
+        3
     } else if big || ch.is_alphanumeric() || ch == '_' {
         1
     } else {
@@ -355,7 +388,7 @@ fn nth_line_start(chars: &[char], line: usize) -> usize {
     line_start(chars, chars.len())
 }
 
-fn first_non_blank(chars: &[char], pos: usize) -> usize {
+pub fn first_non_blank(chars: &[char], pos: usize) -> usize {
     let start = line_start(chars, pos);
     let end = line_end(chars, pos);
     (start..end)
@@ -367,9 +400,49 @@ pub fn clamp_normal(chars: &[char], pos: usize) -> usize {
     let start = line_start(chars, pos);
     let end = line_end(chars, pos);
     if end == start {
-        start
-    } else {
-        pos.min(end - 1).max(start)
+        return start;
+    }
+    let pos = pos.clamp(start, end - 1);
+    grapheme_start(chars, pos)
+}
+
+fn cluster_bounds(chars: &[char], pos: usize) -> Vec<usize> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let start = line_start(chars, pos);
+    let end = line_end(chars, pos);
+    let line: String = chars[start..end].iter().collect();
+    let mut bounds = Vec::new();
+    let mut offset = start;
+    for cluster in line.graphemes(true) {
+        bounds.push(offset);
+        offset += cluster.chars().count();
+    }
+    bounds.push(end);
+    bounds
+}
+
+pub fn grapheme_start(chars: &[char], pos: usize) -> usize {
+    let pos = pos.min(chars.len());
+    cluster_bounds(chars, pos)
+        .into_iter()
+        .rev()
+        .find(|bound| *bound <= pos)
+        .unwrap_or(pos)
+}
+
+pub fn grapheme_next(chars: &[char], pos: usize, times: usize) -> usize {
+    let pos = pos.min(chars.len());
+    let bounds = cluster_bounds(chars, pos);
+    let index = bounds.iter().rposition(|bound| *bound <= pos).unwrap_or(0);
+    bounds[(index + times).min(bounds.len() - 1)]
+}
+
+pub fn grapheme_prev(chars: &[char], pos: usize, times: usize) -> usize {
+    let pos = pos.min(chars.len());
+    let bounds = cluster_bounds(chars, pos);
+    match bounds.iter().position(|bound| *bound >= pos) {
+        Some(index) => bounds[index.saturating_sub(times)],
+        None => bounds[0],
     }
 }
 
@@ -472,6 +545,93 @@ fn paragraph(chars: &[char], pos: usize, forward: bool) -> usize {
     nth_line_start(chars, line)
 }
 
+fn sentence_starts(chars: &[char]) -> Vec<usize> {
+    let len = chars.len();
+    let mut starts = Vec::new();
+    let mut index = 0;
+    let mut fresh = true;
+    while index < len {
+        let ch = chars[index];
+        if fresh {
+            if ch == '\n' && index > 0 && chars[index - 1] == '\n' {
+                starts.push(index);
+                index += 1;
+                continue;
+            }
+            if !ch.is_whitespace() {
+                starts.push(index);
+                fresh = false;
+            }
+            index += 1;
+            continue;
+        }
+        if ch == '\n' && index + 1 < len && chars[index + 1] == '\n' {
+            fresh = true;
+            index += 1;
+            continue;
+        }
+        if matches!(ch, '.' | '!' | '?') {
+            let mut end = index + 1;
+            while end < len && matches!(chars[end], ')' | ']' | '"' | '\'') {
+                end += 1;
+            }
+            if end >= len || chars[end].is_whitespace() {
+                fresh = true;
+                index = end;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    starts
+}
+
+fn sentence(chars: &[char], pos: usize, forward: bool) -> usize {
+    let starts = sentence_starts(chars);
+    if forward {
+        starts
+            .into_iter()
+            .find(|start| *start > pos)
+            .unwrap_or(chars.len())
+    } else {
+        starts
+            .into_iter()
+            .rev()
+            .find(|start| *start < pos)
+            .unwrap_or(0)
+    }
+}
+
+fn sentence_range(chars: &[char], pos: usize, around: bool) -> Option<Range> {
+    let starts = sentence_starts(chars);
+    let start = starts.iter().rev().find(|start| **start <= pos).copied()?;
+    let next = starts
+        .iter()
+        .find(|start| **start > pos)
+        .copied()
+        .unwrap_or(chars.len());
+    let mut inner = next;
+    while inner > start && chars[inner - 1].is_whitespace() {
+        inner -= 1;
+    }
+    let end = if around && !chars[inner..next].contains(&'\n') {
+        next
+    } else if around {
+        let mut end = inner;
+        while end < next && chars[end].is_whitespace() && chars[end] != '\n' {
+            end += 1;
+        }
+        end
+    } else {
+        inner
+    };
+    (end > start).then_some(Range {
+        start,
+        end,
+        linewise: false,
+    })
+}
+
 fn match_pair(chars: &[char], pos: usize) -> Option<usize> {
     const PAIRS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
     let end = line_end(chars, pos);
@@ -558,8 +718,8 @@ pub fn motion(
         current
     };
     Some(match motion {
-        Motion::Left => pos.saturating_sub(times).max(line_start(chars, pos)),
-        Motion::Right => (pos + times).min(line_end(chars, pos)),
+        Motion::Left => grapheme_prev(chars, pos, times),
+        Motion::Right => grapheme_next(chars, pos, times),
         Motion::Up => vertical(chars, pos, false, times),
         Motion::Down => vertical(chars, pos, true, times),
         Motion::WordForward => repeat(&|p| word_forward(chars, p, false)),
@@ -596,7 +756,16 @@ pub fn motion(
         }
         Motion::ParagraphForward => repeat(&|p| paragraph(chars, p, true)),
         Motion::ParagraphBackward => repeat(&|p| paragraph(chars, p, false)),
-        Motion::MatchPair => match_pair(chars, pos)?,
+        Motion::SentenceForward => repeat(&|p| sentence(chars, p, true)),
+        Motion::SentenceBackward => repeat(&|p| sentence(chars, p, false)),
+        Motion::MatchPair => match count {
+            Some(percent) => {
+                let lines = line_count(chars);
+                let line = (percent.min(100) * lines).div_ceil(100).max(1) - 1;
+                first_non_blank(chars, nth_line_start(chars, line))
+            }
+            None => match_pair(chars, pos)?,
+        },
         Motion::Find { forward, till, ch } => {
             *last_find = LastFind {
                 forward,
@@ -690,12 +859,12 @@ pub fn motion_range(
     } else {
         motion(chars, pos, target, count, last_find)?
     };
-    if target.linewise() {
+    if target.linewise() || (target == Motion::MatchPair && count.is_some()) {
         return Some(lines_between(chars, pos, dest));
     }
     let (mut start, mut end) = (pos.min(dest), pos.max(dest));
     if target.inclusive() {
-        end = (end + 1).min(chars.len());
+        end = grapheme_next(chars, end, 1).max(end + 1).min(chars.len());
     }
     if matches!(target, Motion::WordForward | Motion::BigWordForward) {
         let limit = line_end(chars, start);
@@ -750,6 +919,7 @@ pub fn object_range(chars: &[char], pos: usize, object: Object, around: bool) ->
                 linewise: false,
             })
         }
+        Object::Sentence => sentence_range(chars, pos, around),
         Object::Paragraph => {
             let lines = line_count(chars);
             let empty = |line: usize| {
@@ -994,5 +1164,204 @@ mod tests {
         assert_eq!(transform("aB", Operator::ToggleCase), "Ab");
         assert_eq!(transform("a\n\nb", Operator::Indent), "  a\n\n  b");
         assert_eq!(transform("   a\n b", Operator::Outdent), " a\nb");
+    }
+
+    fn counted(text: &str, pos: usize, target: Motion, count: usize) -> usize {
+        motion(
+            &chars(text),
+            pos,
+            target,
+            Some(count),
+            &mut LastFind::default(),
+        )
+        .unwrap()
+    }
+
+    fn span(range: Range) -> (usize, usize) {
+        (range.start, range.end)
+    }
+
+    #[test]
+    fn word_motions_on_cyrillic_cjk_and_emoji() {
+        let text = "привет, мир 世界ok 😀😀 end";
+        assert_eq!(go(text, 0, Motion::WordForward), 6);
+        assert_eq!(go(text, 6, Motion::WordForward), 8);
+        assert_eq!(go(text, 8, Motion::WordForward), 12);
+        assert_eq!(go(text, 12, Motion::WordForward), 17);
+        assert_eq!(go(text, 17, Motion::WordForward), 20);
+        assert_eq!(go(text, 0, Motion::WordEnd), 5);
+        assert_eq!(go(text, 12, Motion::WordEnd), 15);
+        assert_eq!(go(text, 20, Motion::WordBackward), 17);
+        assert_eq!(go(text, 17, Motion::WordBackward), 12);
+        assert_eq!(go(text, 0, Motion::BigWordForward), 8);
+        assert_eq!(counted(text, 0, Motion::WordForward, 3), 12);
+        assert_eq!(go(text, 12, Motion::WordEndBackward), 10);
+    }
+
+    #[test]
+    fn left_and_right_step_over_grapheme_clusters() {
+        let text = "e\u{301}x👨\u{200d}👩\u{200d}👧y";
+        let line = chars(text);
+        assert_eq!(line.len(), 9);
+        assert_eq!(go(text, 0, Motion::Right), 2);
+        assert_eq!(go(text, 2, Motion::Right), 3);
+        assert_eq!(go(text, 3, Motion::Right), 8);
+        assert_eq!(go(text, 8, Motion::Left), 3);
+        assert_eq!(go(text, 3, Motion::Left), 2);
+        assert_eq!(go(text, 2, Motion::Left), 0);
+        assert_eq!(counted(text, 0, Motion::Right, 3), 8);
+        assert_eq!(clamp_normal(&line, 1), 0);
+        assert_eq!(clamp_normal(&line, 5), 3);
+        assert_eq!(clamp_normal(&line, 99), 8);
+        assert_eq!(grapheme_next(&line, 8, 1), 9);
+        assert_eq!(grapheme_prev(&line, 9, 1), 8);
+        assert_eq!(grapheme_start(&line, 7), 3);
+    }
+
+    #[test]
+    fn inclusive_motions_cover_the_whole_last_cluster() {
+        let text = chars("cafe\u{301} bar");
+        let mut last = LastFind::default();
+        let range = motion_range(&text, 0, Motion::WordEnd, None, false, &mut last).unwrap();
+        assert_eq!(span(range), (0, 5));
+        let range = motion_range(&text, 0, Motion::LineEnd, None, false, &mut last).unwrap();
+        assert_eq!(span(range), (0, 9));
+    }
+
+    #[test]
+    fn line_motions_keep_columns_in_characters() {
+        let text = "日本語の文\nabc\nдлинная строка";
+        assert_eq!(go(text, 3, Motion::Down), 9);
+        assert_eq!(go(text, 9, Motion::Down), 13);
+        assert_eq!(go(text, 13, Motion::Up), 9);
+        assert_eq!(go(text, 4, Motion::LineEnd), 4);
+        assert_eq!(go(text, 0, Motion::LastLine), 10);
+        assert_eq!(counted(text, 20, Motion::FirstLine, 2), 6);
+    }
+
+    #[test]
+    fn find_works_on_multibyte_characters() {
+        let text = "ёж, ёлка, ёрш";
+        let mut last = LastFind::default();
+        let line = chars(text);
+        let found = motion(
+            &line,
+            0,
+            Motion::Find {
+                forward: true,
+                till: false,
+                ch: 'ё',
+            },
+            None,
+            &mut last,
+        );
+        assert_eq!(found, Some(4));
+        let again = motion(
+            &line,
+            4,
+            Motion::RepeatFind { reverse: false },
+            None,
+            &mut last,
+        );
+        assert_eq!(again, Some(10));
+        let back = motion(
+            &line,
+            10,
+            Motion::RepeatFind { reverse: true },
+            None,
+            &mut last,
+        );
+        assert_eq!(back, Some(4));
+        let till = motion(
+            &line,
+            0,
+            Motion::Find {
+                forward: true,
+                till: true,
+                ch: ',',
+            },
+            None,
+            &mut last,
+        );
+        assert_eq!(till, Some(1));
+    }
+
+    #[test]
+    fn chip_sentinels_form_their_own_word() {
+        let mut line = chars("see @src/main.rs, ok");
+        for ch in line.iter_mut().take(16).skip(4) {
+            *ch = CHIP;
+        }
+        let text: String = line.iter().collect();
+        assert_eq!(go(&text, 0, Motion::WordForward), 4);
+        assert_eq!(go(&text, 4, Motion::WordForward), 16);
+        assert_eq!(go(&text, 4, Motion::BigWordForward), 16);
+        assert_eq!(go(&text, 18, Motion::WordBackward), 16);
+        assert_eq!(go(&text, 16, Motion::WordBackward), 4);
+        let iw = object_range(&line, 8, Object::Word, false).unwrap();
+        assert_eq!(span(iw), (4, 16));
+    }
+
+    #[test]
+    fn sentence_motions_and_objects() {
+        let text = "One two. Three four! Five?\n\nSix.";
+        assert_eq!(go(text, 0, Motion::SentenceForward), 9);
+        assert_eq!(go(text, 9, Motion::SentenceForward), 21);
+        assert_eq!(go(text, 21, Motion::SentenceForward), 27);
+        assert_eq!(go(text, 27, Motion::SentenceForward), 28);
+        assert_eq!(go(text, 28, Motion::SentenceForward), 32);
+        assert_eq!(go(text, 12, Motion::SentenceBackward), 9);
+        assert_eq!(go(text, 9, Motion::SentenceBackward), 0);
+        let line = chars(text);
+        let inner = object_range(&line, 12, Object::Sentence, false).unwrap();
+        assert_eq!(span(inner), (9, 20));
+        let around = object_range(&line, 12, Object::Sentence, true).unwrap();
+        assert_eq!(span(around), (9, 21));
+        let last = object_range(&line, 22, Object::Sentence, true).unwrap();
+        assert_eq!(span(last), (21, 26));
+        let quoted = chars("He said \"go.\" Then left.");
+        assert_eq!(sentence(&quoted, 0, true), 14);
+    }
+
+    #[test]
+    fn percent_with_a_count_goes_to_a_line() {
+        let text = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj";
+        assert_eq!(counted(text, 0, Motion::MatchPair, 50), 8);
+        assert_eq!(counted(text, 0, Motion::MatchPair, 100), 18);
+        assert_eq!(counted(text, 18, Motion::MatchPair, 1), 0);
+        let mut last = LastFind::default();
+        let range = motion_range(
+            &chars(text),
+            0,
+            Motion::MatchPair,
+            Some(20),
+            false,
+            &mut last,
+        )
+        .unwrap();
+        assert!(range.linewise);
+        assert_eq!(span(range), (0, 4));
+    }
+
+    #[test]
+    fn objects_on_unicode_text() {
+        let line = chars("«x» (привет мир) 'ü'");
+        let paren = object_range(&line, 7, Object::Pair('(', ')'), false).unwrap();
+        assert_eq!(span(paren), (5, 15));
+        let around = object_range(&line, 7, Object::Pair('(', ')'), true).unwrap();
+        assert_eq!(span(around), (4, 16));
+        let word = object_range(&line, 7, Object::Word, true).unwrap();
+        assert_eq!(span(word), (5, 12));
+        let quote = object_range(&line, 18, Object::Quote('\''), false).unwrap();
+        assert_eq!(span(quote), (18, 19));
+        let big = object_range(&line, 1, Object::BigWord, false).unwrap();
+        assert_eq!(span(big), (0, 3));
+    }
+
+    #[test]
+    fn case_transforms_handle_non_ascii() {
+        assert_eq!(transform("Ёлка straße", Operator::Upper), "ЁЛКА STRASSE");
+        assert_eq!(transform("ЁЛКА", Operator::Lower), "ёлка");
+        assert_eq!(transform("Привет", Operator::ToggleCase), "пРИВЕТ");
     }
 }

@@ -21,7 +21,7 @@ use crate::compose::{
     Inflight, Picker, composer_command, composer_mutation_finished, composer_snapshot,
     composer_tick, handle_composer_key, handle_picker_key, handle_queue_key, history_loaded, paste,
 };
-use crate::composer::{Composer, EditMode, SubmitKey};
+use crate::composer::{Composer, ComposerKey, EditMode, SubmitKey};
 use crate::execution::{ExecutionState, Load};
 use crate::indicator::is_thread_read;
 use crate::input::{InputOutcome, LineInput};
@@ -876,6 +876,9 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             if let Some(effects) = crate::compose::paste_attachments(state, &text) {
                 return effects;
             }
+            if matches!(state.focus, Focus::Composer | Focus::NewThread) {
+                state.registers.note_clipboard(&text);
+            }
             let mut effects = if state.focus == Focus::NewThread {
                 new_thread_paste(state, &text);
                 Vec::new()
@@ -957,6 +960,7 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     let before = state.current_window();
     state.keys.echo = None;
     let mut effects = dispatch_key(state, key);
+    note_finished_insert(state);
     let after = state.current_window();
     if after != before {
         state.prev_window = Some(before);
@@ -965,9 +969,25 @@ pub(crate) fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     effects
 }
 
+fn note_finished_insert(state: &mut AppState) {
+    let text = state
+        .active_composer_target()
+        .and_then(|target| state.composer_for_mut(&target))
+        .and_then(|composer| composer.finished_insert.take());
+    if let Some(text) = text {
+        state.registers.set(
+            '.',
+            crate::evil::RegisterValue {
+                text,
+                linewise: false,
+            },
+        );
+    }
+}
+
 fn composer_scopes(composer: &Composer) -> Vec<Scope> {
     match composer.mode {
-        EditMode::Insert => vec![Scope::Insert],
+        EditMode::Insert | EditMode::Replace => vec![Scope::Insert],
         EditMode::Visual { .. } => vec![Scope::Visual, Scope::Composer],
         EditMode::Normal => vec![Scope::Composer],
     }
@@ -1134,6 +1154,9 @@ fn composer_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         return Vec::new();
     };
     let scopes = composer_scopes(composer);
+    if composer.mode == EditMode::Replace {
+        return replace_key(state, &target, key);
+    }
     if !composer.is_insert() {
         return crate::evil::normal_key(state, key, &scopes);
     }
@@ -1149,6 +1172,23 @@ fn composer_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         ComposerTarget::Thread(_) => handle_composer_key(state, key),
         ComposerTarget::NewThread => crate::new_thread::prompt_key(state, key),
     }
+}
+
+fn replace_key(state: &mut AppState, target: &ComposerTarget, key: KeyEvent) -> Vec<Effect> {
+    if KeyChord::from_event(&key).has_ctrl_or_alt()
+        && !matches!(key.code, KeyCode::Char('['))
+        && let Some(effects) = crate::evil::insert_intercept(state, &key)
+    {
+        return effects;
+    }
+    let now = state.clock;
+    let Some(composer) = state.composer_for_mut(target) else {
+        return Vec::new();
+    };
+    if composer.replace_key(key, now) == ComposerKey::Escape {
+        composer.enter_normal();
+    }
+    Vec::new()
 }
 
 pub(crate) fn legacy_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {

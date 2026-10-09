@@ -307,6 +307,7 @@ fn submit_hint(state: &AppState, thread_id: &str) -> Vec<Span<'static>> {
     let composer = state.composers.get(thread_id);
     let key = match composer.map(|composer| composer.mode) {
         Some(crate::composer::EditMode::Insert) => key,
+        Some(crate::composer::EditMode::Replace) => "C-c C-c",
         _ => "RET",
     };
     if composer.is_some_and(|composer| composer.editing.is_some()) {
@@ -507,6 +508,7 @@ pub fn render_composer(state: &AppState, frame: &mut Frame, area: Rect, thread_i
     );
     if let Some(composer) = state.composers.get(thread_id) {
         crate::typeahead_ui::render_editor(composer, focused, frame, editor_area);
+        state.mouse_areas.record_editor(thread_id, editor_area);
         if let Some(line) = attachments {
             frame.render_widget(Paragraph::new(line), attachment_area);
         }

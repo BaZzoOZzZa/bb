@@ -791,6 +791,13 @@ pub(crate) fn insert_unhandled(state: &mut AppState, key: &KeyEvent) {
         KeyCode::Char('r') if ctrl => {
             state.keys.await_char = Some((crate::vi::CharAct::InsertRegister, None));
         }
+        KeyCode::Tab if key.modifiers.is_empty() => {
+            let now = state.clock;
+            let target = state.active_composer_target();
+            if let Some(composer) = target.and_then(|target| state.composer_for_mut(&target)) {
+                composer.insert_text("\t", now);
+            }
+        }
         _ => {}
     }
 }
@@ -1315,7 +1322,7 @@ pub(crate) fn paste(state: &mut AppState, text: &str) -> Vec<Effect> {
         .clone()
         .and_then(|thread_id| state.composers.get_mut(&thread_id))
     {
-        composer.insert_text(text, now);
+        composer.paste(text, now);
     }
     Vec::new()
 }

@@ -1673,7 +1673,9 @@ pub(crate) fn new_thread_paste(state: &mut AppState, text: &str) {
             picker.selected = 0;
             return;
         }
-        form.activate_prompt();
-        form.composer.insert_text(text, now);
+        if !form.prompt_active {
+            form.activate_prompt();
+        }
+        form.composer.paste(text, now);
     }
 }

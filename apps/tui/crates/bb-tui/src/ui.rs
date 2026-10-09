@@ -844,6 +844,9 @@ fn composer_hints(state: &AppState) -> String {
         Some(EditMode::Visual { .. }) => {
             "d delete · y yank · c change · > indent · o other end · ESC normal".into()
         }
+        Some(EditMode::Replace) => {
+            "type to overwrite · Bksp restore · C-c C-c send · ESC normal".into()
+        }
         _ => "i insert · RET send · u undo · p put · C-k timeline · SPC leader".into(),
     }
 }

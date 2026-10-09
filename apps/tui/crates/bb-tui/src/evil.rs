@@ -21,6 +21,7 @@ pub struct Echo {
 pub struct KeyState {
     pub pending: Vec<KeyChord>,
     pub count: Option<usize>,
+    pub inner_count: Option<usize>,
     pub register: Option<char>,
     pub await_char: Option<(CharAct, Option<usize>)>,
     pub pending_at: Option<Instant>,
@@ -37,6 +38,7 @@ impl Default for KeyState {
         Self {
             pending: Vec::new(),
             count: None,
+            inner_count: None,
             register: None,
             await_char: None,
             pending_at: None,
@@ -54,6 +56,7 @@ impl KeyState {
     pub fn reset(&mut self) {
         self.pending.clear();
         self.count = None;
+        self.inner_count = None;
         self.register = None;
         self.await_char = None;
         self.pending_at = None;
@@ -63,6 +66,7 @@ impl KeyState {
 
     fn end_sequence(&mut self) {
         self.pending.clear();
+        self.inner_count = None;
         self.pending_at = None;
         self.which_key = false;
         self.which_key_page = 0;
@@ -83,6 +87,9 @@ impl KeyState {
         }
         if !self.pending.is_empty() {
             text.push_str(&format_seq(&self.pending));
+        }
+        if let Some(count) = self.inner_count {
+            text.push_str(&count.to_string());
         }
         if let Some((act, _)) = self.await_char {
             let tag = match act {
@@ -106,6 +113,10 @@ impl KeyState {
                 CharAct::Replace | CharAct::VisualReplace => "r",
                 CharAct::Register => "\"",
                 CharAct::InsertRegister => "C-r",
+                CharAct::SetMark => "m",
+                CharAct::Mark { line: true } => "'",
+                CharAct::Mark { line: false } => "`",
+                CharAct::ApplyMark { .. } => "…",
             };
             if !text.is_empty() && !text.ends_with(' ') {
                 text.push(' ');
@@ -340,15 +351,10 @@ pub fn tag(state: &AppState) -> Tag {
         return Tag::Insert;
     }
     if let Some(composer) = state.focused_composer() {
-        let operator = state.keys.pending.first().is_some_and(|first| {
-            matches!(first.code, KeyCode::Char('d' | 'c' | 'y' | '>' | '<'))
-                && !first.has_ctrl_or_alt()
-                || (state.keys.pending.len() >= 2
-                    && first.code == KeyCode::Char('g')
-                    && matches!(state.keys.pending[1].code, KeyCode::Char('u' | 'U' | '~')))
-        });
+        let operator = operator_pending(&state.keys.pending);
         return match composer.mode {
             crate::composer::EditMode::Insert => Tag::Insert,
+            crate::composer::EditMode::Replace => Tag::Replace,
             crate::composer::EditMode::Visual { line: false, .. } => Tag::Visual,
             crate::composer::EditMode::Visual { line: true, .. } => Tag::VisualLine,
             crate::composer::EditMode::Normal if operator => Tag::Operator,
@@ -356,6 +362,21 @@ pub fn tag(state: &AppState) -> Tag {
         };
     }
     Tag::Normal
+}
+
+pub fn operator_pending(pending: &[KeyChord]) -> bool {
+    match pending {
+        [first] => {
+            matches!(first.code, KeyCode::Char('d' | 'c' | 'y' | '>' | '<'))
+                && !first.has_ctrl_or_alt()
+        }
+        [first, second] => {
+            first.code == KeyCode::Char('g')
+                && !first.has_ctrl_or_alt()
+                && matches!(second.code, KeyCode::Char('u' | 'U' | '~'))
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn normal_key(state: &mut AppState, key: KeyEvent, scopes: &[Scope]) -> Vec<Effect> {
@@ -394,6 +415,17 @@ pub(crate) fn normal_key(state: &mut AppState, key: KeyEvent, scopes: &[Scope]) 
         if chord == KeyChord::plain(KeyCode::Esc) || chord == KeyChord::ctrl('g') {
             state.keys.reset();
             state.keys.describe = false;
+            return Vec::new();
+        }
+        if let Some(ch) = chord.is_plain_char()
+            && ch.is_ascii_digit()
+            && (ch != '0' || state.keys.inner_count.is_some())
+            && operator_pending(&state.keys.pending)
+            && chain.first().is_some_and(|scope| scope.takes_counts())
+        {
+            let digit = usize::from(ch as u8 - b'0');
+            let count = state.keys.inner_count.unwrap_or(0) * 10 + digit;
+            state.keys.inner_count = Some(count.min(MAX_COUNT));
             return Vec::new();
         }
         if chord == KeyChord::plain(KeyCode::Backspace) {
@@ -436,8 +468,12 @@ pub(crate) fn normal_key(state: &mut AppState, key: KeyEvent, scopes: &[Scope]) 
     keys.push(chord);
     match state.keymap.resolve(&chain, &keys) {
         Resolved::Exact(binding) => {
+            let inner = state.keys.inner_count;
             state.keys.end_sequence();
-            let count = state.keys.count.take();
+            let count = match (state.keys.count.take(), inner) {
+                (Some(outer), Some(inner)) => Some((outer * inner).min(MAX_COUNT)),
+                (outer, inner) => outer.or(inner),
+            };
             if state.keys.describe {
                 state.keys.describe = false;
                 state.keys.register = None;
