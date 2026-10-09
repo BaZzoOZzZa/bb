@@ -13,6 +13,8 @@ macro_rules! wire_enum {
             PartialEq,
             Eq,
             Hash,
+            PartialOrd,
+            Ord,
             Default,
             serde::Serialize,
             serde::Deserialize,

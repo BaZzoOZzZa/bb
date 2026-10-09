@@ -337,8 +337,11 @@ dependencies = [
 name = "bb-store"
 version = "0.0.1"
 dependencies = [
+ "bb-client",
  "bb-wire",
+ "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

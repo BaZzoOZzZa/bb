@@ -8,8 +8,14 @@ publish.workspace = true
 
 [dependencies]
 bb-wire.workspace = true
+bb-client.workspace = true
+tokio.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

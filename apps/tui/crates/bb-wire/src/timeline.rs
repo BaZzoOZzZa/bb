@@ -981,8 +981,11 @@ pub struct TimelinePageMetadata {
     pub older_cursor: Option<TimelinePaginationCursor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_snapshot: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub older_rows_source_seq_end: Option<i64>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "crate::common::double_option"
+    )]
+    pub older_rows_source_seq_end: Option<Option<i64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub older_row_updates: Option<Vec<TimelineRow>>,
     #[serde(skip_serializing_if = "Option::is_none")]
