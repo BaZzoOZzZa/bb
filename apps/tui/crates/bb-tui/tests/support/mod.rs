@@ -1,11 +1,16 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use bb_store::{Backend, FetchError, FetchResult, StoreSnapshot};
+use bb_store::{
+    Backend, FetchError, FetchResult, LatestTimeline, LoadedTimelineState, StoreSnapshot,
+    TimelineEntry, TurnDetailsEntry, TurnDetailsKey,
+};
 use bb_tui::api::{Api, ApiFuture, Mutation};
-use bb_tui::app::{Action, AppState, ServerInfo, update};
+use bb_tui::app::{Action, AppState, Effect, ServerInfo, update};
+use bb_tui::platform::Platform;
 use bb_tui::ui;
 use bb_wire::environment::Host;
 use bb_wire::interaction::PendingInteraction;
@@ -16,7 +21,8 @@ use bb_wire::queue::ThreadQueuedMessage;
 use bb_wire::system::{AppKeybindingOverride, SystemAttentionResponse};
 use bb_wire::thread::{ThreadListEntry, ThreadResponse, ThreadStatus};
 use bb_wire::timeline::{
-    ThreadTimelineQuery, ThreadTimelineResponse, TurnSummaryDetailsQuery,
+    ConversationRole, ConversationRow, ThreadTimelineQuery, ThreadTimelineResponse, TimelineRow,
+    TimelineRowBase, TimelineRowStatus, TimelineWorkRow, TurnRow, TurnSummaryDetailsQuery,
     TurnSummaryDetailsResponse,
 };
 use ratatui::Terminal;
@@ -74,13 +80,18 @@ pub fn sample_sidebar() -> SidebarBootstrapResponse {
 pub struct FakeBackend {
     pub sidebar: Mutex<SidebarBootstrapResponse>,
     pub sidebar_fetches: Mutex<usize>,
+    pub timelines: Mutex<HashMap<String, ThreadTimelineResponse>>,
+    pub older_pages: Mutex<HashMap<String, ThreadTimelineResponse>>,
+    pub turn_details: Mutex<HashMap<String, TurnSummaryDetailsResponse>>,
+    pub timeline_queries: Mutex<Vec<ThreadTimelineQuery>>,
+    pub details_queries: Mutex<Vec<TurnSummaryDetailsQuery>>,
 }
 
 impl FakeBackend {
     pub fn new(sidebar: SidebarBootstrapResponse) -> Arc<Self> {
         Arc::new(Self {
             sidebar: Mutex::new(sidebar),
-            sidebar_fetches: Mutex::new(0),
+            ..Self::default()
         })
     }
 
@@ -139,18 +150,39 @@ impl Backend for FakeBackend {
 
     async fn timeline(
         &self,
-        _thread_id: String,
-        _query: ThreadTimelineQuery,
+        thread_id: String,
+        query: ThreadTimelineQuery,
     ) -> FetchResult<ThreadTimelineResponse> {
-        Ok(ThreadTimelineResponse::default())
+        self.timeline_queries.lock().unwrap().push(query.clone());
+        let pages = if query.before_anchor_seq.is_some() {
+            &self.older_pages
+        } else {
+            &self.timelines
+        };
+        Ok(pages
+            .lock()
+            .unwrap()
+            .get(&thread_id)
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn turn_summary_details(
         &self,
         _thread_id: String,
-        _query: TurnSummaryDetailsQuery,
+        query: TurnSummaryDetailsQuery,
     ) -> FetchResult<TurnSummaryDetailsResponse> {
-        Ok(TurnSummaryDetailsResponse::default())
+        self.details_queries.lock().unwrap().push(query.clone());
+        let key = query
+            .item_id
+            .clone()
+            .unwrap_or_else(|| query.turn_id.clone());
+        self.turn_details
+            .lock()
+            .unwrap()
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| FetchError::http(404, Some("not_found"), "no details"))
     }
 
     async fn interactions(&self, _thread_id: String) -> FetchResult<Vec<PendingInteraction>> {
@@ -260,4 +292,159 @@ pub fn buffer_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
             line.trim_end().to_owned()
         })
         .collect()
+}
+
+#[derive(Default)]
+pub struct MockPlatform {
+    pub copied: Mutex<Vec<String>>,
+    pub opened: Mutex<Vec<String>>,
+}
+
+impl Platform for MockPlatform {
+    fn copy(&self, text: &str) -> Result<(), String> {
+        self.copied.lock().unwrap().push(text.to_owned());
+        Ok(())
+    }
+
+    fn open(&self, target: &str) -> Result<(), String> {
+        self.opened.lock().unwrap().push(target.to_owned());
+        Ok(())
+    }
+}
+
+pub const THREAD: &str = "thr_wait";
+
+pub fn base(id: &str, seq: i64) -> TimelineRowBase {
+    TimelineRowBase {
+        id: id.into(),
+        thread_id: THREAD.into(),
+        turn_id: Some(format!("turn-{}", seq / 100)),
+        source_seq_start: seq,
+        source_seq_end: seq,
+        started_at: NOW_MS - 600_000 + seq * 1_000,
+        created_at: NOW_MS - 600_000 + seq * 1_000,
+    }
+}
+
+pub fn message(id: &str, seq: i64, role: ConversationRole, text: &str) -> TimelineRow {
+    TimelineRow::Conversation(Box::new(ConversationRow {
+        base: base(id, seq),
+        role,
+        message_seq: seq,
+        text: text.into(),
+        ..ConversationRow::default()
+    }))
+}
+
+pub fn user(id: &str, seq: i64, text: &str) -> TimelineRow {
+    message(id, seq, ConversationRole::User, text)
+}
+
+pub fn assistant(id: &str, seq: i64, text: &str) -> TimelineRow {
+    message(id, seq, ConversationRole::Assistant, text)
+}
+
+pub fn command(id: &str, seq: i64, command: &str, output: &str) -> TimelineRow {
+    TimelineRow::Work(TimelineWorkRow::Command(Box::new(
+        bb_wire::timeline::CommandWorkRow {
+            base: base(id, seq),
+            status: TimelineRowStatus::Completed,
+            call_id: format!("call-{id}"),
+            command: command.into(),
+            output: output.into(),
+            exit_code: Some(0),
+            completed_at: Some(NOW_MS - 600_000 + seq * 1_000 + 2_000),
+            ..bb_wire::timeline::CommandWorkRow::default()
+        },
+    )))
+}
+
+pub fn turn(id: &str, turn_id: &str, start: i64, end: i64) -> TimelineRow {
+    let mut base = base(id, start);
+    base.turn_id = Some(turn_id.into());
+    base.source_seq_end = end;
+    TimelineRow::Turn(Box::new(TurnRow {
+        base,
+        status: TimelineRowStatus::Completed,
+        summary_count: 3,
+        completed_at: Some(NOW_MS - 300_000),
+        children: None,
+    }))
+}
+
+pub fn row_from_json(value: serde_json::Value) -> TimelineRow {
+    serde_json::from_value(value).expect("timeline row")
+}
+
+pub fn timeline_response(rows: Vec<TimelineRow>, has_older: bool) -> ThreadTimelineResponse {
+    let mut response = ThreadTimelineResponse {
+        rows,
+        max_seq: 10_000,
+        ..ThreadTimelineResponse::default()
+    };
+    if has_older {
+        response.timeline_page.has_older_rows = true;
+        response.timeline_page.older_cursor = Some(bb_wire::timeline::TimelinePaginationCursor {
+            anchor_seq: 1,
+            anchor_id: "anchor".into(),
+        });
+    }
+    response
+}
+
+pub fn timeline_entry(response: ThreadTimelineResponse) -> Arc<TimelineEntry> {
+    let latest = LatestTimeline::from_response(response);
+    let loaded = LoadedTimelineState::from_latest(&latest, "surface", None);
+    Arc::new(TimelineEntry {
+        latest: Some(Arc::new(latest)),
+        loaded,
+        ..TimelineEntry::default()
+    })
+}
+
+pub fn with_timeline(
+    snapshot: &StoreSnapshot,
+    rows: Vec<TimelineRow>,
+    has_older: bool,
+) -> Arc<StoreSnapshot> {
+    let mut snapshot = snapshot.clone();
+    snapshot.timelines.insert(
+        THREAD.into(),
+        timeline_entry(timeline_response(rows, has_older)),
+    );
+    snapshot.version += 1;
+    Arc::new(snapshot)
+}
+
+pub fn with_turn_details(
+    snapshot: &StoreSnapshot,
+    key: TurnDetailsKey,
+    rows: Vec<TimelineRow>,
+) -> Arc<StoreSnapshot> {
+    let mut snapshot = snapshot.clone();
+    snapshot.turn_details.insert(
+        key,
+        Arc::new(TurnDetailsEntry {
+            rows: Arc::new(rows),
+            loaded: true,
+            ..TurnDetailsEntry::default()
+        }),
+    );
+    snapshot.version += 1;
+    Arc::new(snapshot)
+}
+
+pub fn press(state: &mut AppState, code: crossterm::event::KeyCode) -> Vec<Effect> {
+    update(state, Action::Key(crossterm::event::KeyEvent::from(code)))
+}
+
+pub fn press_mod(
+    state: &mut AppState,
+    code: crossterm::event::KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+) -> Vec<Effect> {
+    update(
+        state,
+        Action::Key(crossterm::event::KeyEvent::new(code, modifiers)),
+    )
 }

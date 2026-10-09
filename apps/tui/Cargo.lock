@@ -350,6 +350,7 @@ name = "bb-tui"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bb-client",
  "bb-store",
  "bb-view",

@@ -6,6 +6,7 @@ use bb_client::RealtimeClient;
 use bb_client::discovery::probe_server;
 use bb_store::{Store, StoreConfig};
 use bb_tui::app::{AppState, ToastLevel};
+use bb_tui::platform::SystemPlatform;
 use bb_tui::runtime::{run, terminal_events};
 use bb_tui::startup::{Args, TopCommand, resolve_connection, run_connect_command};
 use bb_tui::time::now_ms;
@@ -41,6 +42,7 @@ async fn main() -> Result<()> {
     }
     let connection = resolve_connection(&args)?;
     let mut state = AppState::new(connection.info.clone(), Instant::now(), now_ms());
+    state.read_only = args.read_only;
     match probe_server(&connection.client).await {
         Ok(report) => {
             for warning in report.warnings {
@@ -61,7 +63,15 @@ async fn main() -> Result<()> {
     let api = Arc::new(connection.client.clone());
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut state, store, api, terminal_events()).await;
+    let result = run(
+        &mut terminal,
+        &mut state,
+        store,
+        api,
+        Arc::new(SystemPlatform),
+        terminal_events(),
+    )
+    .await;
     ratatui::restore();
     realtime.shutdown();
     result

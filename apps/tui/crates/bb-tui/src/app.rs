@@ -1,11 +1,12 @@
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bb_store::{ConnectionState, StoreSnapshot};
+use bb_store::{ConnectionState, StoreSnapshot, TurnDetailsKey};
 use bb_wire::system::AppKeybindingOverride;
 use bb_wire::thread::ThreadListEntry;
+use bb_wire::timeline::TimelineRow;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::api::Mutation;
@@ -13,10 +14,12 @@ use crate::indicator::is_thread_read;
 use crate::input::{InputOutcome, LineInput};
 use crate::keymap::{Command, Keymap};
 use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
+use crate::timeline::{LoadRequest, TimelineView};
 
 pub const INFO_TOAST_TTL: Duration = Duration::from_secs(4);
 pub const ERROR_TOAST_TTL: Duration = Duration::from_secs(8);
 const MAX_TOASTS: usize = 4;
+const SIDEBAR_PAGE: isize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -29,8 +32,15 @@ pub enum Focus {
 pub enum Mode {
     Normal,
     Filter(LineInput),
-    Rename { thread_id: String, input: LineInput },
+    Rename {
+        thread_id: String,
+        input: LineInput,
+    },
     Help,
+    OpenPicker {
+        targets: Vec<String>,
+        selected: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,12 +82,21 @@ pub enum Action {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     Mutate(Mutation),
     WatchThread(Option<String>),
     RefreshSidebar,
     RefreshAll,
+    LoadOlder(String),
+    LoadTurnDetails(TurnDetailsKey),
+    LoadOlderTurnDetails(TurnDetailsKey),
+    LoadDeferred {
+        thread_id: String,
+        row: Box<TimelineRow>,
+    },
+    Copy(String),
+    OpenExternal(String),
     Quit,
 }
 
@@ -94,9 +113,11 @@ pub struct AppState {
     pub focus: Focus,
     pub mode: Mode,
     pub open_thread: Option<String>,
+    pub timelines: HashMap<String, TimelineView>,
     pub sidebar_visible: bool,
     pub panel_visible: bool,
     pub keymap: Keymap,
+    pub read_only: bool,
     pub toasts: Vec<Toast>,
     pub last_archived: Option<String>,
     pub attention: usize,
@@ -120,9 +141,11 @@ impl AppState {
             focus: Focus::Sidebar,
             mode: Mode::Normal,
             open_thread: None,
+            timelines: HashMap::new(),
             sidebar_visible: true,
             panel_visible: false,
             keymap: Keymap::default(),
+            read_only: false,
             toasts: Vec::new(),
             last_archived: None,
             attention: 0,
@@ -141,6 +164,55 @@ impl AppState {
         self.selected_row()
             .and_then(SidebarRow::thread)
             .map(|row| row.id.as_str())
+    }
+
+    pub fn timeline(&self) -> Option<&TimelineView> {
+        self.timelines.get(self.open_thread.as_deref()?)
+    }
+
+    fn timeline_mut(&mut self) -> Option<&mut TimelineView> {
+        self.timelines.get_mut(self.open_thread.as_deref()?)
+    }
+
+    fn load_effects(&self, loads: Vec<LoadRequest>) -> Vec<Effect> {
+        let Some(thread_id) = self.open_thread.clone() else {
+            return Vec::new();
+        };
+        loads
+            .into_iter()
+            .map(|load| match load {
+                LoadRequest::Older => Effect::LoadOlder(thread_id.clone()),
+                LoadRequest::Turn(key) => Effect::LoadTurnDetails(key),
+                LoadRequest::OlderTurn(key) => Effect::LoadOlderTurnDetails(key),
+                LoadRequest::Deferred(row) => Effect::LoadDeferred {
+                    thread_id: thread_id.clone(),
+                    row,
+                },
+            })
+            .collect()
+    }
+
+    fn with_timeline(
+        &mut self,
+        run: impl FnOnce(&mut TimelineView) -> Vec<LoadRequest>,
+    ) -> Vec<Effect> {
+        let loads = self.timeline_mut().map(run).unwrap_or_default();
+        self.load_effects(loads)
+    }
+
+    fn sync_timeline(&mut self) -> Vec<Effect> {
+        let snapshot = self.snapshot.clone();
+        self.with_timeline(|timeline| timeline.sync(snapshot))
+    }
+
+    pub fn workspace_path(&self) -> Option<&str> {
+        let thread_id = self.open_thread.as_deref()?;
+        self.snapshot
+            .thread(thread_id)?
+            .environment
+            .as_ref()?
+            .path
+            .as_deref()
     }
 
     pub fn sidebar_entry(&self, thread_id: &str) -> Option<&ThreadListEntry> {
@@ -263,7 +335,11 @@ impl AppState {
             }));
         }
         self.select_key(&RowKey::Thread(thread_id.clone()));
+        self.timelines
+            .entry(thread_id.clone())
+            .or_insert_with(|| TimelineView::new(thread_id.clone()));
         self.open_thread = Some(thread_id);
+        effects.extend(self.sync_timeline());
         effects
     }
 
@@ -379,9 +455,31 @@ impl AppState {
 }
 
 pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
+    let effects = apply(state, action);
+    if !state.read_only {
+        return effects;
+    }
+    effects
+        .into_iter()
+        .filter(|effect| match effect {
+            Effect::Mutate(mutation) => {
+                if !mutation.is_silent() {
+                    state.toast(
+                        format!("Read-only mode: cannot {}", mutation.failure_verb()),
+                        ToastLevel::Error,
+                    );
+                }
+                false
+            }
+            _ => true,
+        })
+        .collect()
+}
+
+fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
     match action {
         Action::Key(key) => handle_key(state, key),
-        Action::Resize => Vec::new(),
+        Action::Resize => state.with_timeline(TimelineView::auto_load_older),
         Action::Tick { now, now_ms } => {
             state.clock = now;
             state.now_ms = now_ms;
@@ -397,7 +495,7 @@ pub fn update(state: &mut AppState, action: Action) -> Vec<Effect> {
             if first_load && state.snapshot.sidebar.data.is_some() {
                 state.select_first_thread();
             }
-            Vec::new()
+            state.sync_timeline()
         }
         Action::MutationFinished { mutation, result } => match result {
             Ok(()) => {
@@ -456,6 +554,35 @@ fn handle_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
             Vec::new()
         }
+        Mode::OpenPicker {
+            targets,
+            mut selected,
+        } => {
+            let choice = match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => return Vec::new(),
+                KeyCode::Enter => Some(selected),
+                KeyCode::Char(ch) if ch.is_ascii_digit() && ch != '0' => {
+                    Some(usize::from(ch as u8 - b'1'))
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1).min(targets.len().saturating_sub(1));
+                    None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                    None
+                }
+                _ if is_ctrl_c(&key) => return quit(state),
+                _ => None,
+            };
+            if let Some(choice) = choice
+                && let Some(target) = targets.get(choice)
+            {
+                return vec![Effect::OpenExternal(target.clone())];
+            }
+            state.mode = Mode::OpenPicker { targets, selected };
+            Vec::new()
+        }
         Mode::Filter(mut input) => {
             match key.code {
                 KeyCode::Down => state.move_selection(1),
@@ -505,8 +632,63 @@ fn quit(state: &mut AppState) -> Vec<Effect> {
     vec![Effect::Quit]
 }
 
+fn timeline_command(state: &mut AppState, command: Command) -> Option<Vec<Effect>> {
+    let effects = match command {
+        Command::MoveDown => state.with_timeline(|timeline| timeline.move_selection(1)),
+        Command::MoveUp => state.with_timeline(|timeline| timeline.move_selection(-1)),
+        Command::MoveTop => state.with_timeline(|timeline| timeline.select_edge(true)),
+        Command::MoveBottom => state.with_timeline(|timeline| timeline.select_edge(false)),
+        Command::Open => state.with_timeline(TimelineView::activate),
+        Command::Expand => state.with_timeline(|timeline| timeline.set_expanded(Some(true))),
+        Command::Collapse => state.with_timeline(|timeline| timeline.set_expanded(Some(false))),
+        Command::ToggleGroup => state.with_timeline(|timeline| timeline.set_expanded(None)),
+        Command::PageDown => state.with_timeline(|timeline| timeline.page(1, false)),
+        Command::PageUp => state.with_timeline(|timeline| timeline.page(-1, false)),
+        Command::HalfPageDown => state.with_timeline(|timeline| timeline.page(1, true)),
+        Command::HalfPageUp => state.with_timeline(|timeline| timeline.page(-1, true)),
+        Command::NextMessage => state.with_timeline(|timeline| timeline.jump_message(true)),
+        Command::PreviousMessage => state.with_timeline(|timeline| timeline.jump_message(false)),
+        Command::Copy => match state.timeline().and_then(TimelineView::copy_text) {
+            Some(text) => vec![Effect::Copy(text)],
+            None => {
+                state.toast("Select a row to copy (j/k)", ToastLevel::Info);
+                Vec::new()
+            }
+        },
+        Command::OpenExternal => {
+            let workspace = state.workspace_path().map(str::to_owned);
+            let targets = state
+                .timeline()
+                .map(|timeline| timeline.open_targets(workspace.as_deref()))
+                .unwrap_or_default();
+            match targets.len() {
+                0 => {
+                    state.toast("Nothing to open in the selected row", ToastLevel::Info);
+                    Vec::new()
+                }
+                1 => vec![Effect::OpenExternal(targets[0].clone())],
+                _ => {
+                    state.mode = Mode::OpenPicker {
+                        targets,
+                        selected: 0,
+                    };
+                    Vec::new()
+                }
+            }
+        }
+        _ => return None,
+    };
+    Some(effects)
+}
+
 fn run_command(state: &mut AppState, command: Command) -> Vec<Effect> {
     let in_sidebar = state.focus == Focus::Sidebar && state.sidebar_visible;
+    if state.focus == Focus::Main
+        && state.open_thread.is_some()
+        && let Some(effects) = timeline_command(state, command)
+    {
+        return effects;
+    }
     match command {
         Command::Quit => return quit(state),
         Command::Help => state.mode = Mode::Help,
@@ -624,6 +806,10 @@ fn run_command(state: &mut AppState, command: Command) -> Vec<Effect> {
             state.toast("Reloading", ToastLevel::Info);
             return vec![Effect::RefreshAll];
         }
+        Command::PageDown if in_sidebar => state.move_selection(SIDEBAR_PAGE),
+        Command::PageUp if in_sidebar => state.move_selection(-SIDEBAR_PAGE),
+        Command::HalfPageDown if in_sidebar => state.move_selection(SIDEBAR_PAGE / 2),
+        Command::HalfPageUp if in_sidebar => state.move_selection(-SIDEBAR_PAGE / 2),
         Command::MoveDown
         | Command::MoveUp
         | Command::MoveTop
@@ -631,7 +817,15 @@ fn run_command(state: &mut AppState, command: Command) -> Vec<Effect> {
         | Command::Open
         | Command::Collapse
         | Command::Expand
-        | Command::ToggleGroup => {}
+        | Command::ToggleGroup
+        | Command::PageDown
+        | Command::PageUp
+        | Command::HalfPageDown
+        | Command::HalfPageUp
+        | Command::NextMessage
+        | Command::PreviousMessage
+        | Command::Copy
+        | Command::OpenExternal => {}
     }
     Vec::new()
 }

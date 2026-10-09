@@ -12,6 +12,7 @@ use crate::input::LineInput;
 use crate::keymap::Command;
 use crate::sidebar::{GroupRow, SidebarRow, ThreadRow};
 use crate::time::compact_relative_time;
+use crate::timeline::{Frame as TimelineFrame, Scroll};
 
 const SIDEBAR_MIN: u16 = 24;
 const SIDEBAR_MAX: u16 = 40;
@@ -108,6 +109,52 @@ pub fn render(state: &AppState, frame: &mut Frame) {
     if state.mode == Mode::Help {
         render_help(state, frame, area);
     }
+    if let Mode::OpenPicker { targets, selected } = &state.mode {
+        render_open_picker(targets, *selected, frame, area);
+    }
+}
+
+fn render_open_picker(targets: &[String], selected: usize, frame: &mut Frame, area: Rect) {
+    let width = targets
+        .iter()
+        .map(|target| target.width() + 6)
+        .max()
+        .unwrap_or(20)
+        .clamp(24, usize::from(area.width).saturating_sub(4).max(24)) as u16;
+    let width = width.min(area.width);
+    let height = (targets.len().min(9) as u16 + 2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let inner_width = usize::from(width.saturating_sub(2));
+    let lines: Vec<Line> = targets
+        .iter()
+        .take(9)
+        .enumerate()
+        .map(|(index, target)| {
+            let style = if index == selected {
+                Style::new().bg(Color::Blue).fg(Color::White)
+            } else {
+                Style::new()
+            };
+            Line::from(vec![
+                Span::styled(format!("{} ", index + 1), Style::new().fg(Color::Cyan)),
+                Span::styled(truncate(target, inner_width.saturating_sub(2)), style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title(" Open "),
+        ),
+        rect,
+    );
 }
 
 fn banner_text(state: &AppState) -> Option<String> {
@@ -332,9 +379,20 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
     };
     let title = state.thread_title(thread_id);
     let block = pane_block(&title, focused);
-    let entry = state.sidebar_entry(thread_id);
-    let detail = state.snapshot.thread(thread_id);
-    let mut lines = Vec::new();
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 || inner.width < 4 {
+        return;
+    }
+    let [meta_area, body] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let meta = meta_line(state, thread_id, usize::from(meta_area.width));
+    frame.render_widget(Paragraph::new(meta), meta_area);
+    render_timeline(state, frame, body, focused);
+}
+
+fn meta_line(state: &AppState, thread_id: &str, width: usize) -> Line<'static> {
+    let muted = Style::new().fg(Color::DarkGray);
     if let Mode::Rename {
         thread_id: renaming,
         input,
@@ -345,37 +403,37 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
             .iter()
             .any(|row| row.thread().is_some_and(|thread| thread.id == *thread_id))
     {
-        lines.push(Line::from(vec![
+        return Line::from(vec![
             Span::styled("Rename: ", Style::new().fg(Color::Yellow)),
-            Span::raw(input.text().to_owned()),
-        ]));
+            Span::raw(truncate(input.text(), width.saturating_sub(8))),
+        ]);
     }
-    lines.push(Line::from(Span::styled(
-        title.clone(),
-        Style::new().add_modifier(Modifier::BOLD),
-    )));
+    let entry = state.sidebar_entry(thread_id);
+    let detail = state.snapshot.thread(thread_id);
+    let mut spans: Vec<Span<'static>> = Vec::new();
     let display_status = entry
         .map(|entry| entry.runtime.display_status)
         .or_else(|| detail.map(|detail| detail.runtime.display_status));
-    let indicator = entry.map(Indicator::for_entry);
-    let mut status_spans = vec![Span::styled("status: ", Style::new().fg(Color::DarkGray))];
-    match display_status {
-        Some(status) => status_spans.push(Span::raw(display_status_label(status))),
-        None => status_spans.push(Span::raw("loading…")),
-    }
-    if let Some(indicator) = indicator
-        && let Some(label) = indicator.label()
-    {
-        status_spans.push(Span::raw("  "));
-        status_spans.push(Span::styled(
-            format!("{} {label}", indicator.glyph(state.frame)),
+    match entry.map(Indicator::for_entry) {
+        Some(indicator) if indicator.label().is_some() => spans.push(Span::styled(
+            format!(
+                "{} {}",
+                indicator.glyph(state.frame),
+                indicator.label().unwrap_or_default()
+            ),
             indicator.style(),
-        ));
+        )),
+        _ => spans.push(Span::styled(
+            display_status
+                .map_or("loading…", display_status_label)
+                .to_owned(),
+            muted,
+        )),
     }
-    lines.push(Line::from(status_spans));
     let thread = entry
         .map(|entry| &entry.thread)
         .or_else(|| detail.map(|detail| &detail.thread));
+    let mut parts: Vec<String> = Vec::new();
     if let Some(thread) = thread {
         let project = state
             .snapshot
@@ -392,50 +450,127 @@ fn render_main(state: &AppState, frame: &mut Frame, area: Rect) {
             .map_or(thread.project_id.clone(), |project| {
                 project.project.name.clone()
             });
-        lines.push(Line::from(vec![
-            Span::styled("project: ", Style::new().fg(Color::DarkGray)),
-            Span::raw(project),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("provider: ", Style::new().fg(Color::DarkGray)),
-            Span::raw(thread.provider_id.clone()),
-        ]));
-        let mut flags = Vec::new();
-        if thread.is_pinned() {
-            flags.push("pinned");
-        }
-        if thread.is_archived() {
-            flags.push("archived");
-        }
-        if !crate::indicator::is_thread_read(thread) {
-            flags.push("unread");
-        }
-        if !flags.is_empty() {
-            lines.push(Line::from(Span::styled(
-                flags.join(" · "),
-                Style::new().fg(Color::DarkGray),
-            )));
-        }
-        lines.push(Line::from(Span::styled(
-            format!(
-                "updated {} ago",
-                compact_relative_time(thread.updated_at, state.now_ms)
-            ),
-            Style::new().fg(Color::DarkGray),
-        )));
+        parts.push(project);
+        parts.push(thread.provider_id.clone());
     }
     if let Some(branch) = entry.and_then(|entry| entry.environment_branch_name.as_deref()) {
-        lines.push(Line::from(vec![
-            Span::styled("branch: ", Style::new().fg(Color::DarkGray)),
-            Span::raw(branch.to_owned()),
-        ]));
+        parts.push(format!("⎇ {branch}"));
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(block),
-        area,
-    );
+    if let Some(thread) = thread {
+        if thread.is_pinned() {
+            parts.push("pinned".into());
+        }
+        if thread.is_archived() {
+            parts.push("archived".into());
+        }
+        if !crate::indicator::is_thread_read(thread) {
+            parts.push("unread".into());
+        }
+        parts.push(format!(
+            "updated {} ago",
+            compact_relative_time(thread.updated_at, state.now_ms)
+        ));
+    }
+    if let Some(timeline) = state.timeline()
+        && timeline.scroll != Scroll::Bottom
+    {
+        parts.push("scrolled".into());
+    }
+    for part in parts {
+        spans.push(Span::styled(" · ", muted));
+        spans.push(Span::styled(part, muted));
+    }
+    Line::from(crate::wrap::truncate_spans(spans, width))
+}
+
+fn render_timeline(state: &AppState, frame: &mut Frame, area: Rect, focused: bool) {
+    let muted = Style::new().fg(Color::DarkGray);
+    let Some(timeline) = state.timeline() else {
+        return;
+    };
+    if area.height == 0 || area.width < 2 {
+        return;
+    }
+    if !timeline.has_rows() && timeline.items.is_empty() {
+        let (text, style) = if let Some(error) = timeline.error() {
+            (
+                format!("Failed to load timeline: {error}"),
+                Style::new().fg(Color::Red),
+            )
+        } else if timeline.is_loading() {
+            ("Loading…".to_owned(), muted)
+        } else {
+            ("No messages yet".to_owned(), muted)
+        };
+        frame.render_widget(
+            Paragraph::new(text).style(style).wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let width = usize::from(area.width) - 1;
+    let height = usize::from(area.height);
+    timeline.viewport.set((width, height));
+    let placements = timeline.layout(width, height);
+    let clock = TimelineFrame {
+        now_ms: state.now_ms,
+        tick: state.frame,
+    };
+    let selected = timeline.selected_index();
+    let gutter_style = if focused {
+        Style::new().fg(Color::Cyan)
+    } else {
+        muted
+    };
+    let mut y = area.y;
+    for placement in placements {
+        let lines = timeline.item_lines(placement.index, width, clock);
+        let is_selected = selected == Some(placement.index);
+        let gap = usize::from(timeline.items[placement.index].gap);
+        for (line_index, line) in lines
+            .into_iter()
+            .enumerate()
+            .skip(placement.skip)
+            .take(placement.take)
+        {
+            let marked = is_selected && line_index >= gap;
+            let gutter = if marked { "▌" } else { " " };
+            let buffer = frame.buffer_mut();
+            buffer.set_string(area.x, y, gutter, gutter_style);
+            buffer.set_line(area.x + 1, y, &line, area.width - 1);
+            if marked && focused && line_index == gap {
+                buffer.set_style(
+                    Rect {
+                        x: area.x + 1,
+                        y,
+                        width: area.width - 1,
+                        height: 1,
+                    },
+                    Style::new().bg(Color::Indexed(236)),
+                );
+            }
+            y += 1;
+        }
+    }
+    if timeline.unseen && timeline.scroll != Scroll::Bottom {
+        let label = format!(
+            " ↓ new activity · {} to follow ",
+            state.keymap.label_for(Command::MoveBottom)
+        );
+        let label = truncate(&label, usize::from(area.width));
+        let label_width = label.width() as u16;
+        let rect = Rect {
+            x: area.right().saturating_sub(label_width),
+            y: area.bottom() - 1,
+            width: label_width,
+            height: 1,
+        };
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Paragraph::new(label).style(Style::new().bg(Color::Yellow).fg(Color::Black)),
+            rect,
+        );
+    }
 }
 
 fn render_panel(state: &AppState, frame: &mut Frame, area: Rect) {
@@ -484,6 +619,18 @@ fn hints(state: &AppState) -> String {
         Mode::Filter(_) => "type to filter · Enter keep · Esc clear".into(),
         Mode::Rename { .. } => "Enter save · Esc cancel".into(),
         Mode::Help => "any key closes help".into(),
+        Mode::OpenPicker { .. } => "1-9/Enter open · j/k move · Esc cancel".into(),
+        Mode::Normal if state.focus == Focus::Main && state.open_thread.is_some() => format!(
+            "{}/{} select · {} expand · {} copy · {} open · {}/{} messages · {} follow",
+            key(Command::MoveDown),
+            key(Command::MoveUp),
+            key(Command::Open),
+            key(Command::Copy),
+            key(Command::OpenExternal),
+            key(Command::PreviousMessage),
+            key(Command::NextMessage),
+            key(Command::MoveBottom),
+        ),
         Mode::Normal => format!(
             "{}/{} move · {} open · {} filter · {} help · {} quit",
             key(Command::MoveDown),
@@ -510,6 +657,9 @@ fn render_status(state: &AppState, frame: &mut Frame, area: Rect) {
         Span::raw(" "),
         connection_span(&state.snapshot.connection),
     ];
+    if state.read_only {
+        spans.push(Span::styled("  read-only", Style::new().fg(Color::Magenta)));
+    }
     if state.attention > 0 {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
@@ -589,24 +739,32 @@ fn render_help(state: &AppState, frame: &mut Frame, area: Rect) {
         .map(|(_, desc)| desc.width())
         .max()
         .unwrap_or(0);
-    let width = ((key_width + desc_width + 6) as u16).min(area.width);
-    let height = (entries.len() as u16 + 2).min(area.height);
+    let per_column = usize::from(area.height.saturating_sub(2)).max(1);
+    let columns = entries.len().div_ceil(per_column).max(1);
+    let rows = entries.len().div_ceil(columns);
+    let column_width = key_width + desc_width + 4;
+    let width = ((column_width * columns + 2) as u16).min(area.width);
+    let height = (rows as u16 + 2).min(area.height);
     let rect = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height - height) / 2,
         width,
         height,
     };
-    let lines: Vec<Line> = entries
-        .into_iter()
-        .map(|(key, desc)| {
-            Line::from(vec![
-                Span::styled(
+    let lines: Vec<Line> = (0..rows)
+        .map(|row| {
+            let mut spans = Vec::new();
+            for column in 0..columns {
+                let Some((key, desc)) = entries.get(column * rows + row) else {
+                    continue;
+                };
+                spans.push(Span::styled(
                     format!(" {key:<key_width$}  "),
                     Style::new().fg(Color::Cyan),
-                ),
-                Span::raw(desc),
-            ])
+                ));
+                spans.push(Span::raw(format!("{desc:<desc_width$} ")));
+            }
+            Line::from(spans)
         })
         .collect();
     frame.render_widget(Clear, rect);

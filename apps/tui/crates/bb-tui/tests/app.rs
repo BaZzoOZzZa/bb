@@ -100,11 +100,9 @@ fn enter_opens_thread_marks_unread_read_and_focuses_main() {
     let text = screen(&state);
     assert!(text.contains("┏ Fix flaky test ━"), "{text}");
     assert!(
-        text.contains("status: unknown  ● Unread thread succeeded"),
+        text.contains("● Unread thread succeeded · alpha · codex · unread"),
         "{text}"
     );
-    assert!(text.contains("project: alpha"), "{text}");
-    assert!(text.contains("unread"), "{text}");
 
     press(&mut state, KeyCode::Char('j'));
     assert_eq!(selected_key(&state), thread_key("thr_unread"));
@@ -422,7 +420,8 @@ fn help_overlay_lists_keys_and_closes_on_any_key() {
     press(&mut state, KeyCode::Char('?'));
     let text = render_lines(&state, 100, 40).join("\n");
     assert!(text.contains("Keys"), "{text}");
-    assert!(text.contains("│ r        Rename thread"), "{text}");
+    assert!(text.contains("│ r         Rename thread"), "{text}");
+    assert!(text.contains("y         Copy selected row"), "{text}");
     assert!(text.contains("M-1…M-9"), "{text}");
     assert!(text.contains("j/↓"), "{text}");
     press(&mut state, KeyCode::Char('q'));
@@ -499,4 +498,25 @@ fn sidebar_scrolls_to_keep_selection_visible() {
     press(&mut state, KeyCode::Char('g'));
     let lines = render_lines(&state, 80, 12);
     assert!(lines[1].contains("alpha"), "{lines:?}");
+}
+
+#[test]
+fn read_only_mode_drops_mutations() {
+    let mut state = loaded_state(sample_sidebar());
+    state.read_only = true;
+    press(&mut state, KeyCode::Char('j'));
+    let effects = press(&mut state, KeyCode::Enter);
+    assert_eq!(
+        effects,
+        vec![Effect::WatchThread(Some("thr_unread".into()))]
+    );
+    assert!(state.toasts.is_empty());
+    assert!(press(&mut state, KeyCode::Char('a')).is_empty());
+    assert_eq!(state.toasts.len(), 1);
+    assert!(
+        state.toasts[0]
+            .message
+            .contains("Read-only mode: cannot archive")
+    );
+    assert!(screen(&state).contains("read-only"));
 }

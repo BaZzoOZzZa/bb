@@ -22,6 +22,12 @@ pub struct Args {
     pub profile: Option<String>,
     #[arg(long, env = "BB_TUI_CONFIG_DIR", hide = true)]
     pub config_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "BB_TUI_READ_ONLY",
+        help = "Never send changes to the server (no mark-read, rename, archive, pin)"
+    )]
+    pub read_only: bool,
     #[command(subcommand)]
     pub command: Option<TopCommand>,
 }

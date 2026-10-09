@@ -10,26 +10,34 @@ use ratatui::backend::Backend as TerminalBackend;
 use tokio::sync::mpsc;
 
 use crate::api::Api;
-use crate::app::{Action, AppState, Effect, update};
+use crate::app::{Action, AppState, Effect, ToastLevel, update};
+use crate::platform::Platform;
 use crate::time::now_ms;
 use crate::ui;
 
 pub const TICK: Duration = Duration::from_millis(200);
 
-pub struct EffectRunner<A: Api> {
+pub struct EffectRunner<A: Api, P: Platform> {
     store: Store,
     api: Arc<A>,
+    platform: Arc<P>,
     tx: mpsc::UnboundedSender<Action>,
     _sidebar: Interest,
     thread: Option<(String, Interest)>,
 }
 
-impl<A: Api> EffectRunner<A> {
-    pub fn new(store: Store, api: Arc<A>, tx: mpsc::UnboundedSender<Action>) -> Self {
+impl<A: Api, P: Platform> EffectRunner<A, P> {
+    pub fn new(
+        store: Store,
+        api: Arc<A>,
+        platform: Arc<P>,
+        tx: mpsc::UnboundedSender<Action>,
+    ) -> Self {
         let sidebar = store.watch_sidebar();
         Self {
             store,
             api,
+            platform,
             tx,
             _sidebar: sidebar,
             thread: None,
@@ -64,6 +72,32 @@ impl<A: Api> EffectRunner<A> {
             }
             Effect::RefreshSidebar => self.store.refresh(ResourceKey::Sidebar),
             Effect::RefreshAll => self.store.refresh_all(),
+            Effect::LoadOlder(thread_id) => self.store.load_older_timeline_rows(&thread_id),
+            Effect::LoadTurnDetails(key) => self.store.load_turn_details(key),
+            Effect::LoadOlderTurnDetails(key) => self.store.load_older_turn_details(key),
+            Effect::LoadDeferred { thread_id, row } => {
+                self.store.load_deferred_content(&thread_id, &row);
+            }
+            Effect::Copy(text) => {
+                let (message, level) = match self.platform.copy(&text) {
+                    Ok(()) => (
+                        format!("Copied {} characters", text.chars().count()),
+                        ToastLevel::Info,
+                    ),
+                    Err(error) => (format!("Copy failed: {error}"), ToastLevel::Error),
+                };
+                let _ = self.tx.send(Action::Notify { message, level });
+            }
+            Effect::OpenExternal(target) => {
+                let (message, level) = match self.platform.open(&target) {
+                    Ok(()) => (format!("Opening {target}"), ToastLevel::Info),
+                    Err(error) => (
+                        format!("Failed to open {target}: {error}"),
+                        ToastLevel::Error,
+                    ),
+                };
+                let _ = self.tx.send(Action::Notify { message, level });
+            }
             Effect::Quit => {}
         }
     }
@@ -86,22 +120,24 @@ pub fn terminal_events() -> impl Stream<Item = Action> + Unpin {
         .filter_map(|event| std::future::ready(terminal_action(event)))
 }
 
-pub async fn run<B, A, S>(
+pub async fn run<B, A, P, S>(
     terminal: &mut Terminal<B>,
     state: &mut AppState,
     store: Store,
     api: Arc<A>,
+    platform: Arc<P>,
     mut events: S,
 ) -> Result<()>
 where
     B: TerminalBackend,
     B::Error: Send + Sync + 'static,
     A: Api,
+    P: Platform,
     S: Stream<Item = Action> + Unpin,
 {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut snapshots = store.subscribe();
-    let mut runner = EffectRunner::new(store, api, tx);
+    let mut runner = EffectRunner::new(store, api, platform, tx);
     runner.load_keymap();
     let initial = snapshots.borrow_and_update().clone();
     update(state, Action::Snapshot(initial));
@@ -137,7 +173,11 @@ where
     Ok(())
 }
 
-fn dispatch<A: Api>(state: &mut AppState, runner: &mut EffectRunner<A>, action: Action) {
+fn dispatch<A: Api, P: Platform>(
+    state: &mut AppState,
+    runner: &mut EffectRunner<A, P>,
+    action: Action,
+) {
     for effect in update(state, action) {
         runner.run(effect);
     }

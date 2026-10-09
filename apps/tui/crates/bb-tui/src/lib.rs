@@ -1,10 +1,17 @@
+pub mod ansi;
 pub mod api;
 pub mod app;
+pub mod detail;
+pub mod highlight;
 pub mod indicator;
 pub mod input;
 pub mod keymap;
+pub mod markdown;
+pub mod platform;
 pub mod runtime;
 pub mod sidebar;
 pub mod startup;
 pub mod time;
+pub mod timeline;
 pub mod ui;
+pub mod wrap;
