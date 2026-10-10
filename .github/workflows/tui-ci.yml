@@ -29,7 +29,7 @@ jobs:
         working-directory: apps/tui
     env:
       CARGO_TERM_COLOR: always
-      CARGO_TARGET_DIR: ${{ runner.temp }}/../tui-target/ci
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../../tui-target/ci
     steps:
       - uses: actions/checkout@v4
       - run: cargo --version && rustc --version

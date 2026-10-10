@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
-      CARGO_TARGET_DIR: ${{ runner.temp }}/../tui-target/release
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../../tui-target/release
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
