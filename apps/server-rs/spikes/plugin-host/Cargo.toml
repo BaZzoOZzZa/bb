@@ -1,0 +1,40 @@
+[package]
+name = "bb-plugin-host-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+deno_runtime = { version = "=0.267.0", features = ["transpile"] }
+deno_core = { version = "=0.412.0", features = ["v8", "include_icu_data"] }
+deno_resolver = { version = "0.90.0", features = ["sync"] }
+node_resolver = { version = "0.97.0", features = ["sync"] }
+sys_traits = { version = "0.1.28", features = ["real"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = "0.40"
+url = "2"
+deno_error = "=0.7.1"
+
+[features]
+snapshot = ["dep:deno_runtime"]
+
+[build-dependencies]
+deno_runtime = { version = "=0.267.0", features = ["snapshot"], optional = true }
+deno_core = { version = "=0.412.0", features = ["v8", "include_icu_data"] }
+deno_error = "=0.7.1"
+rusqlite = "0.40"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+strip = true

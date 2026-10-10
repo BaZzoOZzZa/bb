@@ -101,3 +101,4 @@ provider-recordings/raw/
 
 # Rust TUI build output
 /apps/tui/target/
+/apps/server-rs/**/target/
