@@ -430,7 +430,10 @@ plugin's preferences with its `listPreferences` RPC
 change made in the web sidebar's Organize menu, with `bb thread-list prefs set`
 or in another bb-tui shows up at once (and is reloaded after a reconnect).
 Until the first answer arrives the sidebar shows `Loading…`; if the plugin is
-missing the plugin's defaults apply.
+missing the plugin's defaults apply and changes stay local to this session
+(`:set` reports them as not saved). Writes to one preference go one at a time:
+a change made while the previous write is in flight is sent, with the latest
+value, once that write answers.
 
 | Organization | Groups |
 |---|---|

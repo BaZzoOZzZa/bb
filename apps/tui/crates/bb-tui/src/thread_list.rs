@@ -67,7 +67,7 @@ pub struct ThreadListState {
     pub prefs: ThreadListPreferences,
     pub status: PrefsStatus,
     pub generation: u64,
-    pub pending: HashMap<PreferenceKey, u32>,
+    pub pending: HashMap<PreferenceKey, bool>,
     pub archived: ArchivedPages,
     pub more_open: bool,
     pub expanded_while_grouped: HashSet<String>,
@@ -78,6 +78,10 @@ pub struct ThreadListState {
 impl ThreadListState {
     pub fn awaiting_first_load(&self) -> bool {
         self.status == PrefsStatus::Loading && !self.loaded_once
+    }
+
+    pub fn saves_preferences(&self) -> bool {
+        !matches!(self.status, PrefsStatus::Failed(_))
     }
 
     pub fn is_collapsed(&self, collapse: &Collapse) -> bool {
@@ -427,7 +431,9 @@ impl AppState {
                     }
                     Err(error) => {
                         tracing::debug!(%error, "thread list preferences unavailable");
-                        self.thread_list.status = PrefsStatus::Failed(error);
+                        if self.thread_list.status != PrefsStatus::Ready {
+                            self.thread_list.status = PrefsStatus::Failed(error);
+                        }
                     }
                 }
                 let first = !self.thread_list.loaded_once;
@@ -439,20 +445,11 @@ impl AppState {
                 effects
             }
             ThreadListLoaded::Set { key, result } => {
-                let remaining = match self.thread_list.pending.get_mut(&key) {
-                    Some(count) => {
-                        *count = count.saturating_sub(1);
-                        *count
-                    }
-                    None => 0,
-                };
-                if remaining == 0 {
-                    self.thread_list.pending.remove(&key);
-                }
+                let dirty = self.thread_list.pending.remove(&key).unwrap_or(false);
                 match result {
+                    Ok(_) if dirty => self.write_preference(key),
                     Ok(reply) => {
-                        if remaining == 0
-                            && let Some((reply_key, value)) = parse_set_preference_reply(&reply)
+                        if let Some((reply_key, value)) = parse_set_preference_reply(&reply)
                             && reply_key == key
                             && self.thread_list.prefs.value(key) != value
                             && self.thread_list.prefs.apply(key, &value)
@@ -530,10 +527,14 @@ impl AppState {
     }
 
     fn write_preference(&mut self, key: PreferenceKey) -> Vec<Effect> {
-        if self.read_only {
+        if self.read_only || !self.thread_list.saves_preferences() {
             return Vec::new();
         }
-        *self.thread_list.pending.entry(key).or_insert(0) += 1;
+        if let Some(dirty) = self.thread_list.pending.get_mut(&key) {
+            *dirty = true;
+            return Vec::new();
+        }
+        self.thread_list.pending.insert(key, false);
         vec![Effect::ThreadList(ThreadListRequest::Set {
             key,
             value: self.thread_list.prefs.value(key),
@@ -712,8 +713,13 @@ impl AppState {
             None => next_option_value(&self.thread_list.prefs, option),
         };
         let effects = self.set_thread_list_preference(option.key(), value);
+        let unsaved = if self.thread_list.saves_preferences() {
+            ""
+        } else {
+            " (not saved: thread list plugin unavailable)"
+        };
         self.keys.message(format!(
-            "  {}",
+            "  {}{unsaved}",
             option_display(&self.thread_list.prefs, option)
         ));
         Ok(effects)

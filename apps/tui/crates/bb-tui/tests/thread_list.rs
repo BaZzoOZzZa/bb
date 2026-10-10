@@ -263,6 +263,76 @@ async fn failed_writes_report_and_reload_the_server_value() {
     );
 }
 
+#[tokio::test]
+async fn writes_for_one_key_wait_for_the_previous_reply_and_send_the_latest_value() {
+    let api = MockApi::new(FakeBackend::new(sample_sidebar()));
+    let mut state = started(&api, sample_sidebar()).await;
+    keys(&mut state, "g g");
+    let first = keys(&mut state, "z a");
+    state.selected = state
+        .rows
+        .iter()
+        .position(|row| matches!(row, SidebarRow::Group(group) if group.label == "beta"))
+        .expect("beta group");
+    let second = keys(&mut state, "z a");
+    assert!(
+        !second
+            .iter()
+            .any(|effect| matches!(effect, Effect::ThreadList(_))),
+        "a second write for the same key waits for the first reply"
+    );
+    assert_eq!(collapsed_projects(&state), ["proj_a", "proj_b"]);
+    drive(&api, &mut state, first).await;
+    assert_eq!(
+        api.thread_list.writes(),
+        vec![
+            json!({"key": "collapsedProjects", "value": ["proj_a"]}),
+            json!({"key": "collapsedProjects", "value": ["proj_a", "proj_b"]}),
+        ]
+    );
+    assert_eq!(collapsed_projects(&state), ["proj_a", "proj_b"]);
+    assert!(state.thread_list.pending.is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_plugin_keeps_its_defaults_and_changes_stay_local() {
+    let api = MockApi::new(FakeBackend::new(sample_sidebar()));
+    *api.thread_list.unavailable.lock().unwrap() = true;
+    let mut state = started(&api, sample_sidebar()).await;
+    assert_eq!(
+        state.thread_list.prefs.organization_mode,
+        OrganizationMode::Chronological
+    );
+    assert!(!state.rows.is_empty());
+    let effects = ex(&mut state, "set organization=project");
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::ThreadList(_)))
+    );
+    assert_eq!(
+        state.thread_list.prefs.organization_mode,
+        OrganizationMode::Project
+    );
+    assert!(
+        state
+            .keys
+            .echo
+            .as_ref()
+            .is_some_and(|echo| !echo.error && echo.text.contains("not saved"))
+    );
+    keys(&mut state, "g g");
+    let effects = keys(&mut state, "z a");
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::ThreadList(_)))
+    );
+    assert_eq!(collapsed_projects(&state), ["proj_a"]);
+    assert!(api.thread_list.writes().is_empty());
+    assert!(state.toasts.is_empty());
+}
+
 fn archived(id: &str, title: &str, minutes_ago: i64) -> bb_wire::thread::ThreadListEntry {
     let mut entry = thread(id, "proj_b", title, minutes_ago);
     entry.thread.archived_at = Some(NOW_MS);

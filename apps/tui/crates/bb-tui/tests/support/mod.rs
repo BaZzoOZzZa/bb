@@ -499,6 +499,7 @@ pub struct ThreadListFake {
     pub preferences: Mutex<serde_json::Map<String, serde_json::Value>>,
     pub calls: Mutex<Vec<(String, serde_json::Value)>>,
     pub reject: Mutex<Option<String>>,
+    pub unavailable: Mutex<bool>,
 }
 
 impl Default for ThreadListFake {
@@ -509,6 +510,7 @@ impl Default for ThreadListFake {
             preferences: Mutex::new(preferences),
             calls: Mutex::new(Vec::new()),
             reject: Mutex::new(None),
+            unavailable: Mutex::new(false),
         }
     }
 }
@@ -532,6 +534,9 @@ impl ThreadListFake {
             .lock()
             .unwrap()
             .push((method.to_owned(), input.clone()));
+        if *self.unavailable.lock().unwrap() {
+            return Err("plugin \"thread-list\" is not installed".into());
+        }
         match method {
             "listPreferences" => {
                 Ok(json!({"preferences": self.preferences.lock().unwrap().clone()}))
