@@ -33,7 +33,7 @@ jobs:
           done
       - name: Fast-forward fork main to upstream
         run: gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch=main
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: tui-rs
           fetch-depth: 0

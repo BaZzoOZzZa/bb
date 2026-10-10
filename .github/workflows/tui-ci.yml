@@ -31,7 +31,7 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_TARGET_DIR: ${{ github.workspace }}/../../tui-target/ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: cargo --version && rustc --version
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --all-targets -- -D warnings
