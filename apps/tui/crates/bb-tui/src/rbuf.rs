@@ -1571,50 +1571,34 @@ fn not_found(state: &mut AppState, pattern: &str) {
         .error(format!("E486: Pattern not found: {pattern}"));
 }
 
-fn reveal_sidebar_matches(state: &mut AppState) {
+fn reveal_sidebar_matches(state: &mut AppState) -> Vec<Effect> {
     let Some(regex) = state
         .views
         .search
         .as_ref()
         .map(|search| search.regex.clone())
     else {
-        return;
+        return Vec::new();
     };
-    let Some(sidebar) = state.snapshot.sidebar.data.clone() else {
-        return;
-    };
-    let open = std::collections::HashSet::new();
-    let rows = crate::sidebar::build_rows(
-        &sidebar,
-        crate::sidebar::SidebarView {
-            collapsed: &open,
-            expanded_threads: &state.expanded_threads,
-            filter: &state.filter,
-        },
-    );
-    let mut group: Option<&str> = None;
-    let mut reveal = Vec::new();
+    let rows = state.sidebar_rows(true);
+    let mut reveal: Vec<crate::sidebar::Collapse> = Vec::new();
     for row in &rows {
-        match row {
-            SidebarRow::Group(row) => group = Some(row.key.as_str()),
-            SidebarRow::Thread(thread) => {
-                if let Some(key) = group
-                    && state.collapsed.contains(key)
-                    && regex.is_match(&thread.title)
-                    && !reveal.contains(&key)
-                {
-                    reveal.push(key);
-                }
+        let SidebarRow::Thread(thread) = row else {
+            continue;
+        };
+        if !regex.is_match(&thread.title) {
+            continue;
+        }
+        for collapse in &thread.ancestors {
+            if state.thread_list.is_collapsed(collapse) && !reveal.contains(collapse) {
+                reveal.push(collapse.clone());
             }
         }
     }
     if reveal.is_empty() {
-        return;
+        return Vec::new();
     }
-    for key in reveal {
-        state.collapsed.remove(key);
-    }
-    state.rebuild_rows();
+    state.set_many_collapsed(&reveal, false)
 }
 
 fn run_search(
@@ -1754,10 +1738,12 @@ fn search_word(
     if !set_search(state, pattern, forward) {
         return Vec::new();
     }
+    let mut effects = Vec::new();
     if buf == Buf::Sidebar {
-        reveal_sidebar_matches(state);
+        effects = reveal_sidebar_matches(state);
     }
-    run_search(state, buf, (line, start), forward, count)
+    effects.extend(run_search(state, buf, (line, start), forward, count));
+    effects
 }
 
 pub(crate) fn handle_search_key(
@@ -1849,10 +1835,17 @@ fn commit_search(state: &mut AppState, line: SearchLine) -> Vec<Effect> {
         return effects;
     }
     if origin.buf == Buf::Sidebar {
-        reveal_sidebar_matches(state);
+        effects.extend(reveal_sidebar_matches(state));
         let doc = doc(state, origin.buf);
         let (line_no, col) = cursor(state, origin.buf, &doc);
-        return run_search(state, origin.buf, (line_no, col), line.forward, None);
+        effects.extend(run_search(
+            state,
+            origin.buf,
+            (line_no, col),
+            line.forward,
+            None,
+        ));
+        return effects;
     }
     effects.extend(run_search(
         state,

@@ -332,6 +332,10 @@ Acts on the focused pane's thread; in the sidebar, on the selected thread.
 | `SPC t h` | Search highlight (`hlsearch`) |
 | `SPC t f` | Follow new output in the timeline |
 | `SPC t z` | Zen: hide sidebar and panel, maximize the focused pane |
+| `SPC t o` | Sidebar organization: project → chronological → machine (`:set organization!`) |
+| `SPC t a` | Archived threads in the sidebar (`:set archived!`) |
+| `SPC t r` | Sidebar sort: updated → created → title (`:set sort!`) |
+| `SPC t R` | Sidebar sort direction: default → ascending → descending (`:set sortdir!`) |
 
 ### `SPC w` +window
 
@@ -847,6 +851,18 @@ prints `E30: No previous command line`.
 | `follow` | on | Timeline follows new output at the bottom |
 | `sidebar`, `panel` | layout | Show the sidebar / right panel |
 | `mouse` | from the settings file | Mouse capture |
+| `organization` / `org` | server | Sidebar organization: `project`, `chronological`, `machine` |
+| `sort` | server | Sidebar sort field: `updated`, `created`, `alpha` |
+| `sortdir` | server | Sidebar sort direction: `default`, `asc`, `desc` |
+| `lifecycle` | server | Threads the sidebar lists: `active`, `archived`, `both` |
+| `archived` | server | Boolean shortcut for `lifecycle=both` / `lifecycle=active` |
+| `envgroup` | server | Group sibling threads sharing a worktree: `auto`, `on`, `off` |
+| `readgroup` | server | List unread threads above read ones |
+
+The sidebar options are the Thread list plugin's preferences (the same values
+as the web sidebar's Organize menu and `bb thread-list prefs`): `:set` writes
+them on the server for every client, `{option}!` cycles a non-boolean one,
+and `--read-only` refuses them.
 
 Options set with `:set` last for the session; the settings file (`[evil]`
 table: `which_key_delay_ms`, `clipboard`, `relative_number`, `scrolloff`) sets
@@ -1289,9 +1305,7 @@ Not built yet:
 - Search, marks and the jump list in the composer, persisting global marks
   to `$XDG_STATE_HOME/bb-tui/marks.json` (they live for the session),
   `:marks` as a picker (it is a read-only listing pane), `zj`/`zk`, search
-  inside the deferred content of collapsed timeline rows, revealing matches
-  inside collapsed parent threads of the sidebar (only collapsed groups
-  open).
+  inside the deferred content of collapsed timeline rows.
 - Evil buffers for the Info tab, notifications, settings and automations
   lists (they keep their list keys).
 - Composer `gj`/`gk` by display line (they move by logical line), mouse
@@ -1336,8 +1350,10 @@ Deviations of the third step, by design:
 - `*` and `#` follow smart-case like `/` instead of plain `ignorecase`.
 - The first `ESC` in a read-only buffer with a search highlight or a visual
   selection only clears it; the next `ESC` does what section 4 lists.
-- Search in the sidebar opens every collapsed group that holds a match when
-  the search is submitted, not only the group of the match it lands on.
+- Search in the sidebar opens every collapsed group and parent thread that
+  holds a match when the search is submitted, not only the one it lands on.
+  Folds are the Thread list plugin's collapsed preferences, so opening them
+  is saved on the server like a click in the web sidebar.
 - Output panes: `yy` yanks the line under the cursor and `gy` the whole
   output (or the previewed file path), `q`/`RET`/`ESC` close.
 

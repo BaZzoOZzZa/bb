@@ -89,7 +89,7 @@ fn clicking_a_sidebar_thread_opens_it_and_a_group_toggles() {
         state.rows[state.selected].key(),
         RowKey::Group("proj_b".into())
     );
-    assert!(state.collapsed.contains("proj_b"));
+    assert_eq!(collapsed_projects(&state), ["proj_b"]);
     assert_eq!(state.focus, Focus::Sidebar);
 }
 

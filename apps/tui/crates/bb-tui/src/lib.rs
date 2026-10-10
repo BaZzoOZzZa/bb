@@ -55,6 +55,7 @@ pub mod terminal;
 pub mod terminal_input;
 pub mod terminal_ui;
 pub mod theme;
+pub mod thread_list;
 pub mod time;
 pub mod timeline;
 pub mod typeahead;

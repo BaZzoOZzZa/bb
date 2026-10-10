@@ -260,14 +260,15 @@ fn stale_generation_results_are_ignored() {
 #[test]
 fn project_switcher_reveals_project_in_sidebar() {
     let mut state = loaded_state(sample_sidebar());
-    state.collapsed.insert("proj_b".into());
+    state.thread_list.prefs.collapsed_projects = vec!["proj_b".into()];
+    state.rebuild_rows();
     keys(&mut state, "SPC p p");
     type_text(&mut state, "bet");
     assert_eq!(titles(&state), ["beta"]);
     press(&mut state, KeyCode::Enter);
     assert!(state.palette.is_none());
     assert_eq!(state.focus, Focus::Sidebar);
-    assert!(!state.collapsed.contains("proj_b"));
+    assert!(collapsed_projects(&state).is_empty());
     assert_eq!(
         state.selected_row().map(|row| row.key()),
         Some(RowKey::Group("proj_b".into()))

@@ -628,6 +628,26 @@ fn leader(map: &mut Keymap) {
         ("SPC s c", Ex("nohlsearch"), "Clear the search highlight"),
         ("SPC s r", Ex("marks"), "List marks"),
         ("SPC t h", Ex("set hlsearch!"), "Toggle search highlight"),
+        (
+            "SPC t o",
+            Ex("set organization!"),
+            "Cycle sidebar organization: project, chronological, machine",
+        ),
+        (
+            "SPC t a",
+            Ex("set archived!"),
+            "Show / hide archived threads in the sidebar",
+        ),
+        (
+            "SPC t r",
+            Ex("set sort!"),
+            "Cycle sidebar sort: updated, created, title",
+        ),
+        (
+            "SPC t R",
+            Ex("set sortdir!"),
+            "Cycle sidebar sort direction",
+        ),
         ("SPC h x", ExPrompt("help :"), "Describe an ex command"),
     ];
     for (keys, command, desc) in described {

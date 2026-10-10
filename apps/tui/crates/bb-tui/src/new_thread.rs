@@ -1286,8 +1286,10 @@ impl AppState {
                     return Some(thread.project_id.clone());
                 }
                 crate::sidebar::SidebarRow::Group(group) => {
-                    if find_project(&self.snapshot, &group.key).is_some() {
-                        return Some(group.key.clone());
+                    if let Some(project_id) = &group.project_id
+                        && find_project(&self.snapshot, project_id).is_some()
+                    {
+                        return Some(project_id.clone());
                     }
                 }
             }

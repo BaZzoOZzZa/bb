@@ -495,8 +495,68 @@ impl AutomationsFake {
     }
 }
 
+pub struct ThreadListFake {
+    pub preferences: Mutex<serde_json::Map<String, serde_json::Value>>,
+    pub calls: Mutex<Vec<(String, serde_json::Value)>>,
+    pub reject: Mutex<Option<String>>,
+}
+
+impl Default for ThreadListFake {
+    fn default() -> Self {
+        let mut preferences = serde_json::Map::new();
+        preferences.insert("organizationMode".into(), serde_json::json!("project"));
+        Self {
+            preferences: Mutex::new(preferences),
+            calls: Mutex::new(Vec::new()),
+            reject: Mutex::new(None),
+        }
+    }
+}
+
+impl ThreadListFake {
+    pub fn calls(&self) -> Vec<(String, serde_json::Value)> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    pub fn writes(&self) -> Vec<serde_json::Value> {
+        self.calls()
+            .into_iter()
+            .filter(|(method, _)| method == "setPreference")
+            .map(|(_, input)| input)
+            .collect()
+    }
+
+    fn handle(&self, method: &str, input: serde_json::Value) -> Result<serde_json::Value, String> {
+        use serde_json::json;
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_owned(), input.clone()));
+        match method {
+            "listPreferences" => {
+                Ok(json!({"preferences": self.preferences.lock().unwrap().clone()}))
+            }
+            "setPreference" => {
+                if let Some(error) = self.reject.lock().unwrap().clone() {
+                    return Err(error);
+                }
+                let key = input["key"].as_str().unwrap_or_default().to_owned();
+                self.preferences
+                    .lock()
+                    .unwrap()
+                    .insert(key.clone(), input["value"].clone());
+                Ok(json!({"key": key, "value": input["value"]}))
+            }
+            other => Err(format!(
+                "plugin \"thread-list\" has no rpc method \"{other}\""
+            )),
+        }
+    }
+}
+
 pub struct MockApi {
     pub backend: Arc<FakeBackend>,
+    pub thread_list: ThreadListFake,
     pub settings: SettingsFake,
     pub automations: AutomationsFake,
     pub mutations: Mutex<Vec<Mutation>>,
@@ -547,6 +607,7 @@ impl MockApi {
             backend,
             settings: SettingsFake::default(),
             automations: AutomationsFake::default(),
+            thread_list: ThreadListFake::default(),
             mutations: Mutex::new(Vec::new()),
             overrides: Vec::new(),
             fail: false,
@@ -608,6 +669,8 @@ impl Api for MockApi {
         let result = if plugin_id == "automations" {
             let sidebar = self.backend.sidebar.lock().unwrap().clone();
             self.automations.handle(&sidebar, &method, input)
+        } else if plugin_id == "thread-list" {
+            self.thread_list.handle(&method, input)
         } else {
             Err(format!("unknown plugin \"{plugin_id}\""))
         };
@@ -1183,8 +1246,13 @@ pub fn loaded_state(sidebar: SidebarBootstrapResponse) -> AppState {
         Instant::now(),
         NOW_MS,
     );
+    state.thread_list.prefs.organization_mode = bb_wire::thread_list::OrganizationMode::Project;
     update(&mut state, Action::Snapshot(snapshot_with(sidebar)));
     state
+}
+
+pub fn collapsed_projects(state: &AppState) -> Vec<String> {
+    state.thread_list.prefs.collapsed_projects.clone()
 }
 
 pub fn render_lines(state: &AppState, width: u16, height: u16) -> Vec<String> {

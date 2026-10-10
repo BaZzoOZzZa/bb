@@ -11,6 +11,7 @@ use crate::keymap::Command;
 use crate::palette::PaletteKind;
 use crate::panel::PanelTab;
 use crate::sidebar::SidebarRow;
+use crate::thread_list::{ListOption, option_display};
 
 const MAX_HISTORY: usize = 100;
 
@@ -84,7 +85,55 @@ pub const OPTIONS: &[OptionSpec] = &[
         short: "",
         boolean: true,
     },
+    OptionSpec {
+        name: "organization",
+        short: "org",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "sort",
+        short: "",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "sortdir",
+        short: "",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "lifecycle",
+        short: "",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "archived",
+        short: "",
+        boolean: true,
+    },
+    OptionSpec {
+        name: "envgroup",
+        short: "",
+        boolean: false,
+    },
+    OptionSpec {
+        name: "readgroup",
+        short: "",
+        boolean: true,
+    },
 ];
+
+fn list_option(name: &str) -> Option<ListOption> {
+    Some(match name {
+        "organization" => ListOption::Organization,
+        "sort" => ListOption::Sort,
+        "sortdir" => ListOption::SortDirection,
+        "lifecycle" => ListOption::Lifecycle,
+        "archived" => ListOption::Archived,
+        "envgroup" => ListOption::EnvironmentGrouping,
+        "readgroup" => ListOption::ReadGrouping,
+        _ => return None,
+    })
+}
 
 const UNSUPPORTED: &[&str] = &[
     "number",
@@ -361,7 +410,15 @@ impl AppState {
             ),
             "sidebar" => flag(self.sidebar_visible),
             "panel" => flag(self.panel_visible),
-            _ => String::new(),
+            "archived" => flag(self.thread_list.prefs.shows_archived()),
+            "readgroup" => flag(self.thread_list.prefs.group_by_read_status),
+            other => match list_option(other) {
+                Some(option) => format!(
+                    "{other}={}",
+                    option_display(&self.thread_list.prefs, option)
+                ),
+                None => String::new(),
+            },
         }
     }
 
@@ -434,6 +491,13 @@ impl AppState {
             (word, Some(true))
         };
         let spec = self.known_option(name, word)?;
+        if !spec.boolean
+            && flag.is_none()
+            && let Some(option) = list_option(spec.name)
+        {
+            self.options_set.insert(spec.name);
+            return self.list_option_set(option, None);
+        }
         if !spec.boolean {
             if flag == Some(true) {
                 let value = self.option_value(spec.name);
@@ -443,6 +507,10 @@ impl AppState {
             return Err(format!("E474: Invalid argument: {word}"));
         }
         self.options_set.insert(spec.name);
+        if let Some(option) = list_option(spec.name) {
+            let value = flag.map(|on| if on { "true" } else { "false" });
+            return self.list_option_set(option, value);
+        }
         Ok(self.set_flag(spec.name, flag))
     }
 
@@ -454,6 +522,15 @@ impl AppState {
     }
 
     fn set_value(&mut self, name: &str, value: &str, word: &str) -> Result<Vec<Effect>, String> {
+        if let Some(option) = list_option(name) {
+            return self.list_option_set(option, Some(value)).map_err(|error| {
+                if error.starts_with("E474") {
+                    format!("E474: Invalid argument: {word}")
+                } else {
+                    error
+                }
+            });
+        }
         match name {
             "whichkeydelay" => {
                 let ms = value

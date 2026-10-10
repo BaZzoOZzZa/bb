@@ -16,7 +16,8 @@ policy. The TUI never talks to the host daemon.
 - [Read-only mode](#read-only-mode)
 - [bb-tui doctor](#bb-tui-doctor)
 - [Keys](#keys)
-- Feature guides: [timeline](#thread-timeline), [composer](#composer),
+- Feature guides: [sidebar](#sidebar-organization),
+  [timeline](#thread-timeline), [composer](#composer),
   [mentions](#mentions-and-attachments), [requests](#pending-requests),
   [new thread](#new-thread), [palette](#command-palette-and-search),
   [right panel](#right-panel), [terminals](#terminals),
@@ -217,7 +218,7 @@ select with `Shift` held while the mouse is captured):
 
 | Where | Click | Wheel |
 |---|---|---|
-| Sidebar | a thread opens it; a project header folds it | moves the selection 3 rows |
+| Sidebar | a thread opens it; a group header folds it; `Show more` loads more archived threads | moves the selection 3 rows |
 | Timeline | focuses the pane (another split pane becomes the focused one) and selects the row | scrolls 3 lines; scrolling up stops following new output, scrolling to the end resumes it |
 | Composer | focuses it in insert state | |
 | Request panel | focuses it | |
@@ -244,9 +245,12 @@ the echo line) and nothing is sent:
 - running plugin commands
 - typing into, resizing, creating or closing terminals
 - every change in the settings and automations views
+- thread list preferences (`:set organization=…`, `SPC t o` and the other
+  sidebar options); folding sidebar groups still works but stays local
 
 A few reads are `POST` requests on the server (the diff patch batch, the
-automations plugin's `automations_overview` RPC); they change nothing.
+automations plugin's `automations_overview` RPC, the Thread list plugin's
+`listPreferences` RPC); they change nothing.
 
 ## bb-tui doctor
 
@@ -393,6 +397,7 @@ Common keys:
 | `M-r`, `M-R` | Next / previous reasoning level | `modelPicker.cycleReasoning`, `modelPicker.cycleReasoningBackward` |
 | `SPC n n` | Notification center | |
 | `SPC o p`, `SPC t s` | Toggle the sidebar | `sidebar.toggle` |
+| `SPC t o`, `SPC t r`, `SPC t R`, `SPC t a` | Cycle the sidebar organization, sort field, sort direction; show or hide archived threads (shared Thread list preferences, see [Sidebar organization](#sidebar-organization)) | |
 | `SPC o i`, `SPC t p` | Toggle the right panel | `panel.toggle` |
 | `SPC g g`, `SPC o d` | Show / hide the git diff | `diff.toggle` |
 | `gt`, `gT`, `{N}gt` | Next / previous / Nth panel tab | `panel.nextTab`, `panel.previousTab` |
@@ -415,6 +420,60 @@ the evil binding of the same key in normal state, and works in insert state
 and minibuffers when it has `Ctrl` or `Alt` and is not one of the editing
 keys `C-w C-u C-h C-r C-o C-v C-j C-k C-n C-p C-a C-e C-c C-[`. Leader
 sequences, `C-w` sequences and ex commands stay.
+
+## Sidebar organization
+
+The sidebar follows the web Thread list plugin (`thread-list`): it loads the
+plugin's preferences with its `listPreferences` RPC
+(`POST /api/v1/plugins/thread-list/rpc/listPreferences`), changes them with
+`setPreference`, and applies the plugin's `preferences` realtime signal, so a
+change made in the web sidebar's Organize menu, with `bb thread-list prefs set`
+or in another bb-tui shows up at once (and is reloaded after a reconnect).
+Until the first answer arrives the sidebar shows `Loading…`; if the plugin is
+missing the plugin's defaults apply.
+
+| Organization | Groups |
+|---|---|
+| `project` | Pinned, Threads (projectless threads, shown while there are any or no projects), one group per project; a child thread sits under its root thread's project |
+| `chronological` | Pinned, one group per bb thread section (`bb thread section`, including empty ones; threads of an unknown section are not listed, like the web list), Threads for unsectioned threads |
+| `machine` | Pinned, one group per machine in the server's order (machines without threads too, threads on a machine missing from the list show under its id), `No machine` for threads without a host; Threads only when there are no machine groups |
+
+The order of these groups comes from `sectionOrder`, `manualSectionOrder` or
+`machineSectionOrder`, reconciled like the web list (new groups go after the
+last stored one, removed ones drop out). Groups in `hiddenGroups` move into a
+`More` group at the end; it opens locally. Within a group, threads nest under
+their parent and are sorted by `chronologicalSort` (`updated`: running threads
+first, then the latest activity; `created`; `alpha` by title) and
+`sortDirection`; running threads stay first when `updated` is reversed.
+`groupByReadStatus` lists threads with an unread dot first and keeps the open
+thread in place until another one opens. Sibling threads sharing a git
+worktree collapse into an environment row (`environmentGrouping`: `auto` does
+it in every organization except chronological). Pinned threads and their
+descendants always form the Pinned group, in pin order.
+
+Folds are the plugin's collapsed preferences (`collapsedSections`,
+`collapsedProjects`, `collapsedThreadSections`, `collapsedMachines`,
+`collapsedEnvironments`, `collapsedThreads`): `h`/`l`/`RET`/`TAB`/`za`/`zM`/
+`zR` and clicks save them like the web list, child threads are open unless
+collapsed, and `SPC o P` or a sidebar search opens the folds above a thread.
+
+`threadLifecycles` choose active threads, archived threads or both; archived
+threads come from `GET /threads?archived=true` in pages of 50, render dimmed
+in italics inside their usual group, and a `Show more` row loads the next
+page. Archived pages are refetched when the thread list changes.
+
+| Change | Keys / command |
+|---|---|
+| Organization | `SPC t o` cycles, `:set organization=project\|chronological\|machine` |
+| Sort field | `SPC t r` cycles, `:set sort=updated\|created\|alpha` |
+| Sort direction | `SPC t R` cycles, `:set sortdir=default\|asc\|desc` |
+| Archived threads | `SPC t a`, `:set archived` / `:set noarchived`, `:set lifecycle=active\|archived\|both` |
+| Worktree grouping | `:set envgroup=auto\|on\|off` |
+| Unread first | `:set readgroup` / `:set noreadgroup` |
+
+These write the shared server value (`--read-only` refuses them). Group order
+and hidden groups are honored but changed from the web list or
+`bb thread-list prefs set`; row actions and provider icons are not drawn.
 
 ## Thread timeline
 
@@ -1008,7 +1067,7 @@ waiting for an answer shows a one-line notice; focus it to answer.
 
 | Area | In the TUI | Missing or different |
 |---|---|---|
-| Sidebar | projects, Personal, pinned, nesting, unread and waiting markers, filter, rename, archive and undo, pin, read toggles, split panes. Projects with the same name are told apart by their remote (`owner/repo`), then the checkout path tail, then the id. The Personal group is hidden while it has no threads (unless there are no projects), like the web list; empty projects show `no threads` | sections and organization modes (by section, machine), sorting choices, drag and drop, hide/show groups |
+| Sidebar | the Thread list plugin's organizations (project, chronological with bb sections, machine), group order, hidden groups under More, sort field and direction, unread-first grouping, worktree grouping, archived threads with Show more, collapsed state shared with the web list, pinned, nesting, unread and waiting markers, filter, rename, archive and undo, pin, read toggles, split panes. Projects with the same name are told apart by their remote (`owner/repo`), then the checkout path tail, then the id | drag and drop (reordering groups, moving threads between sections, pin order), creating, renaming and removing sections, hiding or restoring groups and reordering them from the TUI, row action buttons and provider icons, `alpha` sorting compares case-insensitively instead of with the browser's locale collation |
 | Timeline | Markdown, code highlighting, tables, work/tool/diff rows, turn summaries, lazy loading of older rows and collapsed turns, plan, goal and todo banners | images, Mermaid, KaTeX, inline-vis HTML, message directives (`::task` and others show a short placeholder) |
 | Composer | send, queue, steer, stop, prompt history, model/reasoning/permission pickers, queued messages, drafts in the web format, mentions, `/` and `$` commands, attachments by path | voice input, image paste and previews, scheduled send, prompt library, chip labels (chips show their serialized text) |
 | Requests | approvals, plan review, provider and plugin questions, secret requests, a JSON fallback for other plugin requests | plugin request renderers (only the generic fallback) |

@@ -178,10 +178,7 @@ fn sidebar_mouse(state: &mut AppState, delta: Option<isize>, index: usize) -> Ve
             state.focus = Focus::Main;
             effects
         }
-        None => {
-            state.toggle_group(None);
-            Vec::new()
-        }
+        None => state.toggle_group(None),
     }
 }
 

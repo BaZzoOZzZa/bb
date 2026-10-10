@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use bb_client::{BbClient, DiscoveryInput, discover_server, discovery};
 use bb_store::{NoRealtime, Store, StoreConfig, StoreSnapshot, TurnDetailsEntry, TurnDetailsKey};
 use bb_tui::api::Api;
-use bb_tui::app::{Action, AppState, ServerInfo, update};
+use bb_tui::app::{Action, AppState, Effect, ServerInfo, update};
+use bb_tui::runtime::run_thread_list_request;
+use bb_tui::thread_list::ThreadListRequest;
 use bb_tui::time::now_ms;
 use bb_tui::timeline::ItemKind;
 use bb_wire::routes::threads;
@@ -26,12 +28,21 @@ async fn renders_live_sidebar_read_only() {
     )
     .expect("discover");
     let client = BbClient::local(found.endpoint.clone()).expect("client");
+    let api = client.clone();
     let overrides = client.keybinding_overrides().await.expect("config");
     let store = Store::spawn(Arc::new(client), NoRealtime, None, StoreConfig::default());
     let _interest = store.watch_sidebar();
     let mut rx = store.subscribe();
     tokio::time::timeout(Duration::from_secs(10), async {
-        while rx.borrow_and_update().sidebar.data.is_none() {
+        loop {
+            let ready = {
+                let snapshot = rx.borrow_and_update();
+                snapshot.sidebar.data.is_some()
+                    && (snapshot.hosts.data.is_some() || snapshot.hosts.error.is_some())
+            };
+            if ready {
+                break;
+            }
             rx.changed().await.expect("store");
         }
     })
@@ -45,9 +56,29 @@ async fn renders_live_sidebar_read_only() {
         Instant::now(),
         now_ms(),
     );
+    state.read_only = true;
     update(&mut state, Action::KeymapLoaded(Ok(overrides)));
-    update(&mut state, Action::Snapshot(store.snapshot()));
+    let mut pending = state.thread_list_start();
+    pending.extend(update(&mut state, Action::Snapshot(store.snapshot())));
+    while !pending.is_empty() {
+        let mut next = Vec::new();
+        for effect in pending {
+            if let Effect::ThreadList(request) = effect {
+                assert!(
+                    !matches!(request, ThreadListRequest::Set { .. }),
+                    "read-only run must not write preferences"
+                );
+                let loaded = run_thread_list_request(&api, request).await;
+                next.extend(update(&mut state, Action::ThreadListLoaded(loaded)));
+            }
+        }
+        pending = next;
+    }
     assert!(!state.rows.is_empty());
+    println!(
+        "organization: {} status: {:?}",
+        state.thread_list.prefs.organization_mode, state.thread_list.status
+    );
     for line in render_lines(&state, 120, 30) {
         println!("{line}");
     }

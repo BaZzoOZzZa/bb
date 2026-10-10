@@ -300,6 +300,14 @@ impl<A: Api, P: Platform> EffectRunner<A, P> {
                     let _ = tx.send(Action::AutomationsLoaded(loaded));
                 });
             }
+            Effect::ThreadList(request) => {
+                let api = self.api.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let loaded = run_thread_list_request(api.as_ref(), request).await;
+                    let _ = tx.send(Action::ThreadListLoaded(loaded));
+                });
+            }
             Effect::Quit => {
                 for (_, (_, handle)) in self.terminal_links.drain() {
                     handle.close();
@@ -638,6 +646,55 @@ async fn automations_rpc<A: Api, T: serde::de::DeserializeOwned>(
     serde_json::from_value(value).map_err(|error| format!("unexpected {method} response: {error}"))
 }
 
+pub async fn run_thread_list_request<A: Api>(
+    api: &A,
+    request: crate::thread_list::ThreadListRequest,
+) -> crate::thread_list::ThreadListLoaded {
+    use crate::thread_list::{ThreadListLoaded, ThreadListRequest};
+    use bb_wire::thread_list::{
+        LIST_PREFERENCES_METHOD, SET_PREFERENCE_METHOD, THREAD_LIST_PLUGIN_ID, set_preference_input,
+    };
+    match request {
+        ThreadListRequest::Load { generation } => {
+            let result = api
+                .plugin_rpc(
+                    THREAD_LIST_PLUGIN_ID.to_owned(),
+                    LIST_PREFERENCES_METHOD.to_owned(),
+                    bb_wire::common::JsonValue::Null,
+                )
+                .await;
+            ThreadListLoaded::Preferences { generation, result }
+        }
+        ThreadListRequest::Set { key, value } => {
+            let result = api
+                .plugin_rpc(
+                    THREAD_LIST_PLUGIN_ID.to_owned(),
+                    SET_PREFERENCE_METHOD.to_owned(),
+                    set_preference_input(key, value),
+                )
+                .await;
+            ThreadListLoaded::Set { key, result }
+        }
+        ThreadListRequest::Archived {
+            generation,
+            offset,
+            limit,
+            append,
+        } => {
+            let result = api
+                .list_threads(ThreadListRequest::archived_query(offset, limit))
+                .await;
+            ThreadListLoaded::Archived {
+                generation,
+                offset,
+                limit,
+                append,
+                result,
+            }
+        }
+    }
+}
+
 pub async fn run_automation_request<A: Api>(
     api: &A,
     request: AutomationRequest,
@@ -922,6 +979,9 @@ where
     state.palette_recents = platform.load_palette_recents();
     let mut runner = EffectRunner::new(store, api, platform, tx);
     runner.load_keymap();
+    for effect in state.thread_list_start() {
+        runner.run(effect);
+    }
     let initial = snapshots.borrow_and_update().clone();
     dispatch(state, &mut runner, Action::Snapshot(initial));
     let mut tick = tokio::time::interval(TICK);

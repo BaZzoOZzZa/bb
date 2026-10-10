@@ -66,6 +66,11 @@ fn option_items(token: &str) -> (usize, Vec<String>) {
         let values = match name {
             "submitkey" => words(SUBMIT_KEYS),
             "clipboard" => words(CLIPBOARD),
+            "organization" | "org" => words(&["project", "chronological", "machine"]),
+            "sort" => words(&["updated", "created", "alpha"]),
+            "sortdir" => words(&["default", "asc", "desc"]),
+            "lifecycle" => words(&["active", "archived", "both"]),
+            "envgroup" => words(&["auto", "on", "off"]),
             _ => Vec::new(),
         };
         return (name.len() + 1, ranked(values, value));

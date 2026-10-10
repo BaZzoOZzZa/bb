@@ -130,23 +130,23 @@ fn enter_on_group_and_h_l_collapse_and_expand() {
     press(&mut state, KeyCode::Char('h'));
     assert_eq!(selected_key(&state), Some(RowKey::Group("proj_a".into())));
     press(&mut state, KeyCode::Char('h'));
-    assert!(state.collapsed.contains("proj_a"));
+    assert!(collapsed_projects(&state).contains(&"proj_a".to_owned()));
     let lines = render_lines(&state, 100, 12);
     assert!(lines[1].contains("▸ alpha"), "{lines:?}");
     assert!(lines[1].contains("●2 3"), "{lines:?}");
     assert!(lines[2].contains("▾ beta"), "{lines:?}");
     press(&mut state, KeyCode::Enter);
-    assert!(!state.collapsed.contains("proj_a"));
+    assert!(!collapsed_projects(&state).contains(&"proj_a".to_owned()));
     press(&mut state, KeyCode::Tab);
-    assert!(state.collapsed.contains("proj_a"));
+    assert!(collapsed_projects(&state).contains(&"proj_a".to_owned()));
     press(&mut state, KeyCode::Char('l'));
-    assert!(!state.collapsed.contains("proj_a"));
+    assert!(!collapsed_projects(&state).contains(&"proj_a".to_owned()));
     keys(&mut state, "z a");
-    assert!(state.collapsed.contains("proj_a"));
+    assert!(collapsed_projects(&state).contains(&"proj_a".to_owned()));
     keys(&mut state, "z R");
-    assert!(state.collapsed.is_empty());
+    assert!(collapsed_projects(&state).is_empty());
     keys(&mut state, "z M");
-    assert!(state.collapsed.contains("proj_a") && state.collapsed.contains("proj_b"));
+    assert_eq!(collapsed_projects(&state), ["proj_a", "proj_b"]);
 }
 
 #[test]
@@ -157,18 +157,21 @@ fn child_threads_expand_under_parent() {
     sidebar.projects[0].threads.push(child);
     let mut state = loaded_state(sidebar);
     let lines = render_lines(&state, 100, 12);
-    assert!(lines[2].contains("▸? Needs approval"), "{lines:?}");
-    assert!(lines[2].contains("+1 3m"), "{lines:?}");
-    press(&mut state, KeyCode::Char('l'));
-    let lines = render_lines(&state, 100, 12);
     assert!(lines[2].contains("▾? Needs approval"), "{lines:?}");
     assert!(lines[3].contains("     Subagent"), "{lines:?}");
+    press(&mut state, KeyCode::Char('h'));
+    let lines = render_lines(&state, 100, 12);
+    assert!(lines[2].contains("▸? Needs approval"), "{lines:?}");
+    assert!(lines[2].contains("+1 3m"), "{lines:?}");
+    assert_eq!(state.thread_list.prefs.collapsed_threads, ["thr_wait"]);
+    press(&mut state, KeyCode::Char('l'));
+    assert!(state.thread_list.prefs.collapsed_threads.is_empty());
     press(&mut state, KeyCode::Char('j'));
     assert_eq!(selected_key(&state), thread_key("thr_child"));
     press(&mut state, KeyCode::Char('h'));
     assert_eq!(selected_key(&state), thread_key("thr_wait"));
     press(&mut state, KeyCode::Char('h'));
-    assert!(!state.expanded_threads.contains("thr_wait"));
+    assert_eq!(state.thread_list.prefs.collapsed_threads, ["thr_wait"]);
 }
 
 #[test]

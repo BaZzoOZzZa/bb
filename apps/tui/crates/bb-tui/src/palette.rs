@@ -1284,11 +1284,12 @@ impl AppState {
         }
         match self.selected_row() {
             Some(crate::sidebar::SidebarRow::Group(group))
-                if self.project_name(&group.key).is_some()
-                    && !self.is_personal_project(&group.key) =>
+                if group.project_id.as_deref().is_some_and(|project_id| {
+                    self.project_name(project_id).is_some() && !self.is_personal_project(project_id)
+                }) =>
             {
                 Some(FileSource::Project {
-                    project_id: group.key.clone(),
+                    project_id: group.project_id.clone().unwrap_or_default(),
                     root: None,
                 })
             }
@@ -1844,21 +1845,31 @@ impl AppState {
         }]
     }
 
-    fn reveal_project(&mut self, project_id: &str) {
+    fn reveal_project(&mut self, project_id: &str) -> Vec<Effect> {
         self.sidebar_visible = true;
         self.focus = Focus::Sidebar;
         if !self.filter.is_empty() {
             self.filter.clear();
         }
-        self.collapsed.remove(project_id);
-        self.rebuild_rows();
-        if let Some(index) = self
-            .rows
-            .iter()
-            .position(|row| row.key() == RowKey::Group(project_id.to_owned()))
-        {
+        let key = RowKey::Group(project_id.to_owned());
+        let effects = if self.rows.iter().any(|row| row.key() == key) {
+            self.set_collapsed(
+                &crate::sidebar::Collapse::Project(project_id.to_owned()),
+                false,
+            )
+        } else {
+            self.rebuild_rows();
+            Vec::new()
+        };
+        if let Some(index) = self.rows.iter().position(|row| {
+            row.key() == key
+                || row
+                    .thread()
+                    .is_some_and(|thread| thread.project_id == project_id)
+        }) {
             self.selected = index;
         }
+        effects
     }
 
     fn activate_palette_item(&mut self, item: PaletteItem, kind: PaletteKind) -> Vec<Effect> {
@@ -1892,8 +1903,7 @@ impl AppState {
             }
             PaletteTarget::Project(project_id) => {
                 self.close_palette();
-                self.reveal_project(&project_id);
-                Vec::new()
+                self.reveal_project(&project_id)
             }
             PaletteTarget::File(path) => {
                 let source = self

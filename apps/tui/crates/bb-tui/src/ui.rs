@@ -13,7 +13,7 @@ use crate::evil::Tag;
 use crate::indicator::{Indicator, display_status_label};
 use crate::input::LineInput;
 use crate::keymap::Command;
-use crate::sidebar::{GroupRow, SidebarRow, ThreadRow};
+use crate::sidebar::{Collapse, GroupAction, GroupRow, SidebarRow, ThreadRow};
 use crate::time::compact_relative_time;
 use crate::timeline::{Frame as TimelineFrame, Scroll};
 
@@ -291,13 +291,14 @@ fn render_sidebar(state: &AppState, frame: &mut Frame, area: Rect) {
     };
 
     if state.rows.is_empty() {
-        let message = if state.snapshot.sidebar.is_loading() {
-            "Loading…"
-        } else if !state.filter.is_empty() {
-            "No matching threads"
-        } else {
-            "No threads"
-        };
+        let message =
+            if state.snapshot.sidebar.is_loading() || state.thread_list.awaiting_first_load() {
+                "Loading…"
+            } else if !state.filter.is_empty() {
+                "No matching threads"
+            } else {
+                "No threads"
+            };
         frame.render_widget(
             Paragraph::new(message).style(Style::new().fg(Color::DarkGray)),
             list_area,
@@ -388,14 +389,28 @@ fn render_sidebar(state: &AppState, frame: &mut Frame, area: Rect) {
 }
 
 fn group_line(group: &GroupRow, width: usize) -> Line<'static> {
+    let indent = "  ".repeat(group.depth);
+    if !group.is_foldable() {
+        let label = truncate(&group.label, width.saturating_sub(indent.width() + 2));
+        let style = match group.action {
+            GroupAction::ShowMoreArchived => Style::new().fg(Color::Cyan),
+            _ => Style::new().fg(Color::DarkGray),
+        };
+        return Line::from(vec![
+            Span::raw(format!("{indent}  ")),
+            Span::styled(label, style),
+        ]);
+    }
+    let more = matches!(group.collapse(), Some(Collapse::More));
     let arrow = match (group.thread_count, group.collapsed) {
         (0, _) => "  ",
         (_, true) => "▸ ",
         (_, false) => "▾ ",
     };
-    let count = match group.thread_count {
-        0 => "no threads".to_owned(),
-        count => count.to_string(),
+    let count = match (group.thread_count, more) {
+        (0, _) => "no threads".to_owned(),
+        (count, true) => format!("{count} hidden"),
+        (count, false) => count.to_string(),
     };
     let attention = if group.collapsed && group.attention > 0 {
         format!("●{} ", group.attention)
@@ -403,12 +418,28 @@ fn group_line(group: &GroupRow, width: usize) -> Line<'static> {
         String::new()
     };
     let tail = attention.width() + count.width();
-    let label = truncate(&group.label, width.saturating_sub(2 + tail + 1));
+    let prefix = indent.width() + 2;
+    let label = truncate(&group.label, width.saturating_sub(prefix + tail + 1));
+    let label_style = if group.depth == 0
+        || matches!(
+            group.collapse(),
+            Some(
+                Collapse::Project(_)
+                    | Collapse::Machine(_)
+                    | Collapse::ThreadSection(_)
+                    | Collapse::BuiltIn(_)
+            )
+        ) {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(Color::Gray)
+    };
     let mut spans = vec![
+        Span::raw(indent),
         Span::styled(arrow, Style::new().fg(Color::DarkGray)),
-        Span::styled(label.clone(), Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(label.clone(), label_style),
     ];
-    let used = 2 + label.width();
+    let used = prefix + label.width();
     pad_to(&mut spans, used, width.saturating_sub(tail));
     if !attention.is_empty() {
         spans.push(Span::styled(attention, Style::new().fg(Color::Yellow)));
@@ -453,7 +484,11 @@ fn thread_line(
     };
     let tail = time.width() + collapsed_children.width() + 1;
     let title = truncate(&thread.title, width.saturating_sub(prefix + tail));
-    let title_style = if thread.unread || thread.indicator.needs_attention() {
+    let title_style = if thread.archived {
+        Style::new()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC)
+    } else if thread.unread || thread.indicator.needs_attention() {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new()

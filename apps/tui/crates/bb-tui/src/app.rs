@@ -37,8 +37,12 @@ use crate::palette::{
 use crate::panel::{GitAction, PanelLoaded, PanelRequest, RightPanel};
 use crate::prompt::PromptDraft;
 use crate::settings::{SettingsLoaded, SettingsRequest, SettingsView};
-use crate::sidebar::{RowKey, SidebarRow, SidebarView, attention_count, build_rows, thread_title};
+use crate::sidebar::{
+    Collapse, GroupAction, RowKey, SidebarRow, SidebarSource, SidebarView, attention_count,
+    build_rows, thread_title,
+};
 use crate::terminal::{TerminalLoaded, TerminalPanel, TerminalRequest};
+use crate::thread_list::{ThreadListLoaded, ThreadListRequest, ThreadListState};
 use crate::timeline::{LoadRequest, TimelineView};
 use crate::typeahead::{
     CommandCatalogKey, ComposerTarget, Typeahead, TypeaheadLoaded, TypeaheadRequest,
@@ -188,6 +192,7 @@ pub enum Action {
     },
     SettingsLoaded(SettingsLoaded),
     AutomationsLoaded(AutomationLoaded),
+    ThreadListLoaded(ThreadListLoaded),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -239,6 +244,7 @@ pub enum Effect {
     Terminal(TerminalRequest),
     Settings(SettingsRequest),
     Automations(AutomationRequest),
+    ThreadList(ThreadListRequest),
     WatchSplits(Vec<String>),
     Quit,
 }
@@ -250,8 +256,7 @@ pub struct AppState {
     pub rows: Vec<SidebarRow>,
     pub selected: usize,
     pub sidebar_offset: Cell<usize>,
-    pub collapsed: HashSet<String>,
-    pub expanded_threads: HashSet<String>,
+    pub thread_list: ThreadListState,
     pub filter: String,
     pub focus: Focus,
     pub mode: Mode,
@@ -320,8 +325,7 @@ impl AppState {
             rows: Vec::new(),
             selected: 0,
             sidebar_offset: Cell::new(0),
-            collapsed: HashSet::new(),
-            expanded_threads: HashSet::new(),
+            thread_list: ThreadListState::default(),
             filter: String::new(),
             focus: Focus::Sidebar,
             mode: Mode::Normal,
@@ -448,7 +452,9 @@ impl AppState {
     }
 
     pub fn sidebar_entry(&self, thread_id: &str) -> Option<&ThreadListEntry> {
-        self.snapshot.sidebar_thread(thread_id)
+        self.snapshot
+            .sidebar_thread(thread_id)
+            .or_else(|| self.archived_entry(thread_id))
     }
 
     pub fn thread_title(&self, thread_id: &str) -> String {
@@ -503,19 +509,10 @@ impl AppState {
         }
     }
 
-    pub(crate) fn rebuild_rows(&mut self) {
+    pub fn rebuild_rows(&mut self) {
         let previous = self.selected_row().map(SidebarRow::key);
-        self.rows = match self.snapshot.sidebar.data.as_deref() {
-            Some(sidebar) => build_rows(
-                sidebar,
-                SidebarView {
-                    collapsed: &self.collapsed,
-                    expanded_threads: &self.expanded_threads,
-                    filter: &self.filter,
-                },
-            ),
-            None => Vec::new(),
-        };
+        self.sync_held_read();
+        self.rows = self.sidebar_rows(false);
         match previous.and_then(|key| self.rows.iter().position(|row| row.key() == key)) {
             Some(index) => self.selected = index,
             None if !self.filter.is_empty() => self.select_first_thread(),
@@ -523,7 +520,74 @@ impl AppState {
         }
     }
 
-    fn select_first_thread(&mut self) {
+    pub(crate) fn sidebar_rows(&self, force_open: bool) -> Vec<SidebarRow> {
+        let Some(sidebar) = self.snapshot.sidebar.data.as_deref() else {
+            return Vec::new();
+        };
+        let list = &self.thread_list;
+        if list.awaiting_first_load() {
+            return Vec::new();
+        }
+        let source = SidebarSource {
+            sidebar,
+            archived: &list.archived.entries,
+            archived_status: list.archived.status(list.prefs.shows_archived()),
+            hosts: self
+                .snapshot
+                .hosts
+                .data
+                .as_deref()
+                .map_or(&[], Vec::as_slice),
+            prefs: &list.prefs,
+        };
+        build_rows(
+            source,
+            SidebarView {
+                filter: &self.filter,
+                more_open: list.more_open,
+                force_open,
+                expanded_while_grouped: &list.expanded_while_grouped,
+                held_read: list
+                    .held_read
+                    .as_ref()
+                    .map(|(id, unread)| (id.as_str(), *unread)),
+            },
+        )
+    }
+
+    fn sync_held_read(&mut self) {
+        let open = self.open_thread.clone();
+        let held = &self.thread_list.held_read;
+        if held.as_ref().map(|(id, _)| id) == open.as_ref() {
+            return;
+        }
+        let next = open.and_then(|id| {
+            self.sidebar_entry(&id)
+                .map(|entry| (id.clone(), !is_thread_read(&entry.thread)))
+        });
+        self.thread_list.held_read = next;
+    }
+
+    pub(crate) fn reveal_thread(&mut self, thread_id: &str) -> Vec<Effect> {
+        let rows = self.sidebar_rows(true);
+        let Some(ancestors) = rows
+            .iter()
+            .find(|row| row.thread().is_some_and(|thread| thread.id == thread_id))
+            .map(|row| row.ancestors().to_vec())
+        else {
+            return Vec::new();
+        };
+        let collapsed: Vec<Collapse> = ancestors
+            .into_iter()
+            .filter(|collapse| self.thread_list.is_collapsed(collapse))
+            .collect();
+        if collapsed.is_empty() {
+            return Vec::new();
+        }
+        self.set_many_collapsed(&collapsed, false)
+    }
+
+    pub(crate) fn select_first_thread(&mut self) {
         self.selected = self
             .rows
             .iter()
@@ -623,20 +687,27 @@ impl AppState {
         }
     }
 
-    pub(crate) fn toggle_group(&mut self, expand: Option<bool>) {
+    pub(crate) fn toggle_group(&mut self, expand: Option<bool>) -> Vec<Effect> {
         let Some(row) = self.selected_row().cloned() else {
-            return;
+            return Vec::new();
         };
         match row {
-            SidebarRow::Group(group) => {
-                let collapse = expand.map_or(!group.collapsed, |expand| !expand);
-                if collapse {
-                    self.collapsed.insert(group.key);
-                } else {
-                    self.collapsed.remove(&group.key);
+            SidebarRow::Group(group) => match group.action {
+                GroupAction::Collapse(collapse) => {
+                    let collapse_it = expand.map_or(!group.collapsed, |expand| !expand);
+                    if collapse_it == group.collapsed {
+                        if collapse_it {
+                            self.select_parent();
+                        }
+                        return Vec::new();
+                    }
+                    self.set_collapsed(&collapse, collapse_it)
                 }
-                self.rebuild_rows();
-            }
+                GroupAction::ShowMoreArchived if expand != Some(false) => {
+                    self.load_more_sidebar_archived()
+                }
+                GroupAction::ShowMoreArchived | GroupAction::Notice => Vec::new(),
+            },
             SidebarRow::Thread(thread) => {
                 if thread.child_count > 0 {
                     let open = expand.unwrap_or(!thread.expanded);
@@ -644,33 +715,30 @@ impl AppState {
                         if !open {
                             self.select_parent();
                         }
-                        return;
+                        return Vec::new();
                     }
-                    if open {
-                        self.expanded_threads.insert(thread.id);
-                    } else {
-                        self.expanded_threads.remove(&thread.id);
+                    self.set_collapsed(&Collapse::Thread(thread.id), !open)
+                } else {
+                    if expand != Some(true) {
+                        self.select_parent();
                     }
-                    self.rebuild_rows();
-                } else if expand != Some(true) {
-                    self.select_parent();
+                    Vec::new()
                 }
             }
         }
     }
 
     fn select_parent(&mut self) {
-        let Some(SidebarRow::Thread(current)) = self.selected_row() else {
+        let Some(parent) = self
+            .selected_row()
+            .and_then(|row| row.ancestors().last().cloned())
+        else {
             return;
         };
-        let depth = current.depth;
-        let parent = self.rows[..self.selected]
+        if let Some(index) = self.rows[..self.selected]
             .iter()
-            .rposition(|row| match row {
-                SidebarRow::Group(_) => true,
-                SidebarRow::Thread(thread) => depth > 0 && thread.depth + 1 == depth,
-            });
-        if let Some(index) = parent {
+            .rposition(|row| row.own_collapse().as_ref() == Some(&parent))
+        {
             self.selected = index;
         }
     }
@@ -793,7 +861,9 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             if first_load && state.snapshot.sidebar.data.is_some() {
                 state.select_first_thread();
             }
-            let mut effects = composer_snapshot(state);
+            let mut effects = state.thread_list_connection(&previous.connection);
+            effects.extend(state.sync_archived(false));
+            effects.extend(composer_snapshot(state));
             effects.extend(state.sync_timeline());
             effects.extend(state.sync_split_timelines());
             state.sync_interactions();
@@ -924,6 +994,15 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
             plugin_id,
             channel,
             payload,
+        } if plugin_id == bb_wire::thread_list::THREAD_LIST_PLUGIN_ID
+            && channel == bb_wire::thread_list::PREFERENCES_CHANNEL =>
+        {
+            state.thread_list_signal(&payload)
+        }
+        Action::PluginSignal {
+            plugin_id,
+            channel,
+            payload,
         } => state.plugin_signal(&plugin_id, &channel, payload),
         Action::TerminalFocus(focused) => {
             state.notifications.terminal_focused = Some(focused);
@@ -943,6 +1022,7 @@ fn apply(state: &mut AppState, action: Action) -> Vec<Effect> {
         Action::FullscreenEnded(message) => state.fullscreen_ended(message),
         Action::SettingsLoaded(loaded) => state.settings_loaded(loaded),
         Action::AutomationsLoaded(loaded) => state.automations_loaded(loaded),
+        Action::ThreadListLoaded(loaded) => state.thread_list_loaded(loaded),
     }
 }
 
@@ -1873,7 +1953,7 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         Command::MoveTop if in_sidebar => state.selected = 0,
         Command::MoveBottom if in_sidebar => state.selected = state.rows.len().saturating_sub(1),
         Command::Open if in_sidebar => match state.selected_row() {
-            Some(SidebarRow::Group(_)) => state.toggle_group(None),
+            Some(SidebarRow::Group(_)) => return state.toggle_group(None),
             Some(SidebarRow::Thread(row)) => {
                 let id = row.id.clone();
                 return state.open(id);
@@ -1883,7 +1963,7 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
         Command::OpenFocus | Command::OpenInsert if in_sidebar => {
             let Some(id) = state.selected_thread_id().map(str::to_owned) else {
                 if command == Command::OpenFocus {
-                    state.toggle_group(None);
+                    return state.toggle_group(None);
                 }
                 return Vec::new();
             };
@@ -1896,30 +1976,32 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             }
             return effects;
         }
-        Command::Collapse if in_sidebar => state.toggle_group(Some(false)),
+        Command::Collapse if in_sidebar => return state.toggle_group(Some(false)),
         Command::Expand if in_sidebar => match state.selected_row().cloned() {
             Some(SidebarRow::Thread(thread)) if thread.child_count == 0 || thread.expanded => {
                 return state.open(thread.id);
             }
-            Some(_) => state.toggle_group(Some(true)),
+            Some(_) => return state.toggle_group(Some(true)),
             None => {}
         },
-        Command::ToggleGroup if in_sidebar => state.toggle_group(None),
+        Command::ToggleGroup if in_sidebar => return state.toggle_group(None),
         Command::FoldAll(open) if in_sidebar => {
-            let groups: Vec<String> = state
-                .rows
+            let rows = if open {
+                state.sidebar_rows(true)
+            } else {
+                state.rows.clone()
+            };
+            let targets: Vec<Collapse> = rows
                 .iter()
                 .filter_map(|row| match row {
-                    SidebarRow::Group(group) => Some(group.key.clone()),
-                    SidebarRow::Thread(_) => None,
+                    SidebarRow::Group(group) if open || group.depth == 0 => {
+                        group.collapse().cloned()
+                    }
+                    _ => None,
                 })
+                .filter(|collapse| state.thread_list.is_collapsed(collapse) == open)
                 .collect();
-            if open {
-                state.collapsed.clear();
-            } else {
-                state.collapsed.extend(groups);
-            }
-            state.rebuild_rows();
+            return state.set_many_collapsed(&targets, !open);
         }
         Command::FoldAll(open) if state.focus == Focus::Panel => {
             return state.diff_fold_all(open);
@@ -2074,13 +2156,14 @@ pub(crate) fn run_command(state: &mut AppState, command: Command) -> Vec<Effect>
             state.sidebar_visible = true;
             state.focus = Focus::Sidebar;
             if let Some(thread_id) = state.open_thread.clone() {
-                let key = RowKey::Thread(thread_id);
+                let key = RowKey::Thread(thread_id.clone());
+                let mut effects = Vec::new();
                 if !state.rows.iter().any(|row| row.key() == key) {
                     state.set_filter("");
-                    state.collapsed.clear();
-                    state.rebuild_rows();
+                    effects = state.reveal_thread(&thread_id);
                 }
                 state.select_key(&key);
+                return effects;
             }
         }
         Command::PanelToggle => {
