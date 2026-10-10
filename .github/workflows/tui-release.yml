@@ -18,6 +18,9 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_TARGET_DIR: ${{ github.workspace }}/../../tui-target/release
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
@@ -45,3 +48,6 @@ jobs:
             gh release create "$TAG" --title "bb-tui $TAG" --generate-notes --verify-tag
           fi
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+      - name: Remove build cache
+        if: always()
+        run: rm -rf "$CARGO_TARGET_DIR"
