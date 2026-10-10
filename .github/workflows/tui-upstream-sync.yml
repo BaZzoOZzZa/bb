@@ -1,0 +1,60 @@
+name: tui-upstream-sync
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: tui-upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  sync:
+    runs-on: [self-hosted, linux, bb-tui]
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ runner.temp }}/../tui-target/sync
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: get-bb/bb
+    steps:
+      - name: Disable workflows that do not belong to the TUI
+        run: |
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | select(.state == "active") | select(.path | startswith(".github/workflows/tui-") | not) | .id' |
+          while read -r id; do
+            gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$id/disable"
+            echo "disabled workflow $id"
+          done
+      - name: Fast-forward fork main to upstream
+        run: gh api -X POST "repos/$GITHUB_REPOSITORY/merge-upstream" -f branch=main
+      - uses: actions/checkout@v4
+        with:
+          ref: tui-rs
+          fetch-depth: 0
+      - name: Trial merge of main into tui-rs
+        run: |
+          git config user.name "tui-upstream-sync"
+          git config user.email "tui-upstream-sync@users.noreply.github.com"
+          git fetch origin main
+          behind=$(git rev-list --count HEAD..origin/main)
+          echo "tui-rs is $behind commits behind main"
+          echo "BEHIND=$behind" >> "$GITHUB_ENV"
+          if ! git merge --no-edit origin/main; then
+            echo "::error::Merging main into tui-rs conflicts:"
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+      - name: Test merged tree
+        working-directory: apps/tui
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+      - name: Summary
+        run: echo "Upstream main merges cleanly into tui-rs ($BEHIND new commits) and the TUI checks pass." >> "$GITHUB_STEP_SUMMARY"

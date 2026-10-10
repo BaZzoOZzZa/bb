@@ -1,0 +1,47 @@
+name: tui-release
+
+on:
+  push:
+    tags: ["tui-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, e.g. tui-v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, linux, bb-tui]
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ runner.temp }}/../tui-target/release
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Test
+        working-directory: apps/tui
+        run: cargo test --locked
+      - name: Build
+        working-directory: apps/tui
+        run: cargo build --locked --release -p bb-tui --features keyring,notifications
+      - name: Package
+        run: |
+          name="bb-tui-${TAG#tui-v}-x86_64-linux"
+          mkdir -p "$RUNNER_TEMP/$name"
+          cp "$CARGO_TARGET_DIR/release/bb-tui" apps/tui/README.md "$RUNNER_TEMP/$name/"
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/$name.tar.gz" "$name"
+          (cd "$RUNNER_TEMP" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "ASSET=$RUNNER_TEMP/$name.tar.gz" >> "$GITHUB_ENV"
+      - name: Publish
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "bb-tui $TAG" --generate-notes --verify-tag
+          fi
+          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
